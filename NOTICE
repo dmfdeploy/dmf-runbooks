@@ -1,0 +1,15 @@
+DMF Platform — dmf-runbooks (AWX launcher playbooks + nmos-cpp role)
+Copyright 2026 DMF Platform contributors
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes:
+
+Sony nmos-cpp
+  Source:    https://github.com/sony/nmos-cpp
+  License:   Apache License, Version 2.0
+  Used by:   roles/nmos-cpp/ (NetBox-side launcher tasks per ADR-0014 /
+             ADR-0025). The Helm chart that deploys NMOS-cpp lives at
+             dmf-media/charts/nmos-cpp/. Pre-2026-05-19 the manifests were
+             inline in this role under ADR-0016 Path A; that posture is
+             historical and fully superseded for media JTs by ADR-0025.
+  Copyright: Sony Corporation, contributors per the upstream NOTICE.

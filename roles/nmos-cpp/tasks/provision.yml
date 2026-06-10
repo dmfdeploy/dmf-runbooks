@@ -1,0 +1,143 @@
+---
+# NMOS-CPP — Provision stage (ADR-0012)
+# Ensures the NetBox catalog artifact is registered without launching the
+# workload. ADR-0025 moved Kubernetes pre-staging into the Helm chart.
+
+# ── NetBox catalog registration (ADR-0012, follows dmf-born-inventory pattern) ─
+# Provision creates the NetBox ipam.Service record with lifecycle:bootstrapped tag,
+# attached to the dmf-traefik load-balancer device via NetBox v4 generic relation.
+# Configure stage will flip the tag to lifecycle:active after launching workloads.
+# ── NetBox tag taxonomy: ensure all referenced tags exist (idempotent) ─────
+# Bootstrap-shared tags (dmf-catalog, lifecycle:*, exposure:*) plus per-catalog
+# tags (app:<function>) get created on first provision if missing. Slug is
+# derived from the name to match the dmf-born-inventory convention.
+- name: Build deduped list of tag names referenced by this catalog entry
+  ansible.builtin.set_fact:
+    _nmos_all_tag_names: >-
+      {{
+        (netbox_service_tags + netbox_service_active_tags + netbox_service_monitoring_tags)
+        | map(attribute='name') | list | unique
+      }}
+
+- name: Fetch existing NetBox tags (paginated, single page sufficient for our scale)
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/extras/tags/?limit=200"
+    method: GET
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+    validate_certs: false
+    return_content: true
+  no_log: true
+  register: _nmos_existing_tags
+
+- name: Compute set of existing tag names
+  ansible.builtin.set_fact:
+    _nmos_existing_tag_names: "{{ _nmos_existing_tags.json.results | map(attribute='name') | list }}"
+  no_log: true
+
+- name: Create missing NetBox tags
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/extras/tags/"
+    method: POST
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      name: "{{ item }}"
+      slug: "{{ item | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('^-+|-+$', '') }}"
+      color: "4caf50"
+      description: "DMF catalog tag (auto-created by nmos-cpp provision)"
+    validate_certs: false
+    status_code: [201]
+  loop: "{{ _nmos_all_tag_names | difference(_nmos_existing_tag_names) }}"
+  no_log: true
+
+- name: Look up dmf-traefik load-balancer device in NetBox
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/dcim/devices/?name={{ netbox_service_parent_device | default('dmf-traefik') }}"
+    method: GET
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+    validate_certs: false
+    return_content: true
+  no_log: true
+  register: netbox_lb_lookup
+
+- name: Set NetBox load-balancer device id fact
+  ansible.builtin.set_fact:
+    netbox_lb_device_id: "{{ (netbox_lb_lookup.json.results | first).id }}"
+  when: netbox_lb_lookup.json.results | length > 0
+  no_log: true
+
+- name: Assert dmf-traefik device exists in NetBox
+  ansible.builtin.assert:
+    that: netbox_lb_device_id is defined
+    fail_msg: "NetBox device '{{ netbox_service_parent_device | default('dmf-traefik') }}' not found. Run 694-born-inventory to register the load balancer."
+  no_log: true
+
+- name: Look up existing nmos-cpp service in NetBox
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/?name={{ netbox_service_name | urlencode }}"
+    method: GET
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+    validate_certs: false
+    return_content: true
+  no_log: true
+  register: netbox_service_lookup
+
+- name: Set existing nmos-cpp service id fact
+  ansible.builtin.set_fact:
+    netbox_service_id: "{{ (netbox_service_lookup.json.results | first | default({})).id | default(0) }}"
+  no_log: true
+
+- name: Create nmos-cpp service in NetBox (lifecycle:bootstrapped)
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/"
+    method: POST
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      name: "{{ netbox_service_name }}"
+      protocol: "tcp"
+      ports: [80]
+      parent_object_type: dcim.device
+      parent_object_id: "{{ netbox_lb_device_id }}"
+      description: "DMF catalog: NMOS IS-04/05 registry + mock nodes"
+      tags: "{{ netbox_service_tags + netbox_service_monitoring_tags }}"
+      custom_fields: "{{ netbox_service_monitoring_custom_fields }}"
+    validate_certs: false
+    status_code: [201]
+  no_log: true
+  register: netbox_service_create_result
+  when: netbox_service_id | int == 0
+
+- name: Set created nmos-cpp service id fact
+  ansible.builtin.set_fact:
+    netbox_service_id: "{{ netbox_service_create_result.json.id }}"
+  no_log: true
+  when:
+    - netbox_service_create_result is defined
+    - netbox_service_create_result.json is defined
+    - netbox_service_create_result.json.id is defined
+
+- name: Ensure nmos-cpp service carries monitoring metadata
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/{{ netbox_service_id }}/"
+    method: PATCH
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      tags: "{{ netbox_service_tags + netbox_service_monitoring_tags }}"
+      custom_fields: "{{ netbox_service_monitoring_custom_fields }}"
+    validate_certs: false
+    status_code: [200]
+  no_log: true
+  when:
+    - netbox_service_id is defined
+    - netbox_service_id | int > 0

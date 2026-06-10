@@ -1,0 +1,72 @@
+# syntax=docker/dockerfile:1
+
+# Build args — must be passed at build time. No defaults for upstream ref
+# (plan §5.1: do not publish a public DMF image built from upstream `master`).
+ARG NMOS_CPP_REF
+ARG IMAGE_VERSION=0.1.0-dev
+ARG VCS_REF=unknown
+
+# ── Stage 1: Builder ──────────────────────────────────────────────────────────
+FROM ubuntu:22.04 AS builder
+
+ARG NMOS_CPP_REF
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake git pkg-config \
+    python3-pip \
+    libssl-dev \
+    make \
+    libavahi-client-dev \
+    libavahi-common-dev \
+    libavahi-compat-libdnssd-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --no-cache-dir conan
+
+RUN conan profile detect
+
+WORKDIR /src
+RUN test -n "$NMOS_CPP_REF" || (echo "ERROR: NMOS_CPP_REF build arg required (no master builds for public publish, plan §5.1)" >&2 && exit 1) \
+    && git clone https://github.com/sony/nmos-cpp.git . \
+    && git checkout "$NMOS_CPP_REF" \
+    && git rev-parse HEAD > /src/.nmos_cpp_ref
+
+WORKDIR /src/Development
+RUN conan install . --build=missing -s build_type=Release -of build \
+      -g CMakeToolchain -g CMakeDeps
+RUN cmake -S . -B build \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
+      -DNMOS_CPP_BUILD_REGISTRY=ON \
+      -DNMOS_CPP_BUILD_NODE=OFF
+RUN cmake --build build --target nmos-cpp-registry -j$(nproc)
+
+# ── Stage 2: Runtime ─────────────────────────────────────────────────────────
+FROM ubuntu:22.04
+
+ARG IMAGE_VERSION
+ARG VCS_REF
+ARG NMOS_CPP_REF
+
+LABEL org.opencontainers.image.title="DMF nmos-cpp registry" \
+      org.opencontainers.image.description="Sony nmos-cpp registry packaged for DMF Platform (NMOS IS-04/05 registration & query)" \
+      org.opencontainers.image.source="https://github.com/dmfdeploy/dmf-runbooks" \
+      org.opencontainers.image.revision="$VCS_REF" \
+      org.opencontainers.image.version="$IMAGE_VERSION" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.vendor="DMF Platform contributors" \
+      org.dmfdeploy.upstream.nmos_cpp_ref="$NMOS_CPP_REF"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libavahi-compat-libdnssd1 \
+    libavahi-client3 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /src/Development/build/nmos-cpp-registry /usr/local/bin/
+COPY --from=builder /src/.nmos_cpp_ref /etc/dmf/nmos_cpp_ref
+
+EXPOSE 80 443
+
+ENTRYPOINT ["nmos-cpp-registry"]
+CMD ["/config/registry.json"]

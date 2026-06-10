@@ -1,0 +1,24 @@
+---
+# NMOS IS-04/05 - Finalise: Teardown (ADR-0012, ADR-0014, ADR-0025)
+# Runs in-cluster via custom AWX EE (Container Group dmf-catalog-cg).
+# Removes NMOS Helm release + flips NetBox tag back to bootstrapped.
+- name: NMOS-CPP finalise - teardown workloads
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    nmos_namespace: nmos
+  tasks:
+    - name: Remove NMOS Helm release
+      kubernetes.core.helm:
+        name: nmos-cpp
+        release_namespace: "{{ nmos_namespace }}"
+        state: absent
+        wait: true
+        wait_timeout: 5m
+
+    - name: Include nmos-cpp role (finalise stage - flip NetBox tag to bootstrapped)
+      ansible.builtin.include_role:
+        name: nmos-cpp
+      vars:
+        nmos_stage: finalise

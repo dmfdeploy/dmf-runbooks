@@ -1,0 +1,109 @@
+---
+# MXL Fabrics demo - Configure: Launch workloads
+# Generic source/view launcher for the split MXL demo functions.
+- name: MXL fabrics demo configure - launch workloads
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    mxl_namespace: mxl
+    mxl_role: source
+    mxl_release: mxl-videotestsrc
+    mxl_interface: eth0
+    mxl_image_tag: v1.0.3-fabrics-dev
+    mxl_chart_ref: "oci://zot.zot.svc.cluster.local:5000/dmf/charts/mxl-fabrics-demo"
+    mxl_chart_version: "0.1.0"
+    mxl_chart_local: ""
+    mxl_chart_name: mxl-fabrics-demo
+  tasks:
+    - name: Ensure MXL namespace exists
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: "{{ mxl_namespace }}"
+        state: present
+
+    - name: Ensure shared MXL coordinator ConfigMap exists
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: ConfigMap
+        name: mxl-coordinator
+        namespace: "{{ mxl_namespace }}"
+      register: _mxl_coordinator_cm
+
+    - name: Create empty coordinator ConfigMap when absent
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: mxl-coordinator
+            namespace: "{{ mxl_namespace }}"
+          data: {}
+        state: present
+      when: _mxl_coordinator_cm.resources | length == 0
+
+    - name: Deploy MXL Helm chart from Zot or local path
+      block:
+        - name: Create temporary MXL chart directory
+          ansible.builtin.tempfile:
+            state: directory
+            suffix: mxl-fabrics-demo-chart
+          register: _mxl_chart_tmp
+          changed_when: false
+          when: mxl_chart_local | trim == ""
+
+        - name: Pull MXL Helm chart from plain-HTTP Zot
+          ansible.builtin.command:
+            argv:
+              - helm
+              - pull
+              - "{{ mxl_chart_ref }}/{{ mxl_chart_name }}"
+              - --version
+              - "{{ mxl_chart_version }}"
+              - --untar
+              - --untardir
+              - "{{ _mxl_chart_tmp.path }}"
+              - --plain-http
+          changed_when: false
+          when: mxl_chart_local | trim == ""
+
+        - name: Install or upgrade MXL Helm release
+          ansible.builtin.command:
+            argv:
+              - helm
+              - upgrade
+              - --install
+              - "{{ mxl_release }}"
+              - "{{ mxl_chart_local | trim if (mxl_chart_local | trim) else _mxl_chart_tmp.path ~ '/' ~ mxl_chart_name }}"
+              - -n
+              - "{{ mxl_namespace }}"
+              - --set
+              - createNamespace=false
+              - --set
+              - role={{ mxl_role }}
+              - --set
+              - fabrics.interface={{ mxl_interface }}
+              - --set
+              - image.tag={{ mxl_image_tag }}
+          changed_when: true
+
+        - name: Wait for MXL workload to be Ready
+          kubernetes.core.k8s_info:
+            api_version: apps/v1
+            kind: Deployment
+            name: "{{ mxl_release }}-{{ 'initiator' if mxl_role == 'source' else 'target' }}"
+            namespace: "{{ mxl_namespace }}"
+          register: _mxl_workload
+          until:
+            - _mxl_workload.resources | length > 0
+            - _mxl_workload.resources[0].status.readyReplicas | default(0) == (_mxl_workload.resources[0].spec.replicas | default(1))
+          retries: 30
+          delay: 10
+      always:
+        - name: Remove temporary MXL chart directory
+          ansible.builtin.file:
+            path: "{{ _mxl_chart_tmp.path | default('') }}"
+            state: absent
+          changed_when: false
+          when: _mxl_chart_tmp.path is defined

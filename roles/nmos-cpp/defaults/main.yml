@@ -1,0 +1,34 @@
+---
+# NMOS-CPP role defaults
+# Provision + Configure + Finalise stages (ADR-0012, ADR-0025).
+nmos_namespace: nmos
+
+# NetBox integration (for tag flip in configure/finalise stages).
+# Default is cluster-internal service DNS per ADR-0023 — the launcher
+# now runs in an AWX EE pod inside the cluster (ADR-0025 Lane B).
+# Off-cluster callers must override via extra_vars or inventory.
+netbox_api_url: "http://netbox.netbox.svc.cluster.local"
+# Single scoped catalog-writer token for every NetBox call — reads and writes
+# (ADR-0032). The launcher CREATEs the per-deployment ipam.service + the
+# per-function app:<key> tag, PATCHes the lifecycle tag, and now stamps the
+# monitoring metadata frozen in ADR-0038. That still fits the existing
+# service-scoped grant: ipam.service change plus extras.tag view. No writer
+# permission extension is needed for this repo.
+netbox_api_token: "{{ vault_netbox_catalog_token | default(vault_netbox_api_token | default(''), true) }}"
+netbox_service_name: "nmos-cpp"
+netbox_service_tags:
+  - name: "dmf-catalog"
+  - name: "app:nmos-cpp"
+  - name: "exposure:private"
+  - name: "lifecycle:bootstrapped"
+netbox_service_active_tags:
+  - name: "dmf-catalog"
+  - name: "app:nmos-cpp"
+  - name: "exposure:private"
+  - name: "lifecycle:active"
+netbox_service_monitoring_tags:
+  - name: "monitoring:probe"
+netbox_service_monitoring_custom_fields:
+  probe_module: "http_2xx"
+netbox_service_monitoring_custom_fields_clear:
+  probe_module: null

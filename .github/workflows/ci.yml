@@ -1,0 +1,37 @@
+name: ci
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  ansible:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install ansible tooling
+        run: |
+          python3 -m pip install --user --upgrade pip
+          python3 -m pip install --user ansible ansible-lint yamllint
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install collections
+        run: ansible-galaxy collection install -r requirements.yml
+      - name: yamllint
+        run: yamllint playbooks/ roles/
+      - name: ansible-lint
+        run: ansible-lint playbooks/ roles/ -p
+      - name: ansible syntax-check
+        run: |
+          shopt -s nullglob
+          for pb in playbooks/*.yml; do
+            echo "=== syntax-check: $pb ==="
+            ansible-playbook "$pb" --syntax-check
+          done

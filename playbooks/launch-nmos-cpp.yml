@@ -1,0 +1,100 @@
+---
+# NMOS IS-04/05 - Configure: Launch (ADR-0012, ADR-0014, ADR-0025)
+# Runs in-cluster via custom AWX EE (Container Group dmf-catalog-cg).
+# Deploys NMOS Helm chart + flips NetBox tag.
+- name: NMOS-CPP configure - launch workloads
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    nmos_namespace: nmos
+    nmos_cpp_chart_repo: "oci://zot.zot.svc.cluster.local:5000/dmf/charts"
+    nmos_cpp_chart_name: nmos-cpp
+    nmos_cpp_chart_version: "0.1.1"
+  tasks:
+    - name: Include nmos-cpp role (provision stage - NetBox catalog entry)
+      ansible.builtin.include_role:
+        name: nmos-cpp
+      vars:
+        nmos_stage: provision
+
+    - name: Deploy NMOS Helm chart from Zot
+      block:
+        - name: Create temporary NMOS chart directory
+          ansible.builtin.tempfile:
+            state: directory
+            suffix: nmos-cpp-chart
+          register: _nmos_chart_tmp
+          changed_when: false
+
+        - name: Pull NMOS Helm chart from plain-HTTP Zot
+          ansible.builtin.command:
+            argv:
+              - helm
+              - pull
+              - "{{ nmos_cpp_chart_repo }}/{{ nmos_cpp_chart_name }}"
+              - --version
+              - "{{ nmos_cpp_chart_version }}"
+              - --untar
+              - --untardir
+              - "{{ _nmos_chart_tmp.path }}"
+              - --plain-http
+          changed_when: false
+
+        - name: Install or upgrade NMOS Helm release
+          # release_values pins createNamespace: false because the launcher
+          # sets create_namespace: false on the helm action and the chart
+          # would otherwise re-create the templated namespace resource.
+          # Image-repo overrides removed as of chart 0.1.1 — chart defaults
+          # now point at cluster-internal Zot service DNS directly.
+          #
+          # wait: false is intentional. kubernetes.core.helm's --wait
+          # predicate returns a false-negative "Deployment status: Unknown"
+          # for these workloads even when the cluster reports
+          # Available=True. We replace the helm-side wait with an explicit
+          # k8s_info readiness gate below — same effective behaviour, no
+          # false negatives.
+          kubernetes.core.helm:
+            name: nmos-cpp
+            chart_ref: "{{ _nmos_chart_tmp.path }}/{{ nmos_cpp_chart_name }}"
+            release_namespace: "{{ nmos_namespace }}"
+            create_namespace: false
+            release_values:
+              createNamespace: false
+            wait: false
+
+        - name: Wait for NMOS workloads to be Ready
+          # Explicit readiness gate replacing the broken helm --wait
+          # predicate. 30 × 10s = 5min hard cap, matching the old timeout.
+          # Loop covers all chart-managed workload objects (1 StatefulSet
+          # + N Deployments where N = chart's node.count, currently 2).
+          kubernetes.core.k8s_info:
+            api_version: "{{ item.api }}"
+            kind: "{{ item.kind }}"
+            name: "{{ item.name }}"
+            namespace: "{{ nmos_namespace }}"
+          register: _nmos_workload
+          until:
+            - _nmos_workload.resources | length > 0
+            - _nmos_workload.resources[0].status.readyReplicas | default(0) == (_nmos_workload.resources[0].spec.replicas | default(1))
+          retries: 30
+          delay: 10
+          loop:
+            - { api: apps/v1, kind: StatefulSet, name: nmos-cpp-registry }
+            - { api: apps/v1, kind: Deployment, name: nmos-cpp-node-1 }
+            - { api: apps/v1, kind: Deployment, name: nmos-cpp-node-2 }
+          loop_control:
+            label: "{{ item.kind }}/{{ item.name }}"
+      always:
+        - name: Remove temporary NMOS chart directory
+          ansible.builtin.file:
+            path: "{{ _nmos_chart_tmp.path | default('') }}"
+            state: absent
+          changed_when: false
+          when: _nmos_chart_tmp.path is defined
+
+    - name: Include nmos-cpp role (configure stage - flip NetBox tag to active)
+      ansible.builtin.include_role:
+        name: nmos-cpp
+      vars:
+        nmos_stage: configure

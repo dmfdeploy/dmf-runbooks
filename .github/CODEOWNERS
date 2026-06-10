@@ -1,0 +1,14 @@
+# dmf-runbooks — CODEOWNERS
+# Activates on GitHub once branch protection requires reviews.
+
+# Default
+*                              @dmfdeploy/maintainers
+
+# Image-push helper — flows OpenBao admin credentials at runtime
+/roles/*/scripts/              @dmfdeploy/maintainers
+
+# Catalog launcher playbooks (AWX-driven entrypoints)
+/playbooks/                    @dmfdeploy/maintainers
+
+# CI / GitHub workflows
+/.github/                      @dmfdeploy/maintainers

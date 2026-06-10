@@ -1,0 +1,61 @@
+---
+# MXL Fabrics demo - Finalise: Teardown workloads
+# Generic source/view teardown for the split MXL demo functions.
+- name: MXL fabrics demo finalise - teardown workloads
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    mxl_namespace: mxl
+    mxl_release: mxl-videotestsrc
+  tasks:
+    - name: List current MXL Helm releases before teardown
+      ansible.builtin.command:
+        argv:
+          - helm
+          - list
+          - -n
+          - "{{ mxl_namespace }}"
+          - -q
+      register: _mxl_helm_list
+      changed_when: false
+
+    - name: Compute other MXL releases still present
+      ansible.builtin.set_fact:
+        _mxl_other_releases: >-
+          {{
+            _mxl_helm_list.stdout_lines
+            | default([])
+            | reject('equalto', mxl_release)
+            | select('match', '^mxl-')
+            | list
+          }}
+
+    - name: Remove MXL Helm release
+      ansible.builtin.command:
+        argv:
+          - helm
+          - uninstall
+          - "{{ mxl_release }}"
+          - -n
+          - "{{ mxl_namespace }}"
+      changed_when: true
+
+    - name: Remove shared coordinator ConfigMap when this was the last MXL release
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - delete
+          - configmap
+          - mxl-coordinator
+          - -n
+          - "{{ mxl_namespace }}"
+          - --ignore-not-found
+      changed_when: true
+      when: _mxl_other_releases | length == 0
+      # If no other mxl-* releases were present, the shared flow coordinator can
+      # be cleaned up safely. The domain tmpfs dies with the pod emptyDir.
+
+    - name: Note flow-domain cleanup is handled by pod teardown
+      ansible.builtin.debug:
+        msg: "MXL flow domain cleanup is implicit: the pod emptyDir disappears with the Helm release."
