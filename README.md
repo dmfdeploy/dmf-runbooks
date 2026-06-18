@@ -2,6 +2,8 @@
 
 Thin launcher playbooks for DMF Platform catalog entries.
 
+> **New to the project vocabulary?** See the [DMF Glossary](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/GLOSSARY.md) for project-coined terms (umbrella, component repo, …).
+
 > **2026-05-23 — ADR-0025 Lane B landed.** Catalog launchers now run with
 > `connection: local` inside a custom AWX EE pod + `kubernetes.core.helm`
 > against charts in the sibling `dmf-media` repo. SSH-to-control-node
