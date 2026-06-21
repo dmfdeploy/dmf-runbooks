@@ -1,0 +1,54 @@
+---
+# nmos-crosspoint — Finalise stage (ADR-0012, ADR-0025)
+# Helm uninstall owns workload removal. This stage only resets NetBox state.
+
+- name: Get NetBox service records
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/"
+    method: GET
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+      Content-Type: "application/json"
+    body_format: json
+    validate_certs: false
+    return_content: true
+  no_log: true
+  register: netbox_services_result
+
+- name: Find nmos-crosspoint service record
+  ansible.builtin.set_fact:
+    netbox_service_id: "{{ (netbox_services_result.json.results | selectattr('name', 'equalto', netbox_service_name) | list)[0].id }}"
+  no_log: true
+  when: >
+    netbox_services_result.json is defined and
+    netbox_services_result.json.results is defined and
+    (netbox_services_result.json.results | selectattr('name', 'equalto', netbox_service_name) | list) | length > 0
+
+- name: Assert NetBox service exists
+  ansible.builtin.assert:
+    that:
+      - netbox_service_id is defined and netbox_service_id | length > 0
+    fail_msg: "NetBox service '{{ netbox_service_name }}' not found. Did the Provision stage create this service?"
+  no_log: true
+
+- name: Flip NetBox tag to lifecycle:bootstrapped
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/{{ netbox_service_id }}/"
+    method: PATCH
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      tags: "{{ netbox_service_tags }}"
+      custom_fields: "{{ netbox_service_monitoring_custom_fields_clear }}"
+    validate_certs: false
+    status_code: [200]
+  no_log: true
+  when: netbox_service_id is defined
+
+- name: Report teardown complete
+  ansible.builtin.debug:
+    msg: >-
+      nmos-crosspoint Helm release removed by the launcher.
+      NetBox tag reset to lifecycle:bootstrapped.
