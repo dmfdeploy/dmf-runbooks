@@ -1,0 +1,110 @@
+---
+# NMOS Crosspoint - Configure: Launch (ADR-0012, ADR-0014, ADR-0025)
+# Runs in-cluster via custom AWX EE (Container Group dmf-catalog-cg).
+# Deploys the nmos-crosspoint Helm chart + flips the NetBox tag.
+- name: nmos-crosspoint configure - launch workload
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    nmos_namespace: nmos
+    crosspoint_chart_repo: "oci://zot.zot.svc.cluster.local:5000/dmf/charts"
+    crosspoint_chart_name: nmos-crosspoint
+    crosspoint_chart_version: "0.1.0"
+    # IS-04 registry the crosspoint subscribes to (bare hostname; port separate).
+    crosspoint_registry_ip: "nmos-cpp-registry.{{ nmos_namespace }}.svc.cluster.local"
+    crosspoint_registry_port: 80
+    # Private-lane host for the IngressRoute. Override per env via extra_vars.
+    crosspoint_ingress_host: "nmos-xp.dmf.example.com"
+    # Admin password — sourced from OpenBao (AWX credential / extra_vars). The
+    # SHA256 (not the plaintext) is what lands in the rendered users.json Secret.
+    crosspoint_admin_password: "{{ vault_nmos_crosspoint_admin_password | default('', true) }}"
+  tasks:
+    - name: Assert crosspoint admin password was provided (fail closed)
+      ansible.builtin.assert:
+        that:
+          - crosspoint_admin_password | length > 0
+        fail_msg: >-
+          vault_nmos_crosspoint_admin_password is empty. AWX must supply the
+          OpenBao-sourced crosspoint admin password; refusing to deploy with an
+          empty/default credential.
+      no_log: true
+
+    - name: Include nmos-crosspoint role (provision stage - NetBox catalog entry)
+      ansible.builtin.include_role:
+        name: nmos-crosspoint
+      vars:
+        crosspoint_stage: provision
+
+    - name: Deploy nmos-crosspoint Helm chart from Zot
+      block:
+        - name: Create temporary crosspoint chart directory
+          ansible.builtin.tempfile:
+            state: directory
+            suffix: nmos-crosspoint-chart
+          register: _xp_chart_tmp
+          changed_when: false
+
+        - name: Pull crosspoint Helm chart from plain-HTTP Zot
+          ansible.builtin.command:
+            argv:
+              - helm
+              - pull
+              - "{{ crosspoint_chart_repo }}/{{ crosspoint_chart_name }}"
+              - --version
+              - "{{ crosspoint_chart_version }}"
+              - --untar
+              - --untardir
+              - "{{ _xp_chart_tmp.path }}"
+              - --plain-http
+          changed_when: false
+
+        - name: Install or upgrade crosspoint Helm release
+          # createNamespace:false — the namespace already exists (nmos-cpp owns
+          # it). wait:false — replaced by an explicit k8s_info readiness gate
+          # below (kubernetes.core.helm --wait yields false-negative Unknown for
+          # these workloads). adminPasswordSha256 is computed here so the
+          # plaintext never reaches the chart or git.
+          kubernetes.core.helm:
+            name: nmos-crosspoint
+            chart_ref: "{{ _xp_chart_tmp.path }}/{{ crosspoint_chart_name }}"
+            release_namespace: "{{ nmos_namespace }}"
+            create_namespace: false
+            release_values:
+              createNamespace: false
+              registry:
+                ip: "{{ crosspoint_registry_ip }}"
+                port: "{{ crosspoint_registry_port }}"
+              ingress:
+                host: "{{ crosspoint_ingress_host }}"
+              auth:
+                adminPasswordSha256: "{{ crosspoint_admin_password | hash('sha256') }}"
+            wait: false
+
+        - name: Wait for nmos-crosspoint workload to be Ready
+          # Explicit readiness gate replacing the broken helm --wait predicate.
+          # 30 × 10s = 5min hard cap.
+          kubernetes.core.k8s_info:
+            api_version: apps/v1
+            kind: Deployment
+            name: nmos-crosspoint
+            namespace: "{{ nmos_namespace }}"
+          register: _xp_workload
+          until:
+            - _xp_workload.resources | length > 0
+            - _xp_workload.resources[0].status.readyReplicas | default(0) == (_xp_workload.resources[0].spec.replicas | default(1))
+          retries: 30
+          delay: 10
+      always:
+        - name: Remove temporary crosspoint chart directory
+          ansible.builtin.file:
+            path: "{{ _xp_chart_tmp.path | default('') }}"
+            state: absent
+          changed_when: false
+          when: _xp_chart_tmp.path is defined
+
+    - name: Include nmos-crosspoint role (configure stage - flip NetBox tag to active)
+      ansible.builtin.include_role:
+        name: nmos-crosspoint
+      vars:
+        crosspoint_stage: configure

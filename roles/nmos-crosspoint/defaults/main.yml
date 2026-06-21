@@ -1,0 +1,41 @@
+---
+# nmos-crosspoint role defaults
+# Provision + Configure + Finalise stages (ADR-0012, ADR-0025).
+# NetBox-side work only — the Helm chart (dmf-media/charts/nmos-crosspoint) owns
+# the Kubernetes workload.
+nmos_namespace: nmos
+
+# NetBox integration (for the lifecycle tag flip). Default is cluster-internal
+# service DNS per ADR-0023 — the launcher runs in an AWX EE pod inside the
+# cluster (ADR-0025 Lane B). Off-cluster callers override via extra_vars.
+netbox_api_url: "http://netbox.netbox.svc.cluster.local"
+# Single scoped catalog-writer token for every NetBox call (ADR-0032):
+# ipam.service change + extras.tag view.
+netbox_api_token: "{{ vault_netbox_catalog_token | default(vault_netbox_api_token | default(''), true) }}"
+netbox_service_name: "nmos-crosspoint"
+netbox_service_tags:
+  - name: "dmf-catalog"
+  - name: "app:nmos-crosspoint"
+  - name: "exposure:private"
+  - name: "lifecycle:bootstrapped"
+netbox_service_active_tags:
+  - name: "dmf-catalog"
+  - name: "app:nmos-crosspoint"
+  - name: "exposure:private"
+  - name: "lifecycle:active"
+netbox_service_monitoring_tags:
+  - name: "monitoring:probe"
+# ADR-0038 §in-cluster probe: cluster_service/namespace/port make dmf-promsd
+# probe the workload's in-cluster Service directly (plain HTTP) rather than
+# falling back to the ingress address. cluster_port is the Service port (80),
+# not the ingress :443.
+netbox_service_monitoring_custom_fields:
+  probe_module: "http_2xx"
+  cluster_service: "nmos-crosspoint"
+  cluster_namespace: "{{ nmos_namespace }}"
+  cluster_port: 80
+netbox_service_monitoring_custom_fields_clear:
+  probe_module: null
+  cluster_service: null
+  cluster_namespace: null
+  cluster_port: null
