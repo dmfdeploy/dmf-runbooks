@@ -28,7 +28,17 @@ netbox_service_active_tags:
   - name: "lifecycle:active"
 netbox_service_monitoring_tags:
   - name: "monitoring:probe"
+# ADR-0038 §in-cluster probe: cluster_service/namespace/port make dmf-promsd
+# probe the workload's in-cluster Service directly (plain HTTP) rather than
+# falling back to the ingress address. cluster_port is the registry Service
+# port (the chart's nmosConfig.httpPort default, 80), not the ingress :443.
 netbox_service_monitoring_custom_fields:
   probe_module: "http_2xx"
+  cluster_service: "nmos-cpp-registry"
+  cluster_namespace: "{{ nmos_namespace }}"
+  cluster_port: 80
 netbox_service_monitoring_custom_fields_clear:
   probe_module: null
+  cluster_service: null
+  cluster_namespace: null
+  cluster_port: null
