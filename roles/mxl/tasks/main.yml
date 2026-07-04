@@ -1,0 +1,14 @@
+---
+# MXL — Lifecycle dispatcher (ADR-0012)
+# Dispatches to provision, configure, or finalise tasks based on mxl_stage.
+- name: Dispatch to provision stage
+  ansible.builtin.include_tasks: provision.yml
+  when: mxl_stage | default('provision') == 'provision'
+
+- name: Dispatch to configure stage
+  ansible.builtin.include_tasks: configure.yml
+  when: mxl_stage | default('provision') == 'configure'
+
+- name: Dispatch to finalise stage
+  ansible.builtin.include_tasks: finalise.yml
+  when: mxl_stage | default('provision') == 'finalise'

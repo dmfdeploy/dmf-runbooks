@@ -1,0 +1,64 @@
+---
+# MXL role defaults — NetBox catalog lifecycle for the MXL demo functions
+# (mxl-videotestsrc, mxl-videotest-view, mxl-hello). Provision + Configure +
+# Finalise stages, mirroring roles/nmos-cpp (ADR-0012, ADR-0025, ADR-0037 D3,
+# ADR-0038 Amendment A). One role, parameterized per catalog entry via
+# mxl_function_key / mxl_release / mxl_monitoring_enabled.
+mxl_namespace: mxl
+
+# NetBox integration — identical posture to roles/nmos-cpp: cluster-internal
+# service DNS (the launcher runs in an in-cluster AWX EE pod, ADR-0025 Lane B),
+# single scoped catalog-writer token (ADR-0032) for reads and writes.
+netbox_api_url: "http://netbox.netbox.svc.cluster.local"
+netbox_api_token: "{{ vault_netbox_catalog_token | default(vault_netbox_api_token | default(''), true) }}"
+
+# Which catalog entry this run manages: service name + app:<key> tag.
+mxl_function_key: mxl-videotestsrc
+# Helm release name — also the per-release status Service name the chart
+# renders, which is exactly what ADR-0038 Amendment A stamps as cluster_service.
+mxl_release: "{{ mxl_function_key }}"
+mxl_service_description: "DMF catalog: MXL demo function {{ mxl_function_key }}"
+# The status sidecar port — the probe + console live-view surface.
+mxl_service_ports: [9000]
+mxl_cluster_port: 9000
+mxl_probe_path: "/status"
+# mxl-hello has no status sidecar/Service — set false there to skip the
+# monitoring:probe tag + cluster_*/probe_* stamping entirely.
+mxl_monitoring_enabled: true
+
+# Parent for the ipam.Service generic relation — the LB device, following the
+# dmf-born-inventory / nmos-cpp convention for catalog app services.
+netbox_service_parent_device: dmf-traefik
+
+netbox_service_name: "{{ mxl_function_key }}"
+netbox_service_tags:
+  - name: "dmf-catalog"
+  - name: "app:{{ mxl_function_key }}"
+  - name: "exposure:private"
+  - name: "lifecycle:bootstrapped"
+netbox_service_active_tags:
+  - name: "dmf-catalog"
+  - name: "app:{{ mxl_function_key }}"
+  - name: "exposure:private"
+  - name: "lifecycle:active"
+netbox_service_monitoring_tags: >-
+  {{ [{'name': 'monitoring:probe'}] if mxl_monitoring_enabled else [] }}
+# ADR-0038 Amendment A cluster coords + Amendment B probe_path: dmf-promsd
+# probes http://<cluster_service>.<cluster_namespace>:<cluster_port><probe_path>
+# — the chart's per-release status Service serving /status (JSON 200).
+netbox_service_monitoring_custom_fields: >-
+  {{
+    {
+      'probe_module': 'http_2xx',
+      'probe_path': mxl_probe_path,
+      'cluster_service': mxl_release,
+      'cluster_namespace': mxl_namespace,
+      'cluster_port': mxl_cluster_port,
+    } if mxl_monitoring_enabled else {}
+  }}
+netbox_service_monitoring_custom_fields_clear:
+  probe_module: null
+  probe_path: null
+  cluster_service: null
+  cluster_namespace: null
+  cluster_port: null

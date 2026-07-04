@@ -19,24 +19,18 @@
           - "{{ mxl_namespace }}"
       changed_when: true
 
-    - name: Check if MXL namespace has remaining workloads
-      kubernetes.core.k8s_info:
-        api_version: apps/v1
-        kind: Deployment
-        namespace: "{{ mxl_namespace }}"
-      register: _mxl_deployments
-      ignore_errors: true
-
-    - name: Remove MXL namespace when empty
-      kubernetes.core.k8s:
-        api_version: v1
-        kind: Namespace
-        name: "{{ mxl_namespace }}"
-        state: absent
-      when:
-        - _mxl_deployments.resources is defined
-        - _mxl_deployments.resources | length == 0
+    # The mxl namespace stays: dmf-infra awx-integration owns it (it carries
+    # the launcher RBAC), and namespace deletion is cluster-scoped anyway.
 
     - name: Note flow-domain cleanup is handled by pod teardown
       ansible.builtin.debug:
         msg: "MXL flow domain cleanup is implicit: the pod emptyDir disappears with the Helm release."
+
+    - name: Include mxl role (finalise stage - reset NetBox catalog entry)
+      ansible.builtin.include_role:
+        name: mxl
+      vars:
+        mxl_stage: finalise
+        mxl_function_key: mxl-hello
+        mxl_monitoring_enabled: false
+        mxl_service_ports: []

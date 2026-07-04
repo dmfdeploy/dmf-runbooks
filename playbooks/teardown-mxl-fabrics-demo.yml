@@ -8,6 +8,7 @@
   vars:
     mxl_namespace: mxl
     mxl_release: mxl-videotestsrc
+    mxl_function_key: "{{ mxl_release }}"
   tasks:
     - name: List current MXL Helm releases before teardown
       ansible.builtin.command:
@@ -59,3 +60,9 @@
     - name: Note flow-domain cleanup is handled by pod teardown
       ansible.builtin.debug:
         msg: "MXL flow domain cleanup is implicit: the pod emptyDir disappears with the Helm release."
+
+    - name: Include mxl role (finalise stage - reset NetBox, clear monitoring stamps)
+      ansible.builtin.include_role:
+        name: mxl
+      vars:
+        mxl_stage: finalise
