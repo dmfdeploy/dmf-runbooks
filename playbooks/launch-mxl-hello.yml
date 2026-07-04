@@ -14,9 +14,10 @@
     mxl_chart_local: ""
     mxl_function_key: mxl-hello
     # mxl-hello has no status sidecar/Service: catalog record only, no
-    # monitoring:probe tag and no cluster_*/probe_* stamps.
+    # monitoring:probe tag and no cluster_*/probe_* stamps. The record still
+    # carries the role-default port ([9000]) — NetBox rejects an ipam.Service
+    # with an empty ports list, and without the probe tag nothing probes it.
     mxl_monitoring_enabled: false
-    mxl_service_ports: []
   tasks:
     - name: Include mxl role (provision stage - NetBox catalog entry)
       ansible.builtin.include_role:
