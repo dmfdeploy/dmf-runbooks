@@ -10,7 +10,7 @@
     mxl_role: source
     mxl_release: mxl-videotestsrc
     mxl_interface: eth0
-    mxl_image_tag: v1.0.3-fabrics-dev
+    mxl_image_tag: v1.0.3
     mxl_chart_ref: "oci://zot.zot.svc.cluster.local:5000/dmf/charts/mxl-fabrics-demo"
     mxl_chart_version: "0.1.0"
     mxl_chart_local: ""
