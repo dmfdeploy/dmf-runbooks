@@ -11,17 +11,41 @@
     mxl_release: mxl-videotestsrc
     mxl_interface: eth0
     mxl_image_tag: v1.0.3
-    mxl_chart_ref: "oci://zot.zot.svc.cluster.local:5000/dmf/charts/mxl-fabrics-demo"
-    mxl_chart_version: "0.1.0"
+    # Base chart repository — the pull task appends {{ mxl_chart_name }}.
+    # (Was the full chart ref, which doubled the name in the pull URL and
+    # could never resolve — latent since the chart was never published.)
+    mxl_chart_ref: "oci://zot.zot.svc.cluster.local:5000/dmf/charts"
+    mxl_chart_version: "0.2.0"
     mxl_chart_local: ""
     mxl_chart_name: mxl-fabrics-demo
+    # single-node = colocated pair on one node over the pod network;
+    # split-node = the original cross-host hostNetwork shape (chart default).
+    # AWX JT extra_vars derive this from the env release profile.
+    mxl_placement_mode: split-node
+    # The chart's node-reader ClusterRole/Binding are cluster-scoped; the
+    # namespaced catalog launcher cannot create them. Platform bootstrap
+    # (awx-integration) pre-creates the equivalent, so the AWX lane launches
+    # with false. Set true only for standalone out-of-cluster helm use.
+    mxl_node_access_create: false
+    mxl_function_key: "{{ mxl_release }}"
   tasks:
-    - name: Ensure MXL namespace exists
-      kubernetes.core.k8s:
-        api_version: v1
-        kind: Namespace
-        name: "{{ mxl_namespace }}"
-        state: present
+    - name: Assert single-node runs ride the pod interface
+      ansible.builtin.assert:
+        that:
+          - mxl_placement_mode != 'single-node' or mxl_interface == 'eth0'
+        fail_msg: >-
+          single-node placement expects mxl_interface=eth0 (the pod NIC);
+          override deliberately only if you know the CNI names it differently.
+
+    - name: Include mxl role (provision stage - NetBox catalog entry)
+      ansible.builtin.include_role:
+        name: mxl
+      vars:
+        mxl_stage: provision
+
+    # The mxl namespace (and the launcher's RBAC inside it) is pre-created by
+    # dmf-infra awx-integration — namespaces are cluster-scoped and the
+    # namespaced catalog launcher can neither create nor read them.
 
     - name: Ensure shared MXL coordinator ConfigMap exists
       kubernetes.core.k8s_info:
@@ -86,6 +110,10 @@
               - fabrics.interface={{ mxl_interface }}
               - --set
               - image.tag={{ mxl_image_tag }}
+              - --set
+              - placementMode={{ mxl_placement_mode }}
+              - --set
+              - nodeAccess.create={{ mxl_node_access_create | bool | lower }}
           changed_when: true
 
         - name: Wait for MXL workload to be Ready
@@ -107,3 +135,9 @@
             state: absent
           changed_when: false
           when: _mxl_chart_tmp.path is defined
+
+    - name: Include mxl role (configure stage - flip NetBox to active)
+      ansible.builtin.include_role:
+        name: mxl
+      vars:
+        mxl_stage: configure

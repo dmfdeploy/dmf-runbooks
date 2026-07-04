@@ -1,0 +1,136 @@
+---
+# MXL — Provision stage (ADR-0012)
+# Ensures the NetBox catalog artifact is registered without launching the
+# workload. Mirrors roles/nmos-cpp/tasks/provision.yml (tag taxonomy ensure,
+# LB-device generic relation, idempotent create-then-patch).
+
+- name: "Build deduped list of tag names referenced by {{ mxl_function_key }}"
+  ansible.builtin.set_fact:
+    _mxl_all_tag_names: >-
+      {{
+        (netbox_service_tags + netbox_service_active_tags + netbox_service_monitoring_tags)
+        | map(attribute='name') | list | unique
+      }}
+
+- name: Fetch existing NetBox tags (paginated, single page sufficient for our scale)
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/extras/tags/?limit=200"
+    method: GET
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+    validate_certs: false
+    return_content: true
+  no_log: true
+  register: _mxl_existing_tags
+
+- name: Compute set of existing tag names
+  ansible.builtin.set_fact:
+    _mxl_existing_tag_names: "{{ _mxl_existing_tags.json.results | map(attribute='name') | list }}"
+  no_log: true
+
+- name: Create missing NetBox tags
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/extras/tags/"
+    method: POST
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      name: "{{ item }}"
+      slug: "{{ item | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('^-+|-+$', '') }}"
+      color: "4caf50"
+      description: "DMF catalog tag (auto-created by mxl provision)"
+    validate_certs: false
+    status_code: [201]
+  loop: "{{ _mxl_all_tag_names | difference(_mxl_existing_tag_names) }}"
+  no_log: true
+
+- name: Look up load-balancer device in NetBox
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/dcim/devices/?name={{ netbox_service_parent_device }}"
+    method: GET
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+    validate_certs: false
+    return_content: true
+  no_log: true
+  register: _mxl_lb_lookup
+
+- name: Set NetBox load-balancer device id fact
+  ansible.builtin.set_fact:
+    _mxl_lb_device_id: "{{ (_mxl_lb_lookup.json.results | first).id }}"
+  when: _mxl_lb_lookup.json.results | length > 0
+  no_log: true
+
+- name: "Assert {{ netbox_service_parent_device }} device exists in NetBox"
+  ansible.builtin.assert:
+    that: _mxl_lb_device_id is defined
+    fail_msg: "NetBox device '{{ netbox_service_parent_device }}' not found. Run 694-born-inventory to register the load balancer."
+  no_log: true
+
+- name: "Look up existing {{ mxl_function_key }} service in NetBox"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/?name={{ netbox_service_name | urlencode }}"
+    method: GET
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+    validate_certs: false
+    return_content: true
+  no_log: true
+  register: _mxl_service_lookup
+
+- name: "Set existing {{ mxl_function_key }} service id fact"
+  ansible.builtin.set_fact:
+    mxl_netbox_service_id: "{{ (_mxl_service_lookup.json.results | first | default({})).id | default(0) }}"
+  no_log: true
+
+- name: "Create {{ mxl_function_key }} service in NetBox (lifecycle:bootstrapped)"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/"
+    method: POST
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      name: "{{ netbox_service_name }}"
+      protocol: "tcp"
+      ports: "{{ mxl_service_ports }}"
+      parent_object_type: dcim.device
+      parent_object_id: "{{ _mxl_lb_device_id }}"
+      description: "{{ mxl_service_description }}"
+      tags: "{{ netbox_service_tags + netbox_service_monitoring_tags }}"
+      custom_fields: "{{ netbox_service_monitoring_custom_fields }}"
+    validate_certs: false
+    status_code: [201]
+  no_log: true
+  register: _mxl_service_create_result
+  when: mxl_netbox_service_id | int == 0
+
+- name: "Set created {{ mxl_function_key }} service id fact"
+  ansible.builtin.set_fact:
+    mxl_netbox_service_id: "{{ _mxl_service_create_result.json.id }}"
+  no_log: true
+  when:
+    - _mxl_service_create_result is defined
+    - _mxl_service_create_result.json is defined
+    - _mxl_service_create_result.json.id is defined
+
+- name: "Ensure {{ mxl_function_key }} service carries monitoring metadata"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/{{ mxl_netbox_service_id }}/"
+    method: PATCH
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      tags: "{{ netbox_service_tags + netbox_service_monitoring_tags }}"
+      custom_fields: "{{ netbox_service_monitoring_custom_fields }}"
+    validate_certs: false
+    status_code: [200]
+  no_log: true
+  when:
+    - mxl_netbox_service_id is defined
+    - mxl_netbox_service_id | int > 0

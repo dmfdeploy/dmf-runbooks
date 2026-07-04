@@ -1,0 +1,48 @@
+---
+# MXL - Configure stage (ADR-0012, ADR-0025)
+# Helm owns the Kubernetes workload. This stage only flips NetBox to active
+# (and re-asserts the monitoring stamp — idempotent).
+
+- name: "Look up {{ mxl_function_key }} service in NetBox"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/?name={{ netbox_service_name | urlencode }}"
+    method: GET
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+    validate_certs: false
+    return_content: true
+  no_log: true
+  register: _mxl_service_lookup
+
+- name: "Set {{ mxl_function_key }} service id fact"
+  ansible.builtin.set_fact:
+    mxl_netbox_service_id: "{{ (_mxl_service_lookup.json.results | first | default({})).id | default(0) }}"
+  no_log: true
+
+- name: Assert NetBox service exists
+  ansible.builtin.assert:
+    that:
+      - mxl_netbox_service_id | int > 0
+    fail_msg: "NetBox service '{{ netbox_service_name }}' not found. Did the Provision stage create this service?"
+  no_log: true
+
+- name: Flip NetBox tag to lifecycle:active
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/{{ mxl_netbox_service_id }}/"
+    method: PATCH
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      tags: "{{ netbox_service_active_tags + netbox_service_monitoring_tags }}"
+      custom_fields: "{{ netbox_service_monitoring_custom_fields }}"
+    validate_certs: false
+    status_code: [200]
+  no_log: true
+
+- name: Report configure complete
+  ansible.builtin.debug:
+    msg: >-
+      MXL Helm release {{ mxl_release }} active in namespace {{ mxl_namespace }}.
+      NetBox tag flipped to lifecycle:active.

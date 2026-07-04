@@ -9,16 +9,24 @@
     mxl_namespace: mxl
     mxl_release: mxl-hello
     mxl_chart_name: mxl-hello
-    mxl_chart_version: "0.1.0"
+    mxl_chart_version: "0.1.1"
     mxl_chart_ref: "oci://zot.zot.svc.cluster.local:5000/dmf/charts/mxl-hello"
     mxl_chart_local: ""
+    mxl_function_key: mxl-hello
+    # mxl-hello has no status sidecar/Service: catalog record only, no
+    # monitoring:probe tag and no cluster_*/probe_* stamps.
+    mxl_monitoring_enabled: false
+    mxl_service_ports: []
   tasks:
-    - name: Ensure MXL namespace exists
-      kubernetes.core.k8s:
-        api_version: v1
-        kind: Namespace
-        name: "{{ mxl_namespace }}"
-        state: present
+    - name: Include mxl role (provision stage - NetBox catalog entry)
+      ansible.builtin.include_role:
+        name: mxl
+      vars:
+        mxl_stage: provision
+
+    # The mxl namespace (and the launcher's RBAC inside it) is pre-created by
+    # dmf-infra awx-integration — namespaces are cluster-scoped and the
+    # namespaced catalog launcher can neither create nor read them.
 
     - name: Deploy MXL Hello Helm chart from Zot or local path
       block:
@@ -78,3 +86,9 @@
             state: absent
           changed_when: false
           when: _mxl_chart_tmp.path is defined
+
+    - name: Include mxl role (configure stage - flip NetBox to active)
+      ansible.builtin.include_role:
+        name: mxl
+      vars:
+        mxl_stage: configure
