@@ -33,4 +33,3 @@
         mxl_stage: finalise
         mxl_function_key: mxl-hello
         mxl_monitoring_enabled: false
-        mxl_service_ports: []
