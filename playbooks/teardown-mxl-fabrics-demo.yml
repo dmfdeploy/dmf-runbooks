@@ -40,19 +40,25 @@
           - "{{ mxl_release }}"
           - -n
           - "{{ mxl_namespace }}"
-      changed_when: true
+      register: _mxl_uninstall
+      changed_when: "'release: not found' not in (_mxl_uninstall.stderr | default(''))"
+      # Tolerate an already-gone release so a finalise re-run after a partial
+      # failure (e.g. job #164: teardown died between uninstall and the NetBox
+      # flip) can converge instead of dying at this step.
+      failed_when:
+        - _mxl_uninstall.rc != 0
+        - "'release: not found' not in (_mxl_uninstall.stderr | default(''))"
 
     - name: Remove shared coordinator ConfigMap when this was the last MXL release
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - delete
-          - configmap
-          - mxl-coordinator
-          - -n
-          - "{{ mxl_namespace }}"
-          - --ignore-not-found
-      changed_when: true
+      # kubernetes.core.k8s, NOT a kubectl shell-out — the catalog EE image
+      # carries helm + the k8s collection but no kubectl binary (job #164
+      # failed exactly here the first time this last-release path ran live).
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: ConfigMap
+        name: mxl-coordinator
+        namespace: "{{ mxl_namespace }}"
+        state: absent
       when: _mxl_other_releases | length == 0
       # If no other mxl-* releases were present, the shared flow coordinator can
       # be cleaned up safely. The domain tmpfs dies with the pod emptyDir.

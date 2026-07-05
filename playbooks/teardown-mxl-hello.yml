@@ -17,7 +17,13 @@
           - "{{ mxl_release }}"
           - -n
           - "{{ mxl_namespace }}"
-      changed_when: true
+      register: _mxl_uninstall
+      changed_when: "'release: not found' not in (_mxl_uninstall.stderr | default(''))"
+      # Tolerate an already-gone release so a finalise re-run after a partial
+      # failure can converge (same hardening as teardown-mxl-fabrics-demo).
+      failed_when:
+        - _mxl_uninstall.rc != 0
+        - "'release: not found' not in (_mxl_uninstall.stderr | default(''))"
 
     # The mxl namespace stays: dmf-infra awx-integration owns it (it carries
     # the launcher RBAC), and namespace deletion is cluster-scoped anyway.
