@@ -35,6 +35,8 @@ jobs:
             echo "=== syntax-check: $pb ==="
             ansible-playbook "$pb" --syntax-check
           done
+      - name: tag-preservation survival test (ADR-0046)
+        run: ansible-playbook tests/tag-preservation.yml
 
   working-model:
     # Working-model block sync (umbrella issue dmfdeploy/dmfdeploy#32): the

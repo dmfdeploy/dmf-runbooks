@@ -1,0 +1,31 @@
+---
+# ADR-0046 decision 4 — owned-set / tag-preservation merge.
+#
+# Inputs (caller must set these facts before invoking):
+#   _current_tags   — list of tag objects from the existing NetBox service
+#                     record (each {"name": "<n>"} dict).  May be empty or
+#                     undefined for a brand-new service.
+#   _owned_desired  — list of {name: <n>} dicts representing the tag set this
+#                     stage wants to own (lifecycle + statics + monitoring as
+#                     applicable).
+#
+# Output:
+#   _merged_tags    — de-duplicated list of {name: <n>} dicts safe to send as
+#                     the PATCH body "tags" field.  Non-owned tag NAMES from
+#                     _current_tags are preserved (membership only — the full
+#                     NetBox tag response dicts are NOT carried through);
+#                     owned tags are replaced wholesale by _owned_desired.
+#
+# Owned namespace (ADR-0046 §4):
+#   dmf-catalog, app:*, exposure:*, lifecycle:*, monitoring:*
+
+- name: Merge owned tags — preserve non-owned (ADR-0046 decision 4)
+  ansible.builtin.set_fact:
+    _merged_tags: >-
+      {{
+        _current_tags | default([])
+        | merge_owned_tags(
+            _netbox_owned_namespace,
+            _owned_desired | default([])
+          )
+      }}
