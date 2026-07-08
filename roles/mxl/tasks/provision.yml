@@ -117,6 +117,22 @@
     - _mxl_service_create_result.json is defined
     - _mxl_service_create_result.json.id is defined
 
+# ── ADR-0046 decision 4: merge tags to preserve non-owned (workload:*) ──
+- name: Extract current tags from existing mxl service for merge
+  ansible.builtin.set_fact:
+    _current_tags: "{{ (_mxl_service_lookup.json.results | first | default({})).tags | default([]) }}"
+  no_log: true
+
+- name: Set desired owned tags for provision ensure-monitoring PATCH
+  ansible.builtin.set_fact:
+    _owned_desired: "{{ netbox_service_tags + netbox_service_monitoring_tags }}"
+  no_log: true
+
+- name: Merge tags preserving non-owned (ADR-0046 decision 4)
+  ansible.builtin.include_role:
+    name: netbox_catalog_common
+    tasks_from: merge_owned_tags
+
 - name: "Ensure {{ mxl_function_key }} service carries monitoring metadata"
   ansible.builtin.uri:
     url: "{{ netbox_api_url }}/api/ipam/services/{{ mxl_netbox_service_id }}/"
@@ -126,7 +142,7 @@
       Content-Type: "application/json"
     body_format: json
     body:
-      tags: "{{ netbox_service_tags + netbox_service_monitoring_tags }}"
+      tags: "{{ _merged_tags }}"
       custom_fields: "{{ netbox_service_monitoring_custom_fields }}"
     validate_certs: false
     status_code: [200]

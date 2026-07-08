@@ -1,0 +1,91 @@
+---
+# ADR-0046 decision 4 — discriminating tag-preservation survival test.
+#
+# Exercises the merge_owned_tags logic through the actual Ansible role
+# interface (include_role netbox_catalog_common, tasks_from merge_owned_tags)
+# with synthetic NetBox tag data — no live cluster required.
+#
+# MUST FAIL against the old blind-overwrite behaviour (where PATCH sends a
+# fixed tag list, erasing workload:*) and PASS against the merge.
+#
+# Coverage: both mxl-videotestsrc and mxl-videotest-view parameterizations,
+# all three stage transitions (provision → configure → finalise).
+#
+# Run:  ansible-playbook tests/tag-preservation.yml
+
+- name: "ADR-0046 tag-preservation survival test"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    # Synthetic current tags representing a service that already carries
+    # workload:videotest (stamped by the workload/design layer, not the
+    # launcher) plus the full owned set from a previous lifecycle.
+    _synthetic_current_provision:
+      - name: workload:videotest
+      - name: dmf-catalog
+      - name: "app:{{ _test_function_key }}"
+      - name: "exposure:private"
+      - name: "lifecycle:bootstrapped"
+
+    _synthetic_current_configure:
+      - name: workload:videotest
+      - name: dmf-catalog
+      - name: "app:{{ _test_function_key }}"
+      - name: "exposure:private"
+      - name: "lifecycle:bootstrapped"
+      - name: "monitoring:probe"
+
+    _synthetic_current_finalise:
+      - name: workload:videotest
+      - name: dmf-catalog
+      - name: "app:{{ _test_function_key }}"
+      - name: "exposure:private"
+      - name: "lifecycle:active"
+      - name: "monitoring:probe"
+
+    # Desired owned tags per stage (what the launcher would send).
+    _desired_provision:
+      - name: dmf-catalog
+      - name: "app:{{ _test_function_key }}"
+      - name: "exposure:private"
+      - name: "lifecycle:bootstrapped"
+      - name: "monitoring:probe"
+
+    _desired_configure:
+      - name: dmf-catalog
+      - name: "app:{{ _test_function_key }}"
+      - name: "exposure:private"
+      - name: "lifecycle:active"
+      - name: "monitoring:probe"
+
+    _desired_finalise:
+      - name: dmf-catalog
+      - name: "app:{{ _test_function_key }}"
+      - name: "exposure:private"
+      - name: "lifecycle:bootstrapped"
+
+  tasks:
+    # Load the role to make its filter_plugins and defaults available.
+    - name: Load netbox_catalog_common role (filter plugins + defaults)
+      ansible.builtin.include_role:
+        name: netbox_catalog_common
+
+    # ── mxl-videotestsrc ──────────────────────────────────────────────────
+    - name: "Test mxl-videotestsrc — provision→configure→finalise"
+      ansible.builtin.include_tasks: _tag-preservation-scenario.yml
+      vars:
+        _test_function_key: mxl-videotestsrc
+
+    # ── mxl-videotest-view ────────────────────────────────────────────────
+    - name: "Test mxl-videotest-view — provision→configure→finalise"
+      ansible.builtin.include_tasks: _tag-preservation-scenario.yml
+      vars:
+        _test_function_key: mxl-videotest-view
+
+    - name: ALL TAG-PRESERVATION TESTS PASSED
+      ansible.builtin.debug:
+        msg: >-
+          workload:videotest survived provision→configure→finalise for both
+          mxl-videotestsrc and mxl-videotest-view. ADR-0046 decision 4 verified.

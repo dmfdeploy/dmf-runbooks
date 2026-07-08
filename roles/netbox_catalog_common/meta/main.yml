@@ -1,0 +1,13 @@
+---
+galaxy_info:
+  role_name: netbox_catalog_common
+  author: dmfdeploy
+  description: >-
+    Shared utilities for DMF catalog launcher roles — tag-merge logic
+    implementing the ADR-0046 owned-set / tag-preservation algorithm.
+  license: Apache-2.0
+  min_ansible_version: "2.14"
+  platforms:
+    - name: GenericLinux
+      versions: [all]
+dependencies: []

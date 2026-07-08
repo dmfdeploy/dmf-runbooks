@@ -1,0 +1,6 @@
+---
+# This role has no default entry point — callers invoke individual task files
+# via include_role tasks_from, e.g.:
+#   include_role:
+#     name: netbox_catalog_common
+#     tasks_from: merge_owned_tags

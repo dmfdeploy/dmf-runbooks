@@ -1,0 +1,99 @@
+---
+# Shared scenario block — included once per function-key parameterization.
+# Expects _test_function_key to be set by the caller.
+
+# ── Provision stage (re-provision: service exists with workload:videotest) ──
+- name: "[{{ _test_function_key }}] provision — merge"
+  ansible.builtin.set_fact:
+    _current_tags: "{{ _synthetic_current_provision }}"
+    _owned_desired: "{{ _desired_provision }}"
+
+- name: "[{{ _test_function_key }}] provision — call merge"
+  ansible.builtin.include_role:
+    name: netbox_catalog_common
+    tasks_from: merge_owned_tags
+
+- name: "[{{ _test_function_key }}] provision — extract result names"
+  ansible.builtin.set_fact:
+    _prov_names: "{{ _merged_tags | map(attribute='name') | list }}"
+
+- name: "[{{ _test_function_key }}] provision — assertions"
+  ansible.builtin.assert:
+    that:
+      - "'workload:videotest' in _prov_names"
+      - "'lifecycle:bootstrapped' in _prov_names"
+      - "'monitoring:probe' in _prov_names"
+      - "'dmf-catalog' in _prov_names"
+      - "'exposure:private' in _prov_names"
+      - _prov_names | length == _prov_names | unique | length
+    fail_msg: >-
+      PROVISION FAIL for {{ _test_function_key }}:
+      workload:videotest must survive, lifecycle:bootstrapped + monitoring:probe
+      must be present, no duplicates. Got: {{ _prov_names }}
+
+# ── Configure stage ─────────────────────────────────────────────────────────
+- name: "[{{ _test_function_key }}] configure — merge"
+  ansible.builtin.set_fact:
+    _current_tags: "{{ _synthetic_current_configure }}"
+    _owned_desired: "{{ _desired_configure }}"
+
+- name: "[{{ _test_function_key }}] configure — call merge"
+  ansible.builtin.include_role:
+    name: netbox_catalog_common
+    tasks_from: merge_owned_tags
+
+- name: "[{{ _test_function_key }}] configure — extract result names"
+  ansible.builtin.set_fact:
+    _conf_names: "{{ _merged_tags | map(attribute='name') | list }}"
+
+- name: "[{{ _test_function_key }}] configure — assertions"
+  ansible.builtin.assert:
+    that:
+      - "'workload:videotest' in _conf_names"
+      - "'lifecycle:active' in _conf_names"
+      - "'lifecycle:bootstrapped' not in _conf_names"
+      - "'monitoring:probe' in _conf_names"
+      - "'dmf-catalog' in _conf_names"
+      - "'exposure:private' in _conf_names"
+      - _conf_names | length == _conf_names | unique | length
+    fail_msg: >-
+      CONFIGURE FAIL for {{ _test_function_key }}:
+      workload:videotest must survive, exactly lifecycle:active (not
+      bootstrapped), monitoring:probe present, no duplicates.
+      Got: {{ _conf_names }}
+
+# ── Finalise stage ──────────────────────────────────────────────────────────
+- name: "[{{ _test_function_key }}] finalise — merge"
+  ansible.builtin.set_fact:
+    _current_tags: "{{ _synthetic_current_finalise }}"
+    _owned_desired: "{{ _desired_finalise }}"
+
+- name: "[{{ _test_function_key }}] finalise — call merge"
+  ansible.builtin.include_role:
+    name: netbox_catalog_common
+    tasks_from: merge_owned_tags
+
+- name: "[{{ _test_function_key }}] finalise — extract result names"
+  ansible.builtin.set_fact:
+    _fin_names: "{{ _merged_tags | map(attribute='name') | list }}"
+
+- name: "[{{ _test_function_key }}] finalise — assertions"
+  ansible.builtin.assert:
+    that:
+      - "'workload:videotest' in _fin_names"
+      - "'lifecycle:bootstrapped' in _fin_names"
+      - "'lifecycle:active' not in _fin_names"
+      - "'monitoring:probe' not in _fin_names"
+      - "'dmf-catalog' in _fin_names"
+      - "'exposure:private' in _fin_names"
+      - _fin_names | length == _fin_names | unique | length
+    fail_msg: >-
+      FINALISE FAIL for {{ _test_function_key }}:
+      workload:videotest must survive, exactly lifecycle:bootstrapped (not
+      active), monitoring:probe must be absent, no duplicates.
+      Got: {{ _fin_names }}
+
+- name: "[{{ _test_function_key }}] scenario complete"
+  ansible.builtin.debug:
+    msg: >-
+      {{ _test_function_key }}: workload:videotest survived all three stages.
