@@ -1,6 +1,6 @@
 ---
 # MXL role defaults — NetBox catalog lifecycle for the MXL demo functions
-# (mxl-videotestsrc, mxl-videotest-view, mxl-hello). Provision + Configure +
+# (mxl-videotestsrc, mxl-videotest-view). Provision + Configure +
 # Finalise stages, mirroring roles/nmos-cpp (ADR-0012, ADR-0025, ADR-0037 D3,
 # ADR-0038 Amendment A). One role, parameterized per catalog entry via
 # mxl_function_key / mxl_release / mxl_monitoring_enabled.
@@ -22,8 +22,6 @@ mxl_service_description: "DMF catalog: MXL demo function {{ mxl_function_key }}"
 mxl_service_ports: [9000]
 mxl_cluster_port: 9000
 mxl_probe_path: "/status"
-# mxl-hello has no status sidecar/Service — set false there to skip the
-# monitoring:probe tag + cluster_*/probe_* stamping entirely.
 mxl_monitoring_enabled: true
 
 # Parent for the ipam.Service generic relation — the LB device, following the
