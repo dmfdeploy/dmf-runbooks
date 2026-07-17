@@ -1,0 +1,204 @@
+---
+# #239 workload-tag stamping — exercises the _extra_owned_prefixes mechanism
+# merge_owned_tags.yml gained for #239, through the same real interface
+# tag-preservation.yml already proves (include_role netbox_catalog_common,
+# tasks_from merge_owned_tags) — no live cluster required.
+#
+# _extra_owned_prefixes is passed as an include-scoped `vars:` on the merge
+# include_role call (mirroring the real provision.yml wiring), NEVER as a
+# set_fact — see merge_owned_tags.yml's header and the sequencing scenario
+# below for why (fix-round P1, codex GATE-239RB).
+
+# ── A run WITH workload_slug set: single-workload-wins ─────────────────────
+- name: "[workload-tag] provision — merge with workload_slug set (single-workload-wins)"
+  ansible.builtin.set_fact:
+    _current_tags:
+      - name: workload:old-slug
+      - name: dmf-catalog
+      - name: "app:mxl-videotest-view"
+      - name: "exposure:private"
+      - name: "lifecycle:bootstrapped"
+    _owned_desired:
+      - name: dmf-catalog
+      - name: "app:mxl-videotest-view"
+      - name: "exposure:private"
+      - name: "lifecycle:bootstrapped"
+      - name: "monitoring:probe"
+      - name: workload:new-slug
+
+- name: "[workload-tag] provision — call merge (vars:, mirrors real provision.yml)"
+  ansible.builtin.include_role:
+    name: netbox_catalog_common
+    tasks_from: merge_owned_tags
+  vars:
+    _extra_owned_prefixes:
+      - "workload:"
+
+- name: "[workload-tag] provision — extract result names"
+  ansible.builtin.set_fact:
+    _wl_prov_names: "{{ _merged_tags | map(attribute='name') | list }}"
+
+- name: "[workload-tag] provision — assertions (single-workload-wins)"
+  ansible.builtin.assert:
+    that:
+      - "'workload:new-slug' in _wl_prov_names"
+      - "'workload:old-slug' not in _wl_prov_names"
+      - "'dmf-catalog' in _wl_prov_names"
+      - "'lifecycle:bootstrapped' in _wl_prov_names"
+      - "'monitoring:probe' in _wl_prov_names"
+      - _wl_prov_names | length == _wl_prov_names | unique | length
+    fail_msg: >-
+      WORKLOAD-TAG FAIL: workload:new-slug must replace workload:old-slug
+      when _extra_owned_prefixes includes 'workload:' (single-workload-wins,
+      #239). Got: {{ _wl_prov_names }}
+
+# ── Regression: a run WITHOUT _extra_owned_prefixes (the default — no
+#    workload_slug this run) must preserve an existing workload:* tag
+#    untouched — the same guarantee tag-preservation.yml proves for
+#    workload:videotest, pinned again here for locality with the #239 change
+#    to merge_owned_tags.yml. ──
+- name: "[workload-tag] no extra_owned_prefixes — merge (regression: workload:* preserved by default)"
+  ansible.builtin.set_fact:
+    _current_tags:
+      - name: workload:old-slug
+      - name: dmf-catalog
+      - name: "lifecycle:bootstrapped"
+    _owned_desired:
+      - name: dmf-catalog
+      - name: "lifecycle:bootstrapped"
+      - name: "monitoring:probe"
+
+- name: "[workload-tag] no extra_owned_prefixes — call merge (no vars: at all)"
+  ansible.builtin.include_role:
+    name: netbox_catalog_common
+    tasks_from: merge_owned_tags
+
+- name: "[workload-tag] no extra_owned_prefixes — extract result names"
+  ansible.builtin.set_fact:
+    _wl_noop_names: "{{ _merged_tags | map(attribute='name') | list }}"
+
+- name: "[workload-tag] no extra_owned_prefixes — assertions (bit-identical no-op)"
+  ansible.builtin.assert:
+    that:
+      - "'workload:old-slug' in _wl_noop_names"
+      - "'dmf-catalog' in _wl_noop_names"
+      - "'lifecycle:bootstrapped' in _wl_noop_names"
+      - "'monitoring:probe' in _wl_noop_names"
+      - _wl_noop_names | length == _wl_noop_names | unique | length
+    fail_msg: >-
+      WORKLOAD-TAG REGRESSION FAIL: with no _extra_owned_prefixes,
+      workload:old-slug must be preserved untouched (bit-identical to
+      pre-#239 behaviour). Got: {{ _wl_noop_names }}
+
+# ── Sequencing regression (fix-round P1, codex GATE-239RB, live-reproduced):
+#    every launch-*.yml chains provision -> configure in the SAME localhost
+#    play. Calls the REAL ensure_workload_tag.yml (network calls skipped via
+#    the test-only flag — see that file's header) for the provision step, so
+#    this pins the actual production wiring, not a hand-rolled stand-in: if
+#    _extra_owned_prefixes were ever reintroduced as a set_fact anywhere in
+#    that chain, it would persist as a host fact and silently contaminate
+#    the configure-merge call below, which never asks for "workload:" to be
+#    owned — exactly the bug codex reproduced (workload:* stripped right
+#    after provision stamped it). ──
+- name: "[workload-tag] sequencing — provision step: real ensure_workload_tag (network calls skipped)"
+  ansible.builtin.include_role:
+    name: netbox_catalog_common
+    tasks_from: ensure_workload_tag
+  vars:
+    workload_slug: "new-slug"
+    _workload_tag_test_skip_netbox_calls: true
+
+- name: "[workload-tag] sequencing — provision step: set current/desired tags"
+  ansible.builtin.set_fact:
+    _current_tags:
+      - name: dmf-catalog
+      - name: "lifecycle:bootstrapped"
+    _owned_desired: "{{ [{'name': 'dmf-catalog'}, {'name': 'lifecycle:bootstrapped'}, {'name': 'monitoring:probe'}] + _workload_tags }}"
+
+- name: "[workload-tag] sequencing — provision step: call merge (vars:, mirrors real provision.yml)"
+  ansible.builtin.include_role:
+    name: netbox_catalog_common
+    tasks_from: merge_owned_tags
+  vars:
+    _extra_owned_prefixes: ["workload:"]
+
+- name: "[workload-tag] sequencing — provision step: extract result"
+  ansible.builtin.set_fact:
+    _seq_prov_names: "{{ _merged_tags | map(attribute='name') | list }}"
+
+- name: "[workload-tag] sequencing — provision step assertions"
+  ansible.builtin.assert:
+    that:
+      - "'workload:new-slug' in _seq_prov_names"
+      - "'dmf-catalog' in _seq_prov_names"
+      - "'lifecycle:bootstrapped' in _seq_prov_names"
+      - "'monitoring:probe' in _seq_prov_names"
+    fail_msg: "SEQUENCING (provision step) FAIL. Got: {{ _seq_prov_names }}"
+
+# Configure runs immediately after, in the SAME play, and mirrors the real
+# configure.yml exactly: it builds its OWN _current_tags/_owned_desired (no
+# _workload_tags mixed in) and calls merge_owned_tags with NO vars: override
+# at all — it never asks for "workload:" to be owned.
+- name: "[workload-tag] sequencing — configure step: set current/desired tags (mirrors real configure.yml)"
+  ansible.builtin.set_fact:
+    _current_tags: "{{ _merged_tags }}"  # what provision's merge just produced
+    _owned_desired:
+      - name: dmf-catalog
+      - name: "lifecycle:active"
+      - name: "monitoring:probe"
+
+- name: "[workload-tag] sequencing — configure step: call merge (NO vars: — mirrors real configure.yml)"
+  ansible.builtin.include_role:
+    name: netbox_catalog_common
+    tasks_from: merge_owned_tags
+
+- name: "[workload-tag] sequencing — configure step: extract result"
+  ansible.builtin.set_fact:
+    _seq_conf_names: "{{ _merged_tags | map(attribute='name') | list }}"
+
+- name: "[workload-tag] sequencing — configure step assertions (workload tag MUST survive)"
+  ansible.builtin.assert:
+    that:
+      - "'workload:new-slug' in _seq_conf_names"
+      - "'lifecycle:active' in _seq_conf_names"
+      - "'lifecycle:bootstrapped' not in _seq_conf_names"
+      - "'monitoring:probe' in _seq_conf_names"
+    fail_msg: >-
+      SEQUENCING REGRESSION (fix-round P1, codex GATE-239RB): workload:new-slug
+      must survive a same-play configure-merge that never set
+      _extra_owned_prefixes itself. If this fails, _extra_owned_prefixes is
+      leaking as a persistent fact across include_role calls instead of
+      being include-scoped via vars:. Got: {{ _seq_conf_names }}
+
+# ── fix-round P2 (contract parity): the slug-guard regex must use \A...\Z,
+#    not ^...$ — Python's $ matches just before a trailing newline, so a
+#    naive ^...$ pattern lets "studio-a\n" through (the identical flaw the
+#    dmf-cms side fixed). Pins the exact pattern ensure_workload_tag.yml's
+#    assert uses. ──
+- name: "[workload-tag] regex fix — trailing newline / CRLF must NOT validate"
+  ansible.builtin.set_fact:
+    _wl_regex_trailing_nl: "{{ ('studio-a' ~ '\n') is match('\\A[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?\\Z') }}"
+    _wl_regex_trailing_crlf: "{{ ('studio-a' ~ '\r\n') is match('\\A[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?\\Z') }}"
+    _wl_regex_bare_nl: "{{ '\n' is match('\\A[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?\\Z') }}"
+    _wl_regex_valid_control: "{{ 'studio-a' is match('\\A[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?\\Z') }}"
+
+- name: "[workload-tag] regex fix — assertions"
+  ansible.builtin.assert:
+    that:
+      - not _wl_regex_trailing_nl
+      - not _wl_regex_trailing_crlf
+      - not _wl_regex_bare_nl
+      - _wl_regex_valid_control
+    fail_msg: >-
+      P2 regex fix regression: trailing-newline/CRLF/bare-newline slugs must
+      NOT match the #239 slug rule (got trailing_nl={{ _wl_regex_trailing_nl }}
+      trailing_crlf={{ _wl_regex_trailing_crlf }} bare_nl={{ _wl_regex_bare_nl }}),
+      and a plain valid slug must still match (got valid_control=
+      {{ _wl_regex_valid_control }}).
+
+- name: "[workload-tag] scenario complete"
+  ansible.builtin.debug:
+    msg: >-
+      workload-tag single-workload-wins, no-op-when-unset, same-play
+      provision->configure sequencing, and regex-fix scenarios all passed
+      (#239).

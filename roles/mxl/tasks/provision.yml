@@ -46,6 +46,12 @@
   loop: "{{ _mxl_all_tag_names | difference(_mxl_existing_tag_names) }}"
   no_log: true
 
+# ── #239 workload-tag stamping (ADR-0046 grouping) — no-op when unset ──
+- name: Ensure workload tag exists + expose merge facts (#239)
+  ansible.builtin.include_role:
+    name: netbox_catalog_common
+    tasks_from: ensure_workload_tag
+
 - name: Look up load-balancer device in NetBox
   ansible.builtin.uri:
     url: "{{ netbox_api_url }}/api/dcim/devices/?name={{ netbox_service_parent_device }}"
@@ -100,7 +106,7 @@
       parent_object_type: dcim.device
       parent_object_id: "{{ _mxl_lb_device_id }}"
       description: "{{ mxl_service_description }}"
-      tags: "{{ netbox_service_tags + netbox_service_monitoring_tags }}"
+      tags: "{{ netbox_service_tags + netbox_service_monitoring_tags + _workload_tags }}"
       custom_fields: "{{ netbox_service_monitoring_custom_fields }}"
     validate_certs: false
     status_code: [201]
@@ -125,13 +131,18 @@
 
 - name: Set desired owned tags for provision ensure-monitoring PATCH
   ansible.builtin.set_fact:
-    _owned_desired: "{{ netbox_service_tags + netbox_service_monitoring_tags }}"
+    _owned_desired: "{{ netbox_service_tags + netbox_service_monitoring_tags + _workload_tags }}"
   no_log: true
 
 - name: Merge tags preserving non-owned (ADR-0046 decision 4)
   ansible.builtin.include_role:
     name: netbox_catalog_common
     tasks_from: merge_owned_tags
+  vars:
+    # #239 fix-round P1: include-scoped, NOT a set_fact — see
+    # merge_owned_tags.yml's header for why a fact would leak into
+    # configure's merge call later in the same play.
+    _extra_owned_prefixes: "{{ ['workload:'] if (workload_slug is defined and workload_slug | length > 0) else [] }}"
 
 - name: "Ensure {{ mxl_function_key }} service carries monitoring metadata"
   ansible.builtin.uri:
