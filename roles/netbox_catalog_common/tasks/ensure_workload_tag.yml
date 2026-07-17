@@ -1,0 +1,128 @@
+---
+# #239 workload-tag stamping (ADR-0046 grouping) — idempotently ensure the
+# NetBox Tag object "workload:<slug>" exists BEFORE any service payload
+# references it (NetBox 400s on an unknown tag name — known platform gotcha).
+#
+# Exposes ONLY:
+#   _workload_tags — [] or [{"name": "workload:<slug>"}], safe to concatenate
+#                    into a service create/PATCH tags list. Harmless to leave
+#                    as a persistent fact — no downstream stage reads it.
+#
+# _extra_owned_prefixes is DELIBERATELY NOT exposed here (fix-round P1,
+# codex GATE-239RB, live-reproduced): it must be passed as an include-scoped
+# `vars:` on the merge_owned_tags include_role call in provision.yml,
+# computed fresh from workload_slug right there — NEVER as a set_fact.
+# Ansible facts persist for the rest of the play, and every launch-*.yml
+# chains provision -> configure (-> finalise) in the SAME play; a fact set
+# here would silently make "workload:" owned for configure's merge too, even
+# though configure never asked for that, stripping the tag provision just
+# stamped. This bit us once — do not reintroduce a set_fact for it. See
+# merge_owned_tags.yml's header for the full mechanism.
+#
+# No-op (zero NetBox calls, _workload_tags stays []) when workload_slug is
+# undefined or empty — the whole #239 feature must be bit-identical to
+# pre-#239 behaviour in that case (the regression bar).
+#
+# Uses netbox_api_token, which each launcher role's defaults already resolve
+# to the scoped vault_netbox_catalog_token (ADR-0032) — no separate token.
+#
+# _workload_tag_test_skip_netbox_calls (default false): test-only escape
+# hatch so the offline tag-preservation harness can exercise the guard +
+# fact-exposure logic below without a live NetBox. Never set outside tests.
+
+- name: Set workload-tag fact (no-op default)
+  ansible.builtin.set_fact:
+    _workload_tags: []
+
+- name: "Assert workload_slug matches the #239 slug rule"
+  ansible.builtin.assert:
+    that:
+      # \A...\Z (not ^...$): Python's $ matches just before a trailing
+      # newline, so "studio-a\n" would otherwise pass (fix-round P2, matches
+      # the identical fix on the dmf-cms side). \A/\Z anchor the whole
+      # string with no such exception.
+      - workload_slug is match('\A[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?\Z')
+    fail_msg: >-
+      workload_slug does not match the required #239 slug rule
+      (dmfdeploy/dmfdeploy#239) — defense in depth against a non-console
+      launch supplying junk extra_vars; the console itself already validates
+      this slug before the AWX launch. (The rejected value is withheld from
+      this message — fix-round P3: it is operator-supplied and unvalidated
+      at this point, and this message lands in AWX job logs.)
+  when: workload_slug is defined and workload_slug | length > 0
+
+- name: "Look up existing NetBox tag: workload:{{ workload_slug | default('') }}"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/extras/tags/?name={{ ('workload:' ~ workload_slug) | urlencode }}"
+    method: GET
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+    validate_certs: false
+    return_content: true
+  no_log: true
+  register: netbox_catalog_common_workload_tag_lookup
+  when:
+    - workload_slug is defined and workload_slug | length > 0
+    - not (_workload_tag_test_skip_netbox_calls | default(false))
+
+# fix-round P2 (real race): GET-empty -> POST is not concurrency-safe across
+# two simultaneous catalog-launcher runs racing to create the same brand-new
+# workload:<slug> tag — the loser's POST used to hard-fail on status_code
+# [201]. Accept [201, 400] here; the next two tasks disambiguate a genuine
+# duplicate-create race (fine, continue) from a real failure (fail loud).
+- name: "Create NetBox tag if absent: workload:{{ workload_slug | default('') }}"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/extras/tags/"
+    method: POST
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      name: "workload:{{ workload_slug }}"
+      slug: "workload-{{ workload_slug }}"
+      description: >-
+        DMF workload grouping tag (ADR-0046) — Media Workloads groups this
+        service under workload '{{ workload_slug }}' instead of Unassigned.
+    validate_certs: false
+    status_code: [201, 400]
+  register: netbox_catalog_common_workload_tag_create
+  no_log: true
+  when:
+    - workload_slug is defined and workload_slug | length > 0
+    - not (_workload_tag_test_skip_netbox_calls | default(false))
+    - netbox_catalog_common_workload_tag_lookup.json.results | default([]) | length == 0
+
+- name: "Re-check NetBox tag after a 400 (concurrent-create race): workload:{{ workload_slug | default('') }}"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/extras/tags/?name={{ ('workload:' ~ workload_slug) | urlencode }}"
+    method: GET
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+    validate_certs: false
+    return_content: true
+  register: netbox_catalog_common_workload_tag_recheck
+  no_log: true
+  when:
+    - workload_slug is defined and workload_slug | length > 0
+    - not (_workload_tag_test_skip_netbox_calls | default(false))
+    - netbox_catalog_common_workload_tag_create is defined
+    - netbox_catalog_common_workload_tag_create.status | default(0) == 400
+
+- name: "Fail on a genuine (non-race) workload tag create error"
+  ansible.builtin.fail:
+    msg: >-
+      Creating the workload tag failed with a 400 that was NOT a
+      concurrent-create race (the tag still doesn't exist on re-check).
+      NetBox response: {{ netbox_catalog_common_workload_tag_create.json | default(netbox_catalog_common_workload_tag_create.content | default('(no body)')) }}
+  when:
+    - workload_slug is defined and workload_slug | length > 0
+    - not (_workload_tag_test_skip_netbox_calls | default(false))
+    - netbox_catalog_common_workload_tag_create is defined
+    - netbox_catalog_common_workload_tag_create.status | default(0) == 400
+    - netbox_catalog_common_workload_tag_recheck.json.results | default([]) | length == 0
+
+- name: Expose workload-tag fact for the service payload (#239)
+  ansible.builtin.set_fact:
+    _workload_tags: "{{ [{'name': 'workload:' ~ workload_slug}] }}"
+  when: workload_slug is defined and workload_slug | length > 0

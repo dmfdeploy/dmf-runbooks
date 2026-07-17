@@ -2,12 +2,33 @@
 # ADR-0046 decision 4 — owned-set / tag-preservation merge.
 #
 # Inputs (caller must set these facts before invoking):
-#   _current_tags   — list of tag objects from the existing NetBox service
-#                     record (each {"name": "<n>"} dict).  May be empty or
-#                     undefined for a brand-new service.
-#   _owned_desired  — list of {name: <n>} dicts representing the tag set this
-#                     stage wants to own (lifecycle + statics + monitoring as
-#                     applicable).
+#   _current_tags         — list of tag objects from the existing NetBox
+#                           service record (each {"name": "<n>"} dict).  May
+#                           be empty or undefined for a brand-new service.
+#   _owned_desired        — list of {name: <n>} dicts representing the tag set
+#                           this stage wants to own (lifecycle + statics +
+#                           monitoring as applicable).
+#   _extra_owned_prefixes — OPTIONAL list of additional owned-namespace
+#                           prefixes/exact-names for THIS invocation only
+#                           (#239: ["workload:"] when workload_slug is set for
+#                           this run, so a stale workload:<old> tag on the
+#                           existing service is replaced rather than left to
+#                           coexist with the new one — single-workload-wins).
+#                           Defaults to [], so every pre-#239 caller that never
+#                           sets it is unaffected.
+#
+#                           *** MUST be passed as an include-scoped `vars:` on
+#                           the include_role call for THIS task file — NEVER
+#                           as a set_fact anywhere. Ansible facts persist for
+#                           the rest of the play, and every launch-*.yml
+#                           chains provision -> configure (-> finalise) in
+#                           the SAME play: a fact set during provision would
+#                           silently apply to configure's merge call too,
+#                           stripping a tag provision just stamped even
+#                           though configure never asked for it to be owned
+#                           (fix-round P1, codex GATE-239RB, live-reproduced —
+#                           see tests/_workload-tag-scenario.yml's sequencing
+#                           scenario, which pins this exact failure mode). ***
 #
 # Output:
 #   _merged_tags    — de-duplicated list of {name: <n>} dicts safe to send as
@@ -25,7 +46,7 @@
       {{
         _current_tags | default([])
         | merge_owned_tags(
-            _netbox_owned_namespace,
+            _netbox_owned_namespace + (_extra_owned_prefixes | default([])),
             _owned_desired | default([])
           )
       }}
