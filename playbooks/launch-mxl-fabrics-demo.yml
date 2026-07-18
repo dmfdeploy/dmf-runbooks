@@ -15,7 +15,7 @@
     # (Was the full chart ref, which doubled the name in the pull URL and
     # could never resolve — latent since the chart was never published.)
     mxl_chart_ref: "oci://zot.zot.svc.cluster.local:5000/dmf/charts"
-    mxl_chart_version: "0.2.1"
+    mxl_chart_version: "0.3.0"
     mxl_chart_local: ""
     mxl_chart_name: mxl-fabrics-demo
     # single-node = colocated pair on one node over the pod network;
