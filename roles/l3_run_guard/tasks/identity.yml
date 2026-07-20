@@ -1,0 +1,93 @@
+---
+# umbrella #202 WP3-A stage 1 — identity + entry path.
+#
+# Console-driven runs carry l3_request_id (minted by dmf-cms at dispatch,
+# umbrella #202 WP2) — that IS this run's identity end to end (the console's
+# Operation.run_id, the launcher's snapshot ConfigMap name, and the
+# rollback command's run_id all correlate on this single value). A direct
+# run-playbook.sh invocation (ADR-0010 escape hatch) carries none of that —
+# self-mint a run_id so the rest of this role has one to work with, and log
+# the self-mint loudly since this run will never be visible to the console.
+
+- name: "L3 identity: reserved internal vars must be UNDEFINED at entry
+    (R3a-13 — MUST run before l3_entry_path (itself reserved) is ever
+    set below, or this check would trivially always pass)"
+  ansible.builtin.include_tasks: _assert_reserved_vars.yml
+
+- name: "L3 identity: reserved-var check + refusal (R4a/P1-2 — l3_run_id,
+    LAUNCH/TEARDOWN ONLY: on this entry path l3_run_id is a purely
+    role-derived fact (below, from l3_request_id or a self-mint), never a
+    legitimate caller input — codex round-3's exact executed-role probe
+    supplied request_id=A and l3_run_id=B and found B still authoritative
+    after this file's own set_fact. rollback_identity.yml carries NO
+    equivalent check: there, l3_run_id is the rollback's own required
+    input (the snapshot target), not a role-derived fact. Same block/
+    rescue shape as _assert_reserved_vars.yml and for the same reason: no
+    `when:` a caller could shadow to skip cleanup while still letting the
+    assert fail closed."
+  block:
+    - name: "L3 identity: l3_run_id must be UNDEFINED at entry (launch/teardown, direct assert)"
+      ansible.builtin.assert:
+        that:
+          - l3_run_id is not defined
+        fail_msg: >-
+          L3 launcher refused: preflight-error (reserved-var). l3_run_id
+          is derived by this role on launch/teardown (from l3_request_id,
+          or self-minted) and must never be caller-supplied on this entry
+          path.
+  rescue:
+    - name: Report l3_run_id reserved-var violation
+      ansible.builtin.debug:
+        msg: >-
+          L3 launcher refused: preflight-error (reserved-var). l3_run_id
+          was supplied as an extra_var on a launch/teardown entry path.
+
+    - name: "L3 l3_run_id reserved-var refusal cleanup (R4a/P1-2, never override-able, pre-lock)"
+      ansible.builtin.include_tasks: _refuse_pre_mutation.yml
+      vars:
+        l3_outcome_token: preflight-error
+        l3_outcome_kv: "request_id={{ l3_request_id | default('') }} detail=reserved-var-run-id"
+        l3_refusal_fail_msg: >-
+          L3 launcher refused: preflight-error (reserved-var). l3_run_id
+          is not a valid launch/teardown extra_var. Structural
+          precondition — cannot be overridden.
+
+- name: "L3 identity: when l3_request_id IS supplied, it must fullmatch
+    hex-32 (R2a-10iii — consistent with rollback's own identity contract
+    and dmf-cms's own _RUN_ID_RE validation)"
+  ansible.builtin.assert:
+    that:
+      - l3_request_id is match('^[0-9a-f]{32}$')
+    fail_msg: >-
+      l3_request_id, when supplied, must be a bare 32-char lowercase hex
+      string — got: {{ l3_request_id }}
+  when: l3_request_id is defined and (l3_request_id | trim) != ''
+
+- name: "L3 identity: console-driven run (l3_request_id present)"
+  ansible.builtin.set_fact:
+    l3_run_id: "{{ l3_request_id }}"
+    l3_entry_path: console
+  when: l3_request_id is defined and (l3_request_id | trim) != ''
+
+- name: "L3 identity: direct entry (ADR-0010 escape hatch) — self-mint run_id"
+  when: l3_request_id is not defined or (l3_request_id | trim) == ''
+  block:
+    - name: Self-mint run_id (uuid4 hex, matches the console's own request_id shape)
+      ansible.builtin.set_fact:
+        l3_run_id: "{{ lookup('pipe', 'python3 -c \"import uuid; print(uuid.uuid4().hex)\"') }}"
+        l3_entry_path: direct
+
+    - name: Log direct-entry self-mint loudly
+      ansible.builtin.debug:
+        msg: >-
+          L3 DIRECT ENTRY (ADR-0010 escape hatch): no l3_request_id extra_var
+          supplied — self-minted run_id={{ l3_run_id }}. This run is NOT
+          correlated to any console dispatch and the console will never see
+          it; use l3_request_id from a console-driven launch to get run
+          tracking / rollback correlation.
+
+- name: "L3 identity: authority-bearing constants must equal frozen values (R5a/P1-2)"
+  ansible.builtin.include_tasks: _assert_authority.yml
+
+- name: L3 override handling (shared with rollback — see _override.yml)
+  ansible.builtin.include_tasks: _override.yml

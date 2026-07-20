@@ -1,0 +1,78 @@
+---
+# umbrella #202 WP3 R5a (codex round-4 P1-2) — authority-bearing constants
+# must equal their FROZEN, hardcoded-literal expected values at entry, on
+# every path that acquires the facility lock (launch, teardown, rollback).
+#
+# defaults/main.yml deliberately exposes l3_lock_namespace/
+# l3_lock_configmap_name/l3_lock_ttl_seconds/l3_ee_reserve as ordinary role
+# variables — none of them are role-INTERNAL derived facts (they're
+# configuration, not computed state), so _assert_reserved_vars.yml's
+# "is not defined" blocklist mechanism does not apply to them at all; a
+# caller can legitimately set them via extra_vars, and Ansible has no
+# built-in notion of "this variable, once given its role default, may never
+# be overridden again." Codex round-4 demonstrated the consequences
+# directly: `l3_lock_configmap_name=<new>` silently partitions the single
+# shared facility into a PRIVATE lock (every OTHER run's lock checks become
+# meaningless — they're all checking a different object); `l3_lock_ttl_seconds=0`
+# makes ANY positive-age live holder immediately TTL-expired and reclaimable
+# (defeats the whole "genuine hold refuses, never override-able" contract);
+# a direct filter probe with allocatable=1000, existing=900, demand=200 and
+# `l3_ee_reserve.cpu_m=-1000` returned FIT (negative reserve manufactures
+# fake headroom).
+#
+# The fix: assert the RUNTIME value equals a LITERAL constant baked directly
+# into this file's own `that:` — never compared against another variable
+# (which could itself be forged in lockstep) and never derived through any
+# intermediate. If a caller's extra_var has already overridden the role
+# default by the time this assert runs, the assert reads THAT forged value
+# and fails immediately — before lock.yml ever uses l3_lock_namespace/
+# l3_lock_configmap_name/l3_lock_ttl_seconds, and before capacity.yml ever
+# uses l3_ee_reserve.
+#
+# l3_lock_ttl_seconds was PREVIOUSLY documented as "overridable per-
+# invocation via extra_vars" (R2a's own comment in defaults/main.yml) — that
+# was never actually safe: TTL directly controls when a genuine, currently-
+# live holder becomes reclaimable, which is exactly the "facility-busy is
+# never override-able" invariant the rest of this role goes to considerable
+# length to protect. Frozen here, comment in defaults/main.yml updated to
+# match.
+#
+# Included right after the reserved-var check in identity.yml (covers
+# launch AND, via lock_only.yml's own reuse of identity.yml, teardown) and
+# in rollback_identity.yml (rollback also acquires this same shared lock).
+
+- name: "L3 authority: constants check + refusal (R5a/P1-2)"
+  block:
+    - name: "L3 authority: lock namespace/name/ttl + ee_reserve must equal frozen values"
+      ansible.builtin.assert:
+        that:
+          - l3_lock_namespace == 'nmos'
+          - l3_lock_configmap_name == 'dmf-facility-lock'
+          - l3_lock_ttl_seconds | int == 3600
+          - l3_ee_reserve.cpu_m | int == 0
+          - l3_ee_reserve.mem_b | int == 0
+        fail_msg: >-
+          L3 launcher refused: preflight-error (authority-constant
+          mismatch). One or more of l3_lock_namespace/
+          l3_lock_configmap_name/l3_lock_ttl_seconds/l3_ee_reserve does not
+          equal its frozen expected value — these are authority-bearing
+          constants, never per-invocation tunables. Structural
+          precondition — cannot be overridden.
+  rescue:
+    - name: Report authority-constant mismatch
+      ansible.builtin.debug:
+        msg: >-
+          L3 launcher refused: preflight-error (authority-constant
+          mismatch). l3_lock_namespace={{ l3_lock_namespace | default('<undefined>') }}
+          l3_lock_configmap_name={{ l3_lock_configmap_name | default('<undefined>') }}
+          l3_lock_ttl_seconds={{ l3_lock_ttl_seconds | default('<undefined>') }}
+          l3_ee_reserve={{ l3_ee_reserve | default('<undefined>') }}.
+
+    - name: "L3 authority-constant refusal cleanup (never override-able, pre-lock)"
+      ansible.builtin.include_tasks: _refuse_pre_mutation.yml
+      vars:
+        l3_outcome_token: preflight-error
+        l3_outcome_kv: "run_id={{ l3_run_id | default('') }} request_id={{ l3_request_id | default('') }} detail=authority-constant-mismatch"
+        l3_refusal_fail_msg: >-
+          L3 launcher refused: preflight-error (authority-constant
+          mismatch). Structural precondition — cannot be overridden.

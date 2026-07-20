@@ -1,0 +1,23 @@
+---
+# umbrella #202 WP3 R2a-2 — the SINGLE named marker-emission task. Every
+# DMF_L3_OUTCOME emission across this role routes through this one file so
+# there is exactly one ansible.builtin.debug task literally named
+# 'dmf-l3-outcome' in the whole play — the console (R2b) reads AWX job
+# events filtered BY THAT TASK NAME and parses event_data.res.msg, not
+# stdout scraping. Markers moved OFF stdout entirely: an ansible job's
+# stdout always ends with the PLAY RECAP epilogue (plus possible framework
+# noise) after the launcher's own last debug line, which made a
+# stdout-tail-based contract unreliable in the first place (see dmf-cms's
+# WP3-D amendment for the console-side history of the prior stdout-based
+# approach this replaces).
+#
+# Callers set l3_outcome_token (required) and l3_outcome_kv (optional, a
+# pre-built "key=value key2=value2" string — kv assembly is the CALLER's
+# job, this file only renders the final marker line verbatim). The marker
+# STRING FORMAT itself is unchanged from the original stdout-based
+# contract: "DMF_L3_OUTCOME: <token> [<kv>]".
+
+- name: dmf-l3-outcome
+  ansible.builtin.debug:
+    msg: >-
+      DMF_L3_OUTCOME: {{ l3_outcome_token }}{{ (' ' ~ l3_outcome_kv) if (l3_outcome_kv | default('')) else '' }}

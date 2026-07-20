@@ -9,16 +9,88 @@
   vars:
     nmos_namespace: nmos
   tasks:
-    - name: Remove nmos-crosspoint Helm release
-      kubernetes.core.helm:
-        name: nmos-crosspoint
-        release_namespace: "{{ nmos_namespace }}"
-        state: absent
-        wait: true
-        wait_timeout: 5m
+    - name: "L3 gate through terminal — ONE outer block/rescue/always (R4a
+        Backbone, codex round-3 P1-3/P1-11: the teardown-lock guard used
+        to run OUTSIDE any block — an exception there had nothing to
+        catch it and leaked the lock to TTL. Now inside this SAME outer
+        block as the caller's own mutation, so gate_rescue.yml (shared
+        with launch) sees every failure in this whole span, and
+        release.yml is the unconditional lock-release backstop)"
+      block:
+        - name: L3 teardown-lock guard (identity/netbox-token/lock — umbrella #202 WP3 R2a-4)
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: lock_only
 
-    - name: Include nmos-crosspoint role (finalise stage - flip NetBox tag to bootstrapped)
-      ansible.builtin.include_role:
-        name: nmos-crosspoint
-      vars:
-        crosspoint_stage: finalise
+        - name: "L3: mark mutation as STARTED (everything from here on is a
+            real mutating action; gate_rescue.yml reads this to decide
+            superseded[pre-mutation] vs failed_rollback_required
+            [post-mutation])"
+          ansible.builtin.set_fact:
+            l3_mutation_started: true
+
+        - name: "L3: test-only fault injection boundary (R4a/P2-5 — no-op on every real run)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: fault_inject
+          vars:
+            l3_fault_inject_boundary: post-mutation-start
+
+        - name: "L3 teardown: lock checkpoint + supersede sweep before first mutation (R4a/P1-4/P1-5 — moved from lock_only.yml, no checkpoint existed anywhere in teardown before this round)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: teardown_pre_mutation
+
+        - name: Remove nmos-crosspoint Helm release
+          kubernetes.core.helm:
+            name: nmos-crosspoint
+            release_namespace: "{{ nmos_namespace }}"
+            state: absent
+            wait: true
+            wait_timeout: 5m
+
+        - name: "L3: test-only fault injection boundary (R4a/P2-5 — after the first real mutation)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: fault_inject
+          vars:
+            l3_fault_inject_boundary: post-first-mutation
+
+        - name: "L3 lock checkpoint before NetBox finalise (R4a/P1-4 — no checkpoint existed here before this round)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: lock_checkpoint
+
+        - name: Include nmos-crosspoint role (finalise stage - flip NetBox tag to bootstrapped)
+          ansible.builtin.include_role:
+            name: nmos-crosspoint
+          vars:
+            crosspoint_stage: finalise
+
+        - name: "L3 teardown success — release the lock (no marker: a
+            started teardown failure maps to RUN_STATUS_UNKNOWN/RUN_FAILED
+            console-side regardless of any token, and
+            FAILED_ROLLBACK_REQUIRED is deploy-only — teardown genuinely
+            has no success marker to emit; job success is the signal)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: lock_release
+      rescue:
+        - name: "L3 gate rescue — shared launch/teardown cleanup (R4a Backbone: informational
+            preflight-error/post-mutation-failed marker — teardown never auto-triggers
+            rollback from this, purely for operator legibility)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: gate_rescue
+
+        - name: Re-raise (gate_rescue.yml only does cleanup, never terminates the play itself)
+          ansible.builtin.fail:
+            msg: >-
+              nmos-crosspoint teardown failed for run_id={{ l3_run_id | default('<unknown>') }}.
+              See the task error above for the root cause; the L3 gate's
+              own cleanup (facility lock released) has already run.
+      always:
+        - name: "L3 release — idempotent lock-release backstop (R4a Backbone)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: release

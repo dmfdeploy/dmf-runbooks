@@ -1,0 +1,90 @@
+---
+# umbrella #202 WP3 — L3 launcher authoritative gate (revised by codex
+# round-1 R2a).
+#
+# Included as the FIRST play-level actions of every launch-*.yml playbook,
+# before that playbook's own provision-stage role include. Stage order
+# (R2a-9/R2a-8, changed from the original WP3-A order):
+#   1. identity   — l3_run_id (l3_attempt_id is minted later, in lock.yml —
+#                   it's per LOCK ATTEMPT, not per run)
+#   2. preflight  — structural preconditions (multi-node shape, namespace
+#                   reachability, cluster-wide pod-list RBAC), BEFORE the
+#                   lock — none of these depend on holding it, and there's
+#                   no reason to deny every other run the facility while
+#                   checking them. Frozen 'preflight-error' marker, never
+#                   override-able.
+#   3. lock       — facility lock (§4.5)
+#   4. snapshot   — pre-run baseline (§4.1), captured as early after lock
+#                   acquisition as possible, CREATE-ONLY
+#   5. capacity   — budget recompute + FIT/NO-FIT (§3.2) — now runs AFTER
+#                   snapshot, so its refusals are "pre-mutation refusals
+#                   AFTER snapshot creation": nothing was mutated, but a
+#                   snapshot now exists and must be marked superseded (not
+#                   left dangling) — _refuse_pre_mutation.yml handles this
+#                   uniformly for every refusal path in this role.
+#
+# R2a-3e: everything AFTER lock acquisition that can mutate anything (this
+# role's OWN snapshot write, AND — more importantly — the CALLING
+# playbook's own provision/install/configure stage) must be wrapped in
+# block/rescue/always so the lock is NEVER left held on any path except a
+# hard crash (which TTL covers). This role's own mutations (snapshot
+# create, its later status patches) are self-contained within stages 4-5
+# above and this file's own linear flow — the calling playbook's
+# provision+install+configure stage is NOT self-contained here (it lives
+# in the CALLER), so this role exposes two separate tasks_from entry
+# points the caller invokes from its OWN block/rescue:
+#   launch_success.yml — invoked from the caller's block, on success:
+#                         terminalizes the snapshot (run_complete),
+#                         releases the lock.
+#   launch_rescue.yml  — invoked from the caller's rescue, on failure:
+#                         terminalizes the snapshot
+#                         (failed_rollback_required), emits the
+#                         post-mutation-failed marker, releases the lock.
+#                         The caller's rescue MUST re-raise after this
+#                         (this file only does cleanup, never itself ends
+#                         the play) — see each launch-*.yml playbook.
+#
+# Caller-supplied vars (see each launch-*.yml's include_role for the exact
+# values per playbook):
+#   l3_release            — the Helm release name about to be installed
+#   l3_target_namespace    — the namespace it's installed into
+#   l3_catalog_key         — this catalog entry's key (NetBox app:<key> tag
+#                            AND, R2a-5, the EXACT NetBox service name —
+#                            provably equal to each provision role's own
+#                            netbox_service_name in every current playbook)
+#   l3_chart_ref/_name/_version — chart identity for `helm template`
+#   l3_chart_set_values    — list of "key=value" strings, the SAME values
+#                            the play's own install step will pass via
+#                            --set/release_values (see l3_flatten_set_values
+#                            for the nested-dict -> flat-list bridge)
+#
+# Console/direct-run extra_vars (optional, from the AWX job or a direct
+# run-playbook.sh invocation):
+#   l3_request_id, l3_override, l3_override_reason, l3_owner
+
+- name: L3 stage 1 — identity + entry path
+  ansible.builtin.include_tasks: identity.yml
+
+- name: L3 stage 2 — structural preconditions (R2a-9, before lock)
+  ansible.builtin.include_tasks: preflight.yml
+
+- name: L3 stage 3 — facility lock
+  ansible.builtin.include_tasks: lock.yml
+
+- name: L3 stage 4 — pre-run snapshot (R2a-8, as early after lock as possible)
+  ansible.builtin.include_tasks: snapshot.yml
+
+- name: L3 stage 5 — capacity recompute (R2a-8, now after snapshot)
+  ansible.builtin.include_tasks: capacity.yml
+
+- name: L3 gate passed — proceeding with provision
+  ansible.builtin.debug:
+    msg: >-
+      L3 launcher gate passed for run_id={{ l3_run_id }}
+      attempt_id={{ l3_attempt_id }} (entry={{ l3_entry_path }},
+      lock_acquired={{ l3_lock_acquired | default(false) }}). Proceeding to
+      provision — the calling playbook MUST wrap its own
+      provision/install/configure stage in block/rescue and invoke
+      l3_run_guard's launch_success.yml (block, on success) /
+      launch_rescue.yml (rescue, on failure — re-raise afterward) — see
+      each launch-*.yml playbook.

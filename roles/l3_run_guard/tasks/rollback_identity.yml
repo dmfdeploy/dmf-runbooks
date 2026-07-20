@@ -1,0 +1,82 @@
+---
+# umbrella #202 WP3-B stage 1 — rollback identity + input validation.
+#
+# Unlike the launch flow (identity.yml), l3_run_id here is a REQUIRED
+# INPUT (the snapshot target to roll back — the ORIGINAL failed deploy's
+# own identity, plan §4.1's request_id correlation), never derived from
+# anything else. l3_request_id is a SEPARATE, secondary correlator for
+# THIS rollback command's own dispatch/audit trail (mirrors the console's
+# POST /api/runs/{run_id}/rollback minting its own request_id distinct
+# from run_id, umbrella #202 WP2) — self-minted for a direct
+# run-playbook.sh invocation exactly like the launch flow's identity.yml.
+
+- name: "L3 rollback: assert l3_run_id was supplied and is well-formed"
+  ansible.builtin.assert:
+    that:
+      - l3_run_id is defined
+      - l3_run_id is string
+      - l3_run_id is match('^[0-9a-f]{32}$')
+    fail_msg: >-
+      l3_run_id is required for a rollback and must be a bare 32-char
+      lowercase hex string (the failed deploy's own request_id/run_id) —
+      got: {{ l3_run_id | default('<undefined>') }}
+
+- name: "L3 rollback: assert l3_rollback_reason was supplied"
+  ansible.builtin.assert:
+    that:
+      - l3_rollback_reason is defined
+      - (l3_rollback_reason | trim) != ''
+    fail_msg: >-
+      l3_rollback_reason is required and must be non-empty (C5
+      attributability — mirrors the console's own mandatory reason gate).
+
+- name: "L3 rollback: reserved internal vars must be UNDEFINED at entry
+    (R3a-13 — MUST run before l3_entry_path (itself reserved) is ever set
+    below, or this check would trivially always pass; run_id/reason are
+    already validated above so the marker below carries a real run_id)"
+  ansible.builtin.include_tasks: _assert_reserved_vars.yml
+
+- name: "L3 rollback: when l3_request_id IS supplied, it must fullmatch
+    hex-32 (R2a-10iii — consistent with the launch flow's rollback
+    identity contract and dmf-cms's own _RUN_ID_RE validation)"
+  ansible.builtin.assert:
+    that:
+      - l3_request_id is match('^[0-9a-f]{32}$')
+    fail_msg: >-
+      l3_request_id, when supplied, must be a bare 32-char lowercase hex
+      string — got: {{ l3_request_id }}
+  when: l3_request_id is defined and (l3_request_id | trim) != ''
+
+- name: "L3 rollback: console-driven dispatch (l3_request_id present)"
+  ansible.builtin.set_fact:
+    l3_entry_path: console
+  when: l3_request_id is defined and (l3_request_id | trim) != ''
+
+- name: "L3 rollback: direct entry (ADR-0010) — self-mint l3_request_id"
+  when: l3_request_id is not defined or (l3_request_id | trim) == ''
+  block:
+    - name: Self-mint l3_request_id (this rollback dispatch's own correlator)
+      ansible.builtin.set_fact:
+        l3_request_id: "{{ lookup('pipe', 'python3 -c \"import uuid; print(uuid.uuid4().hex)\"') }}"
+        l3_entry_path: direct
+
+    - name: Log direct-entry self-mint loudly
+      ansible.builtin.debug:
+        msg: >-
+          L3 DIRECT ENTRY (ADR-0010 escape hatch): no l3_request_id
+          extra_var supplied for this rollback dispatch — self-minted
+          l3_request_id={{ l3_request_id }}. Rolling back
+          run_id={{ l3_run_id }}.
+
+- name: "L3 rollback: authority-bearing constants must equal frozen values (R5a/P1-2 — rollback also acquires the shared facility lock)"
+  ansible.builtin.include_tasks: _assert_authority.yml
+
+- name: L3 override handling (shared with launch — see _override.yml)
+  ansible.builtin.include_tasks: _override.yml
+
+# ── R2c-runbooks: scoped NetBox catalog-writer token check (ADR-0032) —
+#    rollback never includes preflight.yml (that's launch-only), but
+#    rollback_netbox_surface.yml always queries NetBox too — this is the
+#    equivalent pre-lock structural check for THIS flow. ───────────────────
+- name: "L3 rollback: scoped NetBox catalog-writer token check (ADR-0032, R2c)"
+  ansible.builtin.include_tasks: _assert_netbox_token.yml

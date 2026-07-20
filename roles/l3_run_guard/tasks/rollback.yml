@@ -1,0 +1,162 @@
+---
+# umbrella #202 WP3-B — L3 rollback-run authoritative flow (revised by
+# codex round-1 R2a and round-2 R3a).
+#
+# Included via `include_role: name: l3_run_guard, tasks_from: rollback`
+# from playbooks/rollback-run.yml. Stage order (R3a-5, codex round-2
+# P1-5): identity -> facility lock (§4.5) -> snapshot read (§4.1,
+# refusal classification — NOW UNDER THE HELD LOCK, so a concurrent run
+# can no longer supersede/mutate/finish the snapshot between this read
+# and the lock acquisition the R2a draft left as two separate,
+# race-prone steps) -> helm surface (§4.4) -> netbox surface (§4.2) ->
+# terminal (§4.5/§4.6 aggregate outcome, marker, lock release — R2a-7:
+# ALWAYS rollback_incomplete in WP3, see rollback_terminal.yml).
+#
+# l3_catalog_key/l3_release are DERIVED from the snapshot (now stage 3,
+# post-lock), not caller-supplied — a rollback is driven purely by
+# l3_run_id.
+#
+# R3a-4 (codex round-2 P1-4): the ENTIRE post-acquire lifecycle
+# (snapshot-read through terminal) sits in ONE outer block/rescue so the
+# lock is never left held on ANY failure in that span, not just the
+# surfaces stages. Because rollback_terminal.yml's own fail is
+# UNCONDITIONAL (R2a-7: every rollback ends rollback_incomplete), it is
+# INSIDE this block too — which means it ALWAYS trips the rescue below.
+# The rescue distinguishes "terminal already ran its own full cleanup"
+# (status-patch + marker + lock release, then its own expected fail) from
+# "an UNEXPECTED failure hit somewhere BEFORE terminal ever ran" via the
+# ``l3_rollback_terminal_reached`` sentinel fact (set by
+# rollback_terminal.yml itself, right before its own fail) — only the
+# genuinely unexpected case gets the rescue's OWN generic cleanup; the
+# expected case just re-raises without redoing (and potentially
+# double-emitting/overwriting) work terminal already did correctly.
+#
+# R4a (codex round-3 P1-7): the SAME problem existed one stage earlier —
+# rollback_snapshot_read.yml's own no-snapshot/stale-snapshot refusal
+# also fails inside this block (via _refuse_pre_mutation.yml), but
+# l3_rollback_terminal_reached is (correctly) still false there, since
+# terminal never ran. Without a second sentinel the rescue below used to
+# treat that as "unexpected" and emit a SECOND rollback_incomplete marker
+# on top of the honest no-snapshot/stale-snapshot one _refuse_pre_mutation
+# already emitted — dmf-cms selects the LAST event, so the operator never
+# saw the real outcome. Fixed with a second sentinel,
+# l3_expected_refusal, set by rollback_snapshot_read.yml itself right
+# before its own fail: the rescue below now re-raises for THAT case too,
+# without emitting anything further.
+#
+# R5a (codex round-4 P1-4, found while wiring up the SAME round's
+# checkpoint-before-every-terminal-patch fix): a THIRD case existed —
+# EVERY lock_checkpoint.yml call inside this block (the pre-existing ones
+# before the helm/netbox surface stages, R3a-3b; and the new one this
+# round inside rollback_terminal.yml, before its own terminal patch) can
+# ALSO fail closed on a fenced-out holder, which routes through
+# _refuse_pre_mutation.yml exactly like any other hand-written refusal —
+# setting l3_pre_mutation_marker_emitted and emitting its OWN honest
+# marker (post-mutation-failed, detail=lock-lost). The rescue below used
+# to check ONLY l3_rollback_terminal_reached/l3_expected_refusal, so a
+# fenced checkpoint would fall through to "UNEXPECTED failure" and emit a
+# SECOND, wrong (rollback_incomplete) marker on top of the honest
+# lock-lost one — the exact same class of bug P1-7 already fixed twice
+# above, now closed for this third case too.
+#
+# R5a (codex round-4 P2-3, found by the real-playbook execution harness):
+# a FOURTH gap existed — stages 1 (identity) and 2 (lock) used to run
+# OUTSIDE this block entirely, the exact same "main.yml's own early
+# stages ran unenclosed" bug R4a/P1-3 fixed for launch/teardown, just
+# never carried over to rollback at the time. An UNEXPECTED exception
+# during identity/lock (not one of their own deliberate, self-cleaning
+# refusals — those already emit their own marker and release via
+# _refuse_pre_mutation.yml regardless of enclosure) had nothing to catch
+# it: playbooks/rollback-run.yml's own outer always: (added this same
+# round) still released the lock, but NO marker was ever emitted —
+# confirmed by real execution, not just code inspection. Moved inside
+# this block as stages 1-2, ahead of stage 3, so the SAME rescue below
+# now covers the whole flow from identity through terminal, exactly
+# matching launch/teardown's own Backbone shape.
+
+- name: "WP3-B post-acquire lifecycle (R3a-4, widened R5a/P2-3 to cover
+    identity+lock too: the ENTIRE flow now sits in ONE outer block/rescue)"
+  block:
+    - name: WP3-B stage 1 — rollback identity + input validation
+      ansible.builtin.include_tasks: rollback_identity.yml
+
+    - name: "WP3-B stage 2 — facility lock (§4.5, shared mechanism with launch;
+        R3a-5: moved BEFORE snapshot read, was stage 3)"
+      ansible.builtin.include_tasks: lock.yml
+
+    - name: "WP3-B stage 3 — snapshot read + refusals (R3a-5: now UNDER
+        the held lock — classification/validation can no longer race a
+        concurrent supersede/mutate/finish between read and lock)"
+      ansible.builtin.include_tasks: rollback_snapshot_read.yml
+
+    - name: "L3 lock checkpoint before helm surface mutation (R3a-3b)"
+      ansible.builtin.include_tasks: lock_checkpoint.yml
+
+    - name: WP3-B stage 4 — helm surface rollback
+      ansible.builtin.include_tasks: rollback_helm_surface.yml
+
+    - name: "L3 lock checkpoint before netbox surface mutation (R3a-3b)"
+      ansible.builtin.include_tasks: lock_checkpoint.yml
+
+    - name: WP3-B stage 5 — netbox surface rollback
+      ansible.builtin.include_tasks: rollback_netbox_surface.yml
+
+    - name: WP3-B stage 6 — terminal (aggregate outcome, marker, lock
+        release, fail — R2a-7 always rollback_incomplete in WP3)
+      ansible.builtin.include_tasks: rollback_terminal.yml
+  rescue:
+    - name: "WP3-B rescue: terminal already ran its own full cleanup — just re-raise"
+      ansible.builtin.fail:
+        msg: >-
+          L3 rollback for run_id={{ l3_run_id }} reached its terminal
+          outcome — see the terminal report/marker above (status-patch,
+          marker, and lock release already completed there).
+      when: l3_rollback_terminal_reached | default(false)
+
+    - name: "WP3-B rescue: an EXPECTED hand-written refusal already emitted
+        its own honest terminal token and released the lock (R4a/P1-7 —
+        l3_expected_refusal, set by rollback_snapshot_read.yml before its
+        own fail — OR R5a/P1-4 — l3_pre_mutation_marker_emitted, set by
+        ANY lock_checkpoint.yml call in this block that fenced out and
+        routed through _refuse_pre_mutation.yml) — just re-raise, WITHOUT
+        emitting a second rollback_incomplete marker on top of it
+        (dmf-cms selects the LAST event; a second marker here would hide
+        the real no-snapshot/stale-snapshot/lock-lost outcome)"
+      ansible.builtin.fail:
+        msg: >-
+          L3 rollback for run_id={{ l3_run_id }} refused before any
+          mutation — see the refusal report/marker above (marker and
+          lock release already completed there).
+      when:
+        - not (l3_rollback_terminal_reached | default(false))
+        - (l3_expected_refusal | default(false)) or (l3_pre_mutation_marker_emitted | default(false))
+
+    - name: "WP3-B rescue: UNEXPECTED failure before reaching terminal —
+        emit a generic marker"
+      ansible.builtin.include_tasks: _emit_outcome.yml
+      vars:
+        l3_outcome_token: rollback_incomplete
+        l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id }} surfaces=helm,netbox,monitoring"
+      when:
+        - not (l3_rollback_terminal_reached | default(false))
+        - not (l3_expected_refusal | default(false))
+        - not (l3_pre_mutation_marker_emitted | default(false))
+
+    - name: "WP3-B rescue: UNEXPECTED failure — release the facility lock"
+      ansible.builtin.include_tasks: lock_release.yml
+      when:
+        - not (l3_rollback_terminal_reached | default(false))
+        - not (l3_expected_refusal | default(false))
+        - not (l3_pre_mutation_marker_emitted | default(false))
+
+    - name: "WP3-B rescue: UNEXPECTED failure — re-raise (this rescue block only does cleanup)"
+      ansible.builtin.fail:
+        msg: >-
+          L3 rollback hit an UNEXPECTED failure (not the normal
+          always-incomplete terminal outcome, R2a-7) for run_id={{ l3_run_id }}
+          — see the task error above. Facility lock released; a retry
+          will re-acquire.
+      when:
+        - not (l3_rollback_terminal_reached | default(false))
+        - not (l3_expected_refusal | default(false))
+        - not (l3_pre_mutation_marker_emitted | default(false))

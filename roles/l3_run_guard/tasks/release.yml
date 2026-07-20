@@ -1,0 +1,45 @@
+---
+# umbrella #202 WP3 R4a Backbone (codex round-3 P1-3/P1-4/P1-11) — the
+# UNIVERSAL always: handler every launch-*.yml / teardown-*.yml /
+# rollback-run.yml playbook's outer block now installs, on top of
+# (never instead of) each flow's own existing on-path lock_release.yml
+# calls (launch_success.yml, gate_rescue.yml, rollback_terminal.yml,
+# rollback.yml's own rescue).
+#
+# Those on-path calls release the lock as early as the outcome is known
+# on the SUCCESS/EXPECTED-FAILURE paths. This file is the BACKSTOP for
+# everything else: an exception thrown INSIDE the block/rescue machinery
+# itself — e.g. a task in gate_rescue.yml or rollback_terminal.yml
+# throwing BEFORE it reaches its own lock_release.yml call — would
+# otherwise leave the lock held with nothing left to catch it (rescue:
+# has no rescue: of its own). always: is Ansible's one guarantee that
+# always runs, block/rescue outcome notwithstanding, so this is where
+# that backstop belongs.
+#
+# lock_release.yml is already idempotent (own-lock-only, "already gone"
+# tolerated, R2a-3c uid-preconditioned) — calling it again here after an
+# on-path release already ran is a safe no-op, not a double-release bug.
+#
+# R4a/P1-3: this file itself MUST NOT fail the play, even if ITS OWN
+# cleanup task errors — an always: block that itself throws would abort
+# the play from INSIDE always:, which defeats the entire point of using
+# always: as the guaranteed backstop. Failures here are logged loudly and
+# swallowed; the ORIGINAL failure (if any) that got the play into
+# rescue:/always: in the first place is what the operator needs to see,
+# not a secondary cleanup-path error masking it.
+
+- name: "L3 release: idempotent lock-release backstop (R4a/P1-3 — never fails the play)"
+  block:
+    - name: "L3 release: release the facility lock (idempotent, own-lock-only)"
+      ansible.builtin.include_tasks: lock_release.yml
+  rescue:
+    - name: "L3 release: lock-release backstop itself errored — log loudly, swallow (never mask the real failure)"
+      ansible.builtin.debug:
+        msg: >-
+          L3 release: the always:-block lock-release backstop hit an
+          error for run_id={{ l3_run_id | default('<unknown>') }},
+          attempt_id={{ l3_attempt_id | default('<unknown>') }} — logged
+          and swallowed here so it never masks whatever the ORIGINAL
+          failure was. The lock will still self-clear via TTL
+          ({{ l3_lock_ttl_seconds | default('?') }}s) if it is genuinely
+          still held by this attempt.

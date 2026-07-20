@@ -6,18 +6,27 @@
   connection: local
   gather_facts: false
   vars:
-    mxl_namespace: mxl
-    mxl_role: source
-    mxl_release: mxl-videotestsrc
-    mxl_interface: eth0
-    mxl_image_tag: v1.0.3
-    # Base chart repository — the pull task appends {{ mxl_chart_name }}.
+    # umbrella #202 WP3 R6a (codex round-5 P1-1/P1-2, replacing R5a-2's
+    # broken post-hoc consistency assert): TRUE single source. ONE play-
+    # scope definition per identity/render value below — the gate
+    # (l3_run_guard's capacity.yml render + snapshot.yml, included
+    # dynamically below with no vars: forwarding) sees these exact names
+    # via ordinary play-var scope, and this playbook's own install step
+    # further down reads the SAME names directly. See launch-nmos-cpp.yml's
+    # own header comment for the full mechanism explanation.
+    l3_release: mxl-videotestsrc
+    l3_target_namespace: mxl
+    l3_catalog_key: mxl-videotestsrc
+    # Base chart repository — the pull task appends {{ l3_chart_name }}.
     # (Was the full chart ref, which doubled the name in the pull URL and
     # could never resolve — latent since the chart was never published.)
-    mxl_chart_ref: "oci://zot.zot.svc.cluster.local:5000/dmf/charts"
-    mxl_chart_version: "0.2.1"
-    mxl_chart_local: ""
-    mxl_chart_name: mxl-fabrics-demo
+    l3_chart_ref: "oci://zot.zot.svc.cluster.local:5000/dmf/charts"
+    l3_chart_version: "0.2.1"
+    l3_chart_local: ""
+    l3_chart_name: mxl-fabrics-demo
+    mxl_role: source
+    mxl_interface: eth0
+    mxl_image_tag: v1.0.3
     # single-node = colocated pair on one node over the pod network;
     # split-node = the original cross-host hostNetwork shape (chart default).
     # AWX JT extra_vars derive this from the env release profile.
@@ -27,117 +36,229 @@
     # (awx-integration) pre-creates the equivalent, so the AWX lane launches
     # with false. Set true only for standalone out-of-cluster helm use.
     mxl_node_access_create: false
-    mxl_function_key: "{{ mxl_release }}"
+    # umbrella #202 WP3 R6b (codex round-6, umbrella #267): as of R6b,
+    # roles/mxl/defaults/main.yml's own netbox_service_name / app:<> tag /
+    # monitoring cluster_service+cluster_namespace read l3_catalog_key/
+    # l3_release/l3_target_namespace DIRECTLY (falling back to
+    # mxl_function_key/mxl_release/mxl_namespace only for a standalone,
+    # non-L3-gated use of the role) — so these three aliases no longer
+    # affect NetBox identity at all while the L3 gate is in play (R6a's
+    # "R6a scope boundary" caveat that used to live in this comment is
+    # CLOSED: forging mxl_function_key/mxl_release/mxl_namespace directly
+    # via extra_vars now has NO effect on what gets mutated, since the role
+    # doesn't read them for identity purposes anymore when l3_* is
+    # defined). Kept here only because roles/mxl/tasks/*.yml still
+    # reference mxl_function_key/mxl_release/mxl_namespace in task NAMES
+    # and mxl_service_description (cosmetic labels, not identity) — these
+    # aliases keep those labels accurate and in sync with the single
+    # source, nothing more.
+    mxl_function_key: "{{ l3_catalog_key }}"
+    mxl_release: "{{ l3_release }}"
+    mxl_namespace: "{{ l3_target_namespace }}"
+    # umbrella #202 WP3-A: the SAME --set values the install task below
+    # passes to `helm upgrade --install` — reused for the L3 capacity
+    # preflight's `helm template` recompute so it evaluates the chart this
+    # play is actually about to install, not a stale approximation.
+    l3_chart_set_values:
+      - "createNamespace=false"
+      - "role={{ mxl_role }}"
+      - "fabrics.interface={{ mxl_interface }}"
+      - "image.tag={{ mxl_image_tag }}"
+      - "placementMode={{ mxl_placement_mode }}"
+      - "nodeAccess.create={{ mxl_node_access_create | bool | lower }}"
   tasks:
-    - name: Assert single-node runs ride the pod interface
-      ansible.builtin.assert:
-        that:
-          - mxl_placement_mode != 'single-node' or mxl_interface == 'eth0'
-        fail_msg: >-
-          single-node placement expects mxl_interface=eth0 (the pod NIC);
-          override deliberately only if you know the CNI names it differently.
-
-    - name: Include mxl role (provision stage - NetBox catalog entry)
-      ansible.builtin.include_role:
-        name: mxl
-      vars:
-        mxl_stage: provision
-
-    # The mxl namespace (and the launcher's RBAC inside it) is pre-created by
-    # dmf-infra awx-integration — namespaces are cluster-scoped and the
-    # namespaced catalog launcher can neither create nor read them.
-
-    - name: Ensure shared MXL coordinator ConfigMap exists
-      kubernetes.core.k8s_info:
-        api_version: v1
-        kind: ConfigMap
-        name: mxl-coordinator
-        namespace: "{{ mxl_namespace }}"
-      register: _mxl_coordinator_cm
-
-    - name: Create empty coordinator ConfigMap when absent
-      kubernetes.core.k8s:
-        definition:
-          apiVersion: v1
-          kind: ConfigMap
-          metadata:
-            name: mxl-coordinator
-            namespace: "{{ mxl_namespace }}"
-          data: {}
-        state: present
-      when: _mxl_coordinator_cm.resources | length == 0
-
-    - name: Deploy MXL Helm chart from Zot or local path
+    - name: "L3 gate through terminal — ONE outer block/rescue/always (R4a
+        Backbone, codex round-3 P1-3/P1-11: main.yml's own stages
+        (identity->preflight->lock->snapshot->capacity) used to run
+        OUTSIDE any block — an exception there had nothing to catch it
+        and leaked the lock to TTL. The gate include is now INSIDE this
+        SAME outer block as the caller's own mutation, so gate_rescue.yml
+        (rescue:) sees every failure in this whole span, and release.yml
+        (always:) is the unconditional lock-release backstop)"
       block:
-        - name: Create temporary MXL chart directory
-          ansible.builtin.tempfile:
-            state: directory
-            suffix: mxl-fabrics-demo-chart
-          register: _mxl_chart_tmp
-          changed_when: false
-          when: mxl_chart_local | trim == ""
+        - name: "Include l3_run_guard role (umbrella #202 WP3-A authoritative
+            gate — identity/preflight/lock/snapshot/capacity). R6a: no
+            vars: forwarding — l3_release/l3_target_namespace/
+            l3_catalog_key/l3_chart_*/l3_chart_set_values are already
+            play-scoped above and stay in scope for the rest of THIS play,
+            including the install step below, which is exactly what makes
+            this single-source (the old vars: forwarding here is what
+            previously scoped those names to just this one task)."
+          ansible.builtin.include_role:
+            name: l3_run_guard
 
-        - name: Pull MXL Helm chart from plain-HTTP Zot
-          ansible.builtin.command:
-            argv:
-              - helm
-              - pull
-              - "{{ mxl_chart_ref }}/{{ mxl_chart_name }}"
-              - --version
-              - "{{ mxl_chart_version }}"
-              - --untar
-              - --untardir
-              - "{{ _mxl_chart_tmp.path }}"
-              - --plain-http
-          changed_when: false
-          when: mxl_chart_local | trim == ""
+        - name: Assert single-node runs ride the pod interface
+          ansible.builtin.assert:
+            that:
+              - mxl_placement_mode != 'single-node' or mxl_interface == 'eth0'
+            fail_msg: >-
+              single-node placement expects mxl_interface=eth0 (the pod NIC);
+              override deliberately only if you know the CNI names it differently.
 
-        - name: Install or upgrade MXL Helm release
-          ansible.builtin.command:
-            argv:
-              - helm
-              - upgrade
-              - --install
-              - "{{ mxl_release }}"
-              - "{{ mxl_chart_local | trim if (mxl_chart_local | trim) else _mxl_chart_tmp.path ~ '/' ~ mxl_chart_name }}"
-              - -n
-              - "{{ mxl_namespace }}"
-              - --set
-              - createNamespace=false
-              - --set
-              - role={{ mxl_role }}
-              - --set
-              - fabrics.interface={{ mxl_interface }}
-              - --set
-              - image.tag={{ mxl_image_tag }}
-              - --set
-              - placementMode={{ mxl_placement_mode }}
-              - --set
-              - nodeAccess.create={{ mxl_node_access_create | bool | lower }}
-          changed_when: true
+        - name: "L3: mark mutation as STARTED (everything from here on is a
+            real mutating action; gate_rescue.yml reads this to decide
+            superseded[pre-mutation] vs failed_rollback_required
+            [post-mutation])"
+          ansible.builtin.set_fact:
+            l3_mutation_started: true
 
-        - name: Wait for MXL workload to be Ready
+        - name: "L3: test-only fault injection boundary (R4a/P2-5 — no-op on every real run)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: fault_inject
+          vars:
+            l3_fault_inject_boundary: post-mutation-start
+
+        - name: "L3 lock checkpoint before provision (R4a/P1-4 — the FIRST real mutation; no checkpoint existed here before this round)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: lock_checkpoint
+
+        - name: Include mxl role (provision stage - NetBox catalog entry)
+          ansible.builtin.include_role:
+            name: mxl
+          vars:
+            mxl_stage: provision
+
+        - name: "L3: test-only fault injection boundary (R4a/P2-5 — after the first real mutation)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: fault_inject
+          vars:
+            l3_fault_inject_boundary: post-first-mutation
+
+        # The mxl namespace (and the launcher's RBAC inside it) is pre-created by
+        # dmf-infra awx-integration — namespaces are cluster-scoped and the
+        # namespaced catalog launcher can neither create nor read them.
+
+        - name: "L3 lock checkpoint before mxl-coordinator create (R4a/P1-4 — no checkpoint existed here before this round)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: lock_checkpoint
+
+        - name: Ensure shared MXL coordinator ConfigMap exists
           kubernetes.core.k8s_info:
-            api_version: apps/v1
-            kind: Deployment
-            name: "{{ mxl_release }}-{{ 'initiator' if mxl_role == 'source' else 'target' }}"
-            namespace: "{{ mxl_namespace }}"
-          register: _mxl_workload
-          until:
-            - _mxl_workload.resources | length > 0
-            - _mxl_workload.resources[0].status.readyReplicas | default(0) == (_mxl_workload.resources[0].spec.replicas | default(1))
-          retries: 30
-          delay: 10
-      always:
-        - name: Remove temporary MXL chart directory
-          ansible.builtin.file:
-            path: "{{ _mxl_chart_tmp.path | default('') }}"
-            state: absent
-          changed_when: false
-          when: _mxl_chart_tmp.path is defined
+            api_version: v1
+            kind: ConfigMap
+            name: mxl-coordinator
+            namespace: "{{ l3_target_namespace }}"
+          register: _mxl_coordinator_cm
 
-    - name: Include mxl role (configure stage - flip NetBox to active)
-      ansible.builtin.include_role:
-        name: mxl
-      vars:
-        mxl_stage: configure
+        - name: Create empty coordinator ConfigMap when absent
+          kubernetes.core.k8s:
+            definition:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: mxl-coordinator
+                namespace: "{{ l3_target_namespace }}"
+              data: {}
+            state: present
+          when: _mxl_coordinator_cm.resources | length == 0
+
+        - name: "L3 lock checkpoint before helm install (R3a-3b)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: lock_checkpoint
+
+        - name: Deploy MXL Helm chart from Zot or local path
+          block:
+            - name: Create temporary MXL chart directory
+              ansible.builtin.tempfile:
+                state: directory
+                suffix: mxl-fabrics-demo-chart
+              register: _mxl_chart_tmp
+              changed_when: false
+              when: l3_chart_local | trim == ""
+
+            - name: Pull MXL Helm chart from plain-HTTP Zot
+              ansible.builtin.command:
+                argv:
+                  - helm
+                  - pull
+                  - "{{ l3_chart_ref }}/{{ l3_chart_name }}"
+                  - --version
+                  - "{{ l3_chart_version }}"
+                  - --untar
+                  - --untardir
+                  - "{{ _mxl_chart_tmp.path }}"
+                  - --plain-http
+              changed_when: false
+              when: l3_chart_local | trim == ""
+
+            # R6a-1 (codex round-5): --set argv built via l3_set_flag_argv over
+            # l3_chart_set_values — the EXACT SAME filter+source pair
+            # capacity.yml's own render uses for its `helm template` call.
+            # Previously this task hand-duplicated the --set list inline
+            # (role=/fabrics.interface=/image.tag=/placementMode=/
+            # nodeAccess.create=), a SEPARATE, independently-maintained copy
+            # of what mxl_chart_set_values already assembled for the gate —
+            # a latent divergence risk if the two lists were ever edited
+            # out of step, beyond the l3_chart_set_values-not-checked gap
+            # codex round-5 named explicitly.
+            - name: Install or upgrade MXL Helm release
+              ansible.builtin.command:
+                argv: >-
+                  {{
+                    ['helm', 'upgrade', '--install', l3_release,
+                     (l3_chart_local | trim if (l3_chart_local | trim) else _mxl_chart_tmp.path ~ '/' ~ l3_chart_name),
+                     '-n', l3_target_namespace]
+                    + (l3_chart_set_values | l3_set_flag_argv)
+                  }}
+              changed_when: true
+
+            - name: Wait for MXL workload to be Ready
+              kubernetes.core.k8s_info:
+                api_version: apps/v1
+                kind: Deployment
+                name: "{{ l3_release }}-{{ 'initiator' if mxl_role == 'source' else 'target' }}"
+                namespace: "{{ l3_target_namespace }}"
+              register: _mxl_workload
+              until:
+                - _mxl_workload.resources | length > 0
+                - _mxl_workload.resources[0].status.readyReplicas | default(0) == (_mxl_workload.resources[0].spec.replicas | default(1))
+              retries: 30
+              delay: 10
+          always:
+            - name: Remove temporary MXL chart directory
+              ansible.builtin.file:
+                path: "{{ _mxl_chart_tmp.path | default('') }}"
+                state: absent
+              changed_when: false
+              when: _mxl_chart_tmp.path is defined
+
+        - name: "L3 lock checkpoint before NetBox configure (R3a-3b)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: lock_checkpoint
+
+        - name: Include mxl role (configure stage - flip NetBox to active)
+          ansible.builtin.include_role:
+            name: mxl
+          vars:
+            mxl_stage: configure
+
+        - name: L3 launch success — terminalize snapshot + release lock
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: launch_success
+      rescue:
+        - name: "L3 gate rescue — shared launch/teardown cleanup (R4a Backbone: mutation-state-aware
+            snapshot terminalization + marker, unless a hand-written refusal already emitted its own)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: gate_rescue
+
+        - name: Re-raise (gate_rescue.yml only does cleanup, never terminates the play itself)
+          ansible.builtin.fail:
+            msg: >-
+              MXL fabrics-demo launch failed for run_id={{ l3_run_id | default('<unknown>') }}.
+              See the task error above for the root cause; the L3 gate's
+              own cleanup (snapshot terminalized, facility lock released)
+              has already run.
+      always:
+        - name: "L3 release — idempotent lock-release backstop (R4a Backbone: catches anything
+            gate_rescue.yml itself failed to release, or a case where rescue never even ran)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: release

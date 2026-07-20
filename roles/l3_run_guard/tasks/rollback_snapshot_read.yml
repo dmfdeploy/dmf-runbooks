@@ -1,0 +1,107 @@
+---
+# umbrella #202 WP3-B stage — snapshot read + refusals (§4.1).
+#
+# R3a-5 (codex round-2 P1-5): this now runs UNDER THE HELD LOCK (rollback.yml
+# moved the lock acquisition to stage 2, before this stage) — a concurrent
+# run can no longer supersede/mutate/finish the snapshot in the gap
+# between reading it and holding the lock, which the R2a draft's
+# read-then-lock ordering left open. A refusal here now RELEASES THE LOCK
+# too (via _refuse_pre_mutation.yml — its snapshot-supersede step safely
+# no-ops since l3_snapshot_created is never set on the rollback path,
+# rollback never creates its own new snapshot).
+#
+# no-snapshot / stale-snapshot are STRUCTURAL preconditions, not per-run
+# capacity/lock decisions — like capacity.yml's multi-node-unsupported,
+# l3_override does NOT apply to either: there is either no pre-run
+# baseline to diff against at all (no-snapshot), or the recorded baseline
+# is no longer trustworthy for a subtractive diff (stale-snapshot — the
+# run already reached a terminal outcome, or its snapshot was superseded
+# by a later run). An operator cannot "override" their way past a missing
+# or untrustworthy diff baseline; the rollback literally has nothing safe
+# to compute against. (codex WP3-B's own text doesn't mention override for
+# these two refusals, unlike facility-busy/no-fit/missing-budget in
+# WP3-A, which explicitly do — treating that omission as deliberate here,
+# flagged in the WP3-B report.)
+
+- name: "L3 rollback: read the run's snapshot ConfigMap"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    name: "{{ l3_run_configmap_prefix }}{{ l3_run_id }}"
+    namespace: "{{ l3_lock_namespace }}"
+  register: _l3_snapshot_read
+
+- name: "L3 rollback: extract snapshot status (None when absent)"
+  ansible.builtin.set_fact:
+    _l3_snapshot_status: >-
+      {{
+        (_l3_snapshot_read.resources | first).data.status
+        if (_l3_snapshot_read.resources | default([]) | length > 0)
+        else None
+      }}
+
+- name: "L3 rollback: classify refusal (pure — l3_snapshot_refusal)"
+  ansible.builtin.set_fact:
+    _l3_snapshot_refusal_token: "{{ _l3_snapshot_status | l3_snapshot_refusal }}"
+
+- name: "L3 rollback: snapshot refusal — report, marker, release lock, hard fail (no override)"
+  when: _l3_snapshot_refusal_token is not none
+  block:
+    - name: Report snapshot refusal
+      ansible.builtin.debug:
+        msg: >-
+          L3 rollback refused: {{ _l3_snapshot_refusal_token }}. run_id=
+          {{ l3_run_id }}, recorded snapshot status=
+          {{ _l3_snapshot_status | default('<no snapshot found>') }}.
+
+    - name: "L3 rollback: mark this refusal EXPECTED (R4a/P1-7 — set BEFORE
+        _refuse_pre_mutation.yml's own ansible.builtin.fail below, so
+        rollback.yml's outer rescue can tell 'a hand-written refusal
+        branch already emitted its own honest terminal token and
+        re-raised' apart from 'an unexpected mid-flow failure' and just
+        re-raise WITHOUT emitting a second rollback_incomplete marker on
+        top of it — codex round-3's exact finding: dmf-cms selects the
+        LAST event, so a second marker here silently hid the real
+        no-snapshot/stale-snapshot outcome from the operator)"
+      ansible.builtin.set_fact:
+        l3_expected_refusal: true
+
+    - name: "L3 rollback snapshot-refusal cleanup (never override-able;
+        R3a-5 — releases the lock this stage now holds; the snapshot-
+        supersede step safely no-ops, l3_snapshot_created is never set on
+        the rollback path)"
+      ansible.builtin.include_tasks: _refuse_pre_mutation.yml
+      vars:
+        l3_outcome_token: "{{ _l3_snapshot_refusal_token }}"
+        l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id }}"
+        l3_refusal_fail_msg: >-
+          L3 rollback refused: {{ _l3_snapshot_refusal_token }} for
+          run_id={{ l3_run_id }} (recorded status:
+          {{ _l3_snapshot_status | default('<none>') }}). This is a
+          structural precondition (no valid pre-run baseline to diff
+          against) — l3_override cannot apply to it.
+
+# ── Eligible to proceed — parse the snapshot's three surfaces back out of
+#    their JSON-string CM data fields (snapshot.yml wrote them via to_json;
+#    netbox_surface now carries each record's own id, R2a-5), and derive
+#    l3_catalog_key/l3_release from the snapshot's OWN dmf.io/catalog-key +
+#    dmf.io/release labels (R2a-1: split from the original single illegal
+#    "<key>/<release>" dmf.io/topology label value) — a rollback is driven
+#    purely by run_id, the operator never needs to separately (and
+#    error-pronely) re-supply the catalog key. ────────────────────────────
+- name: "L3 rollback: parse the snapshot's recorded surfaces"
+  ansible.builtin.set_fact:
+    _l3_snapshot_cm: "{{ _l3_snapshot_read.resources | first }}"
+    _l3_snapshot_netbox_surface: "{{ (_l3_snapshot_read.resources | first).data.netbox_surface | from_json }}"
+    _l3_snapshot_helm_surface: "{{ (_l3_snapshot_read.resources | first).data.helm_surface | from_json }}"
+
+- name: "L3 rollback: derive catalog_key/release from the snapshot's own labels (R2a-1)"
+  ansible.builtin.set_fact:
+    l3_catalog_key: "{{ _l3_snapshot_cm.metadata.labels['dmf.io/catalog-key'] | default('') }}"
+    l3_release: "{{ _l3_snapshot_cm.metadata.labels['dmf.io/release'] | default('') }}"
+
+- name: "L3 rollback: report eligibility"
+  ansible.builtin.debug:
+    msg: >-
+      L3 rollback proceeding for run_id={{ l3_run_id }} (recorded snapshot
+      status={{ _l3_snapshot_status }}).

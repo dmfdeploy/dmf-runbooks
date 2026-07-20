@@ -1,0 +1,205 @@
+---
+# umbrella #202 WP3 R3a-13 (codex round-2 P2-6), rebuilt R4a (codex
+# round-3 P1-2) — reject any caller-supplied extra_var that SHADOWS one
+# of this role's purely-internal, derived-only facts. Every catalog job
+# template has ask_variables_on_launch=true (dmf-infra awx-integration),
+# so an operator/console extra_var of the SAME NAME as one of these
+# set_fact-only internal facts would silently override the role's own
+# computed value under normal Ansible precedence (extra_vars OUTRANK a
+# role's own set_fact/vars) — included as the FIRST substantive check in
+# identity.yml (launch AND, via lock_only.yml's own reuse of identity.yml,
+# teardown) and rollback_identity.yml, before any of these facts are ever
+# relied upon.
+#
+# R4a/P1-2: the R3a-13 draft computed `_l3_reserved_var_violation` via
+# set_fact, then trusted it in a `when:`. Extra_vars outrank set_fact, so
+# supplying `_l3_reserved_var_violation=false` as an extra_var — alongside
+# whatever OTHER reserved var the caller actually wanted to inject, e.g.
+# `l3_attempt_id=attacker-controlled` — silently skipped the whole guard.
+# Codex round-3 reproduced this in an EXECUTED role probe. Fixed by making
+# this a SINGLE DIRECT assert with every reserved name spelled out
+# in-line in `that:` — no intermediate fact or variable of ANY kind,
+# because a named intermediate (even a differently-named one, e.g. a
+# `vars:`-supplied boolean flag) just moves the same bypass: extra_vars
+# outrank a task's own `vars:` too. Every name below is checked directly
+# against the real Ansible "is (not) defined" test each time this task
+# runs; there is nothing here a caller can override to make the check
+# pass while still supplying a reserved name. The block/rescue below (not
+# a `when:`) is what routes a failed assert to the marker-emitting
+# cleanup — the ONLY way into `rescue:` is a genuine assert failure, so
+# there is no condition here a caller could shadow to skip cleanup while
+# still letting the assert itself fail closed.
+#
+# R4a/P1-2 also closes the previously-documented "emitter shadow"
+# residual: l3_outcome_token/l3_outcome_kv are reserved here same as
+# always, but now that THIS guard can no longer be bypassed, no caller
+# can ever reach _emit_outcome.yml/_refuse_pre_mutation.yml with an
+# injected l3_outcome_token extra_var still in scope — the run refuses
+# right here, before any refusal/outcome path is reached at all.
+#
+# R5a/P1-1 (codex round-4): the R4a list above covered SELECTED set_fact
+# names but omitted every `register:` target (e.g. _l3_lock_create,
+# _l3_checkpoint_read) — extra_vars outrank REGISTERED variables
+# identically to set_fact, so a caller could forge a module call's own
+# result (codex's executed proof:
+# `-e '{"_l3_lock_create":{"status":201,...}}'` faked a lock acquisition
+# with no real POST). This list now reserves EVERY register:/set_fact:
+# name this role's own task files produce — no longer hand-maintained
+# from memory. tests/scripts/check_reserved_vars.py re-derives the full
+# name set from the actual task files on every run and FAILS if anything
+# is missing here — the blocklist can never again silently drift the way
+# it did between R4a and R5a. Run it directly, or via
+# tests/l3-reserved-var-meta-test.yml.
+#
+# This is the UNIVERSAL reserved set — every `l3_*`/`_l3_*` fact this
+# role's OWN task files ever set via set_fact OR register, EXCEPT the
+# handful of names that are legitimate CALLER-SUPPLIED inputs on at least
+# one entry path (l3_catalog_key, l3_release — role vars on launch, only
+# ever set_fact'd internally much later during a ROLLBACK's own
+# snapshot-read, well after this check has already run; l3_request_id —
+# an optional caller input on every entry path; l3_override_reason — a
+# caller input gating l3_override; l3_rollback_reason/l3_target_namespace/
+# l3_chart_ref/l3_chart_name/l3_chart_version/l3_chart_set_values/
+# l3_chart_local/l3_override — caller/playbook-supplied role params, never
+# role-internal derived facts). l3_run_id is EXCLUDED from this universal
+# list: it's a required CALLER input on rollback (the target to roll back)
+# but a purely role-derived fact on launch/teardown — identity.yml carries
+# its own SEPARATE, equally-direct assert for the launch/teardown case
+# right after this include (rollback_identity.yml does not, since
+# l3_run_id is rollback's own legitimate required input there). The
+# EXACT same exclusion set is encoded in
+# tests/scripts/check_reserved_vars.py's own _LEGITIMATE_CALLER_INPUTS —
+# keep the two in sync (the meta-test fails loudly if they drift apart).
+
+- name: "L3: reserved-var shadowing check + refusal (R4a/P1-2)"
+  block:
+    - name: "L3: reserved-var shadowing refusal (R4a/P1-2 — single direct assert, no shadowable intermediate)"
+      ansible.builtin.assert:
+        that:
+          - l3_attempt_id is not defined
+          - l3_outcome_token is not defined
+          - l3_outcome_kv is not defined
+          - l3_snapshot_created is not defined
+          - l3_lock_acquired is not defined
+          - l3_entry_path is not defined
+          - l3_lock_attempt_number is not defined
+          - l3_now_epoch is not defined
+          - l3_override_active is not defined
+          - l3_mutation_started is not defined
+          - l3_rollback_terminal_reached is not defined
+          - l3_pre_mutation_marker_emitted is not defined
+          - l3_expected_refusal is not defined
+          - _l3_allocatable is not defined
+          - _l3_api_available is not defined
+          - _l3_api_ca_path is not defined
+          - _l3_api_token is not defined
+          - _l3_api_url is not defined
+          - _l3_api_validate_certs is not defined
+          - _l3_chart_render_path is not defined
+          - _l3_checkpoint_manifest is not defined
+          - _l3_current_helm_surface is not defined
+          - _l3_current_helm_surface_base is not defined
+          - _l3_current_helm_surface_flat is not defined
+          - _l3_current_netbox_records is not defined
+          - _l3_existing_demand is not defined
+          - _l3_fit is not defined
+          - _l3_helm_content_restores is not defined
+          - _l3_helm_dirty is not defined
+          - _l3_helm_surface is not defined
+          - _l3_helm_surface_base is not defined
+          - _l3_helm_surface_flat is not defined
+          - _l3_lock_decision is not defined
+          - _l3_lock_manifest is not defined
+          - _l3_lock_release_decision is not defined
+          - _l3_monitoring_surface is not defined
+          - _l3_mxl_remaining_prefixed is not defined
+          - _l3_netbox_classification is not defined
+          - _l3_netbox_dirty is not defined
+          - _l3_netbox_dirty_accum is not defined
+          - _l3_netbox_surface is not defined
+          - _l3_owner is not defined
+          - _l3_preflight_failure is not defined
+          - _l3_readback_helm_flat is not defined
+          - _l3_readback_helm_list_failed is not defined
+          - _l3_readback_helm_surface is not defined
+          - _l3_readback_helm_surface_base is not defined
+          - _l3_releases_to_remove is not defined
+          - _l3_releases_to_remove_flat is not defined
+          - _l3_rendered_manifests is not defined
+          - _l3_restore_owned_desired is not defined
+          - _l3_restore_owned_desired_cf is not defined
+          - _l3_rollback_outcome is not defined
+          - _l3_run_classification is not defined
+          - _l3_run_demand is not defined
+          - _l3_run_demand_result is not defined
+          - _l3_snapshot_cm is not defined
+          - _l3_snapshot_helm_surface is not defined
+          - _l3_snapshot_manifest is not defined
+          - _l3_snapshot_netbox_surface is not defined
+          - _l3_snapshot_refusal_token is not defined
+          - _l3_snapshot_status is not defined
+          - _l3_all_pods is not defined
+          - _l3_all_run_cms is not defined
+          - _l3_capacity_nodes is not defined
+          - _l3_chart_tmp is not defined
+          - _l3_checkpoint_read is not defined
+          - _l3_checkpoint_refresh is not defined
+          - _l3_fenced_check_read is not defined
+          - _l3_fenced_out is not defined
+          - _l3_fault_inject_swap_read is not defined
+          - _l3_current_helm_mxl is not defined
+          - _l3_current_helm_nmos is not defined
+          - _l3_current_helm_values_results is not defined
+          - _l3_current_netbox_lookup is not defined
+          - _l3_helm_content_restore_results is not defined
+          - _l3_helm_list_mxl is not defined
+          - _l3_helm_list_nmos is not defined
+          - _l3_helm_template is not defined
+          - _l3_helm_uninstall_results is not defined
+          - _l3_helm_values_results is not defined
+          - _l3_lock_create is not defined
+          - _l3_lock_read is not defined
+          - _l3_lock_reclaim_create is not defined
+          - _l3_lock_reclaim_delete is not defined
+          - _l3_lock_reclaim_verify_read is not defined
+          - _l3_lock_release_delete is not defined
+          - _l3_lock_release_read is not defined
+          - _l3_lock_verify_read is not defined
+          - _l3_mxl_remaining is not defined
+          - _l3_netbox_delete_delete is not defined
+          - _l3_netbox_delete_patch is not defined
+          - _l3_netbox_delete_readback is not defined
+          - _l3_netbox_lookup is not defined
+          - _l3_netbox_restore_patch is not defined
+          - _l3_netbox_restore_readback is not defined
+          - _l3_nodes is not defined
+          - _l3_readback_helm_mxl is not defined
+          - _l3_readback_helm_nmos is not defined
+          - _l3_readback_helm_values_results is not defined
+          - _l3_sa_token_stat is not defined
+          - _l3_snapshot_collision_read is not defined
+          - _l3_snapshot_create is not defined
+          - _l3_snapshot_read is not defined
+          - _l3_snapshot_verify_read is not defined
+          - _l3_target_ns is not defined
+        fail_msg: >-
+          L3 launcher refused: preflight-error (reserved-var). One or more
+          reserved internal variables were supplied as extra_vars — these
+          are set exclusively by this role's own logic and must never be
+          caller-supplied. See _assert_reserved_vars.yml for the full
+          reserved-name list.
+  rescue:
+    - name: Report reserved-var violation
+      ansible.builtin.debug:
+        msg: >-
+          L3 launcher refused: preflight-error (reserved-var). One or more
+          reserved internal variables were supplied as extra_vars.
+
+    - name: "L3 reserved-var refusal cleanup (R4a/P1-2, never override-able, pre-lock)"
+      ansible.builtin.include_tasks: _refuse_pre_mutation.yml
+      vars:
+        l3_outcome_token: preflight-error
+        l3_outcome_kv: "run_id={{ l3_run_id | default('') }} request_id={{ l3_request_id | default('') }} detail=reserved-var"
+        l3_refusal_fail_msg: >-
+          L3 launcher refused: preflight-error (reserved-var). Structural
+          precondition — cannot be overridden.

@@ -1,0 +1,1642 @@
+---
+# umbrella #202 WP3 R5a-6 (codex round-4 P2-3) — REAL-playbook stubbed
+# execution tests. tests/l3-control-flow.yml (R4a-R5a) proves the
+# task-file/control-flow layer against a FIXTURE that REPLICATES the real
+# playbooks' block/rescue/always shape — it never runs, or even looks at,
+# the actual 7 playbooks under playbooks/. This suite closes exactly that
+# gap (codex round-4's P2-3 finding): it runs each REAL, unmodified
+# playbooks/*.yml file, as a real `ansible-playbook` subprocess, against
+# the test harness stubs, with a fault injected at the shared `post-lock`
+# boundary (roles/l3_run_guard/tasks/lock.yml's own fault_inject.yml
+# include — the ONLY fault-injection boundary reachable from OUTSIDE the
+# gate role's own stages 4-5, see this file's own rollback scenario
+# comment for why that matters) — so every scenario fails BEFORE reaching
+# any step that would need a real/successful Helm install or a real K8s
+# workload-readiness wait (see tests/harness/README.md's "Known gaps" —
+# helm template/pull stubbing here is minimal by design).
+#
+# WHY THIS MATTERS (the exact regression class this closes): two real
+# bugs shipped this round undetected by ANY test, because the fixture the
+# old suite runs never had the defect shape to begin with:
+#   1. launch-nmos-crosspoint.yml's own credential assert used to sit
+#      BEFORE the outer block (fixed R5a-3) — a missing secret produced a
+#      raw task-zero failure with no gate cleanup and no DMF_L3_OUTCOME
+#      marker at all.
+#   2. several lock-lifecycle checkpoints were missing before terminal
+#      ConfigMap patches (fixed R5a-4).
+# tests/l3-playbook-structure.yml (this task's other half) proves the
+# STATIC shape that prevents bug class 1 from recurring; THIS file proves
+# the real playbooks' DYNAMIC failure-path behavior — that a fault this
+# early genuinely propagates, unconditionally releases the facility lock,
+# and (launch/teardown) emits exactly the one honest pre-mutation marker
+# dmf-cms needs to classify the outcome.
+#
+# Run:  ansible-playbook tests/l3-playbook-execution.yml
+#
+# Each scenario starts a FRESH stub-server process (fresh OS process =
+# fresh STATE, see tests/harness/README.md) so scenarios never leak state
+# into each other, then runs ONE real playbooks/*.yml file as a nested
+# `ansible-playbook` subprocess (mirrors how AWX job events / dmf-cms
+# parse real stdout — same idiom as tests/l3-control-flow.yml's own
+# fixture invocations) and asserts:
+#   1. the run FAILED (rc != 0) — the injected fault propagated.
+#   2. exactly the EXPECTED number of DMF_L3_OUTCOME marker lines, with
+#      the expected token, appear in stdout.
+#   3. via REAL HTTP against the stub K8s API, the facility lock
+#      ConfigMap is gone (404) afterward — proving unconditional release.
+#
+# WHY `post-lock`, not `post-first-mutation` (the OTHER boundary
+# tests/l3-control-flow.yml's own fixture exercises): `post-lock` is
+# wired ONCE, inside roles/l3_run_guard/tasks/lock.yml itself, which
+# EVERY entry path (launch's main.yml stage 3, teardown's lock_only.yml,
+# rollback's own stage 2) runs through — so a single boundary name
+# reaches all 7 real playbooks with zero playbook-specific
+# fault-boundary wiring. `post-first-mutation`, by contrast, is only
+# wired at explicit include points INSIDE each launch-*.yml/
+# teardown-*.yml playbook's own tasks — reaching it on the real playbooks
+# would additionally require a real (or much more thoroughly stubbed)
+# first mutation (nmos-cpp/nmos-crosspoint/mxl role provision stage) to
+# complete first, which is explicitly out of scope here (see this file's
+# own header above + tests/harness/README.md's "Known gaps"). `post-lock`
+# alone is sufficient to prove the property this task cares about: a
+# fault firing genuinely early, on the REAL playbook files, unconditionally
+# releases the lock and (launch/teardown) emits one honest marker.
+#
+# KUBECONFIG, not module_defaults: this suite cannot add
+# `module_defaults: group/kubernetes.core.k8s: {...}` to the invocation
+# the way tests/harness/fixtures/*.yml do (those ARE the test-owned
+# fixture files; playbooks/*.yml are the REAL, unmodified production
+# files this task must not touch) — kubernetes.core.k8s_info/k8s calls
+# inside the role (the lock's own cluster-truth readback, R5a/P1-1) don't
+# read l3_kube_api_url/l3_kube_api_token at all, only the official
+# `kubernetes` Python client's own connection resolution does. Per
+# tests/harness/README.md's own documented alternative ("or globally via
+# the module defaults group / a generated kubeconfig file (KUBECONFIG env
+# var) if a test playbook needs to exercise the role's unmodified tasks
+# without adding per-task connection params"), each scenario below
+# writes a minimal kubeconfig (fake bearer token,
+# insecure-skip-tls-verify: true, pointed at that scenario's own stub)
+# and sets KUBECONFIG in the nested ansible-playbook subprocess's own
+# environment. This was found the hard way while building this suite: an
+# early draft that supplied only l3_kube_api_url/l3_kube_api_token (no
+# KUBECONFIG) got a DIFFERENT, unrelated failure — "facility-busy
+# (lock-verify-failed)" — because the readback's k8s_info call fell
+# through to whatever a bare/absent kubeconfig resolves to on the
+# operator's machine, not the stub.
+#
+# R5a-6 FINDING, FIXED same round: this suite's own construction
+# surfaced that rollback.yml's stages 1-2 (identity, facility lock) used
+# to run OUTSIDE rollback.yml's own inner block/rescue — the exact same
+# "early stages ran unenclosed" bug R4a/P1-3 fixed for launch/teardown,
+# never carried over to rollback. An UNEXPECTED failure during those two
+# stages (like the shared `post-lock` fault used below) propagated with
+# the facility lock still correctly released (rollback-run.yml's own
+# outer always: release.yml backstop covered that), but ZERO
+# DMF_L3_OUTCOME marker was ever emitted — unlike every equivalent early
+# failure on launch/teardown, which always gets exactly one honest
+# pre-mutation marker via gate_rescue.yml. Fixed in roles/l3_run_guard/
+# tasks/rollback.yml by moving stages 1-2 INSIDE the existing block, so
+# its own rescue (already covering stages 3-6) now covers the whole
+# flow — matching launch/teardown's Backbone shape exactly. Scenario 7
+# below now asserts the FIXED behavior: exactly one marker
+# (rollback_incomplete, rollback's own generic "unexpected pre-terminal
+# failure" token — see rollback.yml's own rescue), same as every other
+# entry playbook's post-lock fault scenario.
+
+- name: "Umbrella #202 WP3 R5a-6 — L3 real-playbook stubbed execution tests"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    l3_harness_dir: "{{ playbook_dir }}/harness"
+
+  tasks:
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 1: launch-nmos-cpp.yml, fault at post-lock
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(1) launch-nmos-cpp.yml @ post-lock — start fresh stubs, run the REAL playbook as a nested ansible-playbook"
+      vars:
+        _pe1_run_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      block:
+        - name: "(1) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-1.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(1) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-pe-1.json]
+          register: _pe1_start
+          changed_when: false
+
+        - name: "(1) parse stub URLs"
+          ansible.builtin.set_fact:
+            _pe1_k8s_url: "{{ _pe1_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _pe1_netbox_url: "{{ _pe1_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(1) write a minimal kubeconfig pointed at this scenario's own K8s stub (see this file's own header — module_defaults can't be added to a REAL playbook invocation)"
+          ansible.builtin.copy:
+            dest: /tmp/l3-pe-1-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _pe1_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(1) run the REAL playbooks/launch-nmos-cpp.yml as a nested ansible-playbook, fault injected at post-lock"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/launch-nmos-cpp.yml"
+              - -e
+              - "l3_kube_api_url={{ _pe1_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _pe1_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - l3_fault_inject=post-lock
+              - -e
+              - "l3_request_id={{ _pe1_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-pe-1-kubeconfig.yaml
+          register: _pe1_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(1) ASSERT: the REAL playbook run FAILED (the injected fault propagated)"
+          ansible.builtin.assert:
+            that:
+              - _pe1_run.rc != 0
+            fail_msg: "(1) FAIL — launch-nmos-cpp.yml (post-lock) exited 0; the injected fault did not propagate. stdout={{ _pe1_run.stdout }}"
+
+        - name: "(1) ASSERT: exactly ONE DMF_L3_OUTCOME marker, token preflight-error (pre-mutation — nothing was mutated yet)"
+          ansible.builtin.set_fact:
+            _pe1_markers: "{{ (_pe1_run.stdout_lines | select('match', '.*DMF_L3_OUTCOME:.*') | list) }}"
+
+        - name: "(1) assert marker-count + token"
+          ansible.builtin.assert:
+            that:
+              - _pe1_markers | length == 1
+              - "'preflight-error' in _pe1_markers[0]"
+            fail_msg: "(1) FAIL — expected exactly one preflight-error marker, got: {{ _pe1_markers }}"
+
+        - name: "(1) ASSERT (via real HTTP against the stub): the facility lock was released"
+          ansible.builtin.uri:
+            url: "{{ _pe1_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(1) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-1.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 2: launch-nmos-crosspoint.yml, fault at post-lock (a real,
+    # non-empty admin password is supplied so the R5a-3 in-block
+    # credential assert would pass IF it were ever reached — it isn't,
+    # since post-lock fires earlier, inside the gate's own main.yml, but
+    # supplying a real password keeps this scenario honest about not
+    # relying on THAT assert to produce the failure under test)
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(2) launch-nmos-crosspoint.yml @ post-lock — start fresh stubs, run the REAL playbook as a nested ansible-playbook"
+      vars:
+        _pe2_run_id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      block:
+        - name: "(2) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-2.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(2) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-pe-2.json]
+          register: _pe2_start
+          changed_when: false
+
+        - name: "(2) parse stub URLs"
+          ansible.builtin.set_fact:
+            _pe2_k8s_url: "{{ _pe2_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _pe2_netbox_url: "{{ _pe2_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(2) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-pe-2-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _pe2_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(2) run the REAL playbooks/launch-nmos-crosspoint.yml as a nested ansible-playbook, fault injected at post-lock"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/launch-nmos-crosspoint.yml"
+              - -e
+              - "l3_kube_api_url={{ _pe2_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _pe2_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - l3_fault_inject=post-lock
+              - -e
+              - "l3_request_id={{ _pe2_run_id }}"
+              - -e
+              - vault_nmos_crosspoint_admin_password=fake-admin-password
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-pe-2-kubeconfig.yaml
+          register: _pe2_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(2) ASSERT: the REAL playbook run FAILED (the injected fault propagated)"
+          ansible.builtin.assert:
+            that:
+              - _pe2_run.rc != 0
+            fail_msg: "(2) FAIL — launch-nmos-crosspoint.yml (post-lock) exited 0; the injected fault did not propagate. stdout={{ _pe2_run.stdout }}"
+
+        - name: "(2) ASSERT: exactly ONE DMF_L3_OUTCOME marker, token preflight-error"
+          ansible.builtin.set_fact:
+            _pe2_markers: "{{ (_pe2_run.stdout_lines | select('match', '.*DMF_L3_OUTCOME:.*') | list) }}"
+
+        - name: "(2) assert marker-count + token"
+          ansible.builtin.assert:
+            that:
+              - _pe2_markers | length == 1
+              - "'preflight-error' in _pe2_markers[0]"
+            fail_msg: "(2) FAIL — expected exactly one preflight-error marker, got: {{ _pe2_markers }}"
+
+        - name: "(2) ASSERT (via real HTTP against the stub): the facility lock was released"
+          ansible.builtin.uri:
+            url: "{{ _pe2_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(2) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-2.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 3: launch-mxl-fabrics-demo.yml, fault at post-lock
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(3) launch-mxl-fabrics-demo.yml @ post-lock — start fresh stubs, run the REAL playbook as a nested ansible-playbook"
+      vars:
+        _pe3_run_id: "cccccccccccccccccccccccccccccccc"
+      block:
+        - name: "(3) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-3.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(3) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-pe-3.json]
+          register: _pe3_start
+          changed_when: false
+
+        - name: "(3) parse stub URLs"
+          ansible.builtin.set_fact:
+            _pe3_k8s_url: "{{ _pe3_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _pe3_netbox_url: "{{ _pe3_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(3) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-pe-3-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _pe3_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(3) run the REAL playbooks/launch-mxl-fabrics-demo.yml as a nested ansible-playbook, fault injected at post-lock"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/launch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _pe3_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _pe3_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - l3_fault_inject=post-lock
+              - -e
+              - "l3_request_id={{ _pe3_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-pe-3-kubeconfig.yaml
+          register: _pe3_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(3) ASSERT: the REAL playbook run FAILED (the injected fault propagated)"
+          ansible.builtin.assert:
+            that:
+              - _pe3_run.rc != 0
+            fail_msg: "(3) FAIL — launch-mxl-fabrics-demo.yml (post-lock) exited 0; the injected fault did not propagate. stdout={{ _pe3_run.stdout }}"
+
+        - name: "(3) ASSERT: exactly ONE DMF_L3_OUTCOME marker, token preflight-error"
+          ansible.builtin.set_fact:
+            _pe3_markers: "{{ (_pe3_run.stdout_lines | select('match', '.*DMF_L3_OUTCOME:.*') | list) }}"
+
+        - name: "(3) assert marker-count + token"
+          ansible.builtin.assert:
+            that:
+              - _pe3_markers | length == 1
+              - "'preflight-error' in _pe3_markers[0]"
+            fail_msg: "(3) FAIL — expected exactly one preflight-error marker, got: {{ _pe3_markers }}"
+
+        - name: "(3) ASSERT (via real HTTP against the stub): the facility lock was released"
+          ansible.builtin.uri:
+            url: "{{ _pe3_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(3) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-3.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 4: teardown-nmos-cpp.yml, fault at post-lock
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(4) teardown-nmos-cpp.yml @ post-lock — start fresh stubs, run the REAL playbook as a nested ansible-playbook"
+      vars:
+        _pe4_run_id: "dddddddddddddddddddddddddddddddd"
+      block:
+        - name: "(4) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-4.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(4) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-pe-4.json]
+          register: _pe4_start
+          changed_when: false
+
+        - name: "(4) parse stub URLs"
+          ansible.builtin.set_fact:
+            _pe4_k8s_url: "{{ _pe4_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _pe4_netbox_url: "{{ _pe4_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(4) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-pe-4-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _pe4_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(4) run the REAL playbooks/teardown-nmos-cpp.yml as a nested ansible-playbook, fault injected at post-lock"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/teardown-nmos-cpp.yml"
+              - -e
+              - "l3_kube_api_url={{ _pe4_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _pe4_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - l3_fault_inject=post-lock
+              - -e
+              - "l3_request_id={{ _pe4_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-pe-4-kubeconfig.yaml
+          register: _pe4_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(4) ASSERT: the REAL playbook run FAILED (the injected fault propagated)"
+          ansible.builtin.assert:
+            that:
+              - _pe4_run.rc != 0
+            fail_msg: "(4) FAIL — teardown-nmos-cpp.yml (post-lock) exited 0; the injected fault did not propagate. stdout={{ _pe4_run.stdout }}"
+
+        - name: "(4) ASSERT: exactly ONE DMF_L3_OUTCOME marker, token preflight-error"
+          ansible.builtin.set_fact:
+            _pe4_markers: "{{ (_pe4_run.stdout_lines | select('match', '.*DMF_L3_OUTCOME:.*') | list) }}"
+
+        - name: "(4) assert marker-count + token"
+          ansible.builtin.assert:
+            that:
+              - _pe4_markers | length == 1
+              - "'preflight-error' in _pe4_markers[0]"
+            fail_msg: "(4) FAIL — expected exactly one preflight-error marker, got: {{ _pe4_markers }}"
+
+        - name: "(4) ASSERT (via real HTTP against the stub): the facility lock was released"
+          ansible.builtin.uri:
+            url: "{{ _pe4_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(4) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-4.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 5: teardown-nmos-crosspoint.yml, fault at post-lock
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(5) teardown-nmos-crosspoint.yml @ post-lock — start fresh stubs, run the REAL playbook as a nested ansible-playbook"
+      vars:
+        _pe5_run_id: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      block:
+        - name: "(5) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-5.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(5) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-pe-5.json]
+          register: _pe5_start
+          changed_when: false
+
+        - name: "(5) parse stub URLs"
+          ansible.builtin.set_fact:
+            _pe5_k8s_url: "{{ _pe5_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _pe5_netbox_url: "{{ _pe5_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(5) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-pe-5-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _pe5_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(5) run the REAL playbooks/teardown-nmos-crosspoint.yml as a nested ansible-playbook, fault injected at post-lock"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/teardown-nmos-crosspoint.yml"
+              - -e
+              - "l3_kube_api_url={{ _pe5_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _pe5_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - l3_fault_inject=post-lock
+              - -e
+              - "l3_request_id={{ _pe5_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-pe-5-kubeconfig.yaml
+          register: _pe5_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(5) ASSERT: the REAL playbook run FAILED (the injected fault propagated)"
+          ansible.builtin.assert:
+            that:
+              - _pe5_run.rc != 0
+            fail_msg: "(5) FAIL — teardown-nmos-crosspoint.yml (post-lock) exited 0; the injected fault did not propagate. stdout={{ _pe5_run.stdout }}"
+
+        - name: "(5) ASSERT: exactly ONE DMF_L3_OUTCOME marker, token preflight-error"
+          ansible.builtin.set_fact:
+            _pe5_markers: "{{ (_pe5_run.stdout_lines | select('match', '.*DMF_L3_OUTCOME:.*') | list) }}"
+
+        - name: "(5) assert marker-count + token"
+          ansible.builtin.assert:
+            that:
+              - _pe5_markers | length == 1
+              - "'preflight-error' in _pe5_markers[0]"
+            fail_msg: "(5) FAIL — expected exactly one preflight-error marker, got: {{ _pe5_markers }}"
+
+        - name: "(5) ASSERT (via real HTTP against the stub): the facility lock was released"
+          ansible.builtin.uri:
+            url: "{{ _pe5_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(5) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-5.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 6: teardown-mxl-fabrics-demo.yml, fault at post-lock
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(6) teardown-mxl-fabrics-demo.yml @ post-lock — start fresh stubs, run the REAL playbook as a nested ansible-playbook"
+      vars:
+        _pe6_run_id: "ffffffffffffffffffffffffffffffff"
+      block:
+        - name: "(6) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-6.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(6) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-pe-6.json]
+          register: _pe6_start
+          changed_when: false
+
+        - name: "(6) parse stub URLs"
+          ansible.builtin.set_fact:
+            _pe6_k8s_url: "{{ _pe6_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _pe6_netbox_url: "{{ _pe6_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(6) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-pe-6-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _pe6_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(6) run the REAL playbooks/teardown-mxl-fabrics-demo.yml as a nested ansible-playbook, fault injected at post-lock"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/teardown-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _pe6_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _pe6_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - l3_fault_inject=post-lock
+              - -e
+              - "l3_request_id={{ _pe6_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-pe-6-kubeconfig.yaml
+          register: _pe6_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(6) ASSERT: the REAL playbook run FAILED (the injected fault propagated)"
+          ansible.builtin.assert:
+            that:
+              - _pe6_run.rc != 0
+            fail_msg: "(6) FAIL — teardown-mxl-fabrics-demo.yml (post-lock) exited 0; the injected fault did not propagate. stdout={{ _pe6_run.stdout }}"
+
+        - name: "(6) ASSERT: exactly ONE DMF_L3_OUTCOME marker, token preflight-error"
+          ansible.builtin.set_fact:
+            _pe6_markers: "{{ (_pe6_run.stdout_lines | select('match', '.*DMF_L3_OUTCOME:.*') | list) }}"
+
+        - name: "(6) assert marker-count + token"
+          ansible.builtin.assert:
+            that:
+              - _pe6_markers | length == 1
+              - "'preflight-error' in _pe6_markers[0]"
+            fail_msg: "(6) FAIL — expected exactly one preflight-error marker, got: {{ _pe6_markers }}"
+
+        - name: "(6) ASSERT (via real HTTP against the stub): the facility lock was released"
+          ansible.builtin.uri:
+            url: "{{ _pe6_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(6) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-6.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 7: rollback-run.yml, fault at post-lock — the R5a-6 FINDING,
+    # FIXED same round (see this file's own header for the full writeup).
+    # post-lock is the ONLY fault-injection boundary reachable on the
+    # rollback flow at all (rollback_helm_surface.yml/
+    # rollback_netbox_surface.yml/rollback_terminal.yml never call
+    # fault_inject.yml anywhere — grepped while building this suite) — it
+    # fires during rollback.yml's own stage 2 (facility lock), which NOW
+    # sits INSIDE rollback.yml's own outer block (moved there this round,
+    # alongside stage 1), so its existing rescue covers it. Confirmed by
+    # real execution: the fault propagates, the lock is unconditionally
+    # released, AND exactly one honest marker (rollback_incomplete) is
+    # emitted — matching every equivalent early failure on the launch/
+    # teardown flows.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(7) rollback-run.yml @ post-lock — start fresh stubs, run the REAL playbook as a nested ansible-playbook"
+      vars:
+        _pe7_run_id: "00000000000000000000000000000000"
+      block:
+        - name: "(7) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-7.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(7) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-pe-7.json]
+          register: _pe7_start
+          changed_when: false
+
+        - name: "(7) parse stub URLs"
+          ansible.builtin.set_fact:
+            _pe7_k8s_url: "{{ _pe7_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _pe7_netbox_url: "{{ _pe7_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(7) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-pe-7-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _pe7_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(7) run the REAL playbooks/rollback-run.yml as a nested ansible-playbook, fault injected at post-lock"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/rollback-run.yml"
+              - -e
+              - "l3_kube_api_url={{ _pe7_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _pe7_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - l3_fault_inject=post-lock
+              - -e
+              - "l3_run_id={{ _pe7_run_id }}"
+              - -e
+              - 'l3_rollback_reason=R5a-6 execution-test probe (post-lock)'
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-pe-7-kubeconfig.yaml
+          register: _pe7_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(7) ASSERT: the REAL playbook run FAILED (the injected fault propagated)"
+          ansible.builtin.assert:
+            that:
+              - _pe7_run.rc != 0
+            fail_msg: "(7) FAIL — rollback-run.yml (post-lock) exited 0; the injected fault did not propagate. stdout={{ _pe7_run.stdout }}"
+
+        - name: "(7) ASSERT: exactly ONE DMF_L3_OUTCOME marker, token rollback_incomplete (R5a-6 finding, fixed — see this file's own header)"
+          ansible.builtin.set_fact:
+            _pe7_markers: "{{ (_pe7_run.stdout_lines | select('match', '.*DMF_L3_OUTCOME:.*') | list) }}"
+
+        - name: "(7) assert marker-count + token"
+          ansible.builtin.assert:
+            that:
+              - _pe7_markers | length == 1
+              - "'rollback_incomplete' in _pe7_markers[0]"
+            fail_msg: >-
+              (7) FAIL — expected exactly one rollback_incomplete marker
+              for rollback-run.yml's post-lock failure (R5a-6, fixed by
+              enclosing rollback.yml's stages 1-2 in its own outer
+              block), got: {{ _pe7_markers }}.
+
+        - name: "(7) ASSERT (via real HTTP against the stub): the facility lock was released regardless (the always: release.yml backstop)"
+          ansible.builtin.uri:
+            url: "{{ _pe7_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(7) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-7.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 8 (R6a-2a, codex round-5): launch-nmos-cpp.yml SUCCESS-PATH
+    # gate-return probe. Every scenario above injects its fault at
+    # post-lock — INSIDE the gate role's own main.yml, before the role's
+    # `include_role` task in the CALLING PLAYBOOK ever completes and
+    # returns control to the playbook's own subsequent tasks. That is
+    # exactly why R5a-2's broken post-hoc "single-source identity check"
+    # assert (which referenced the include_role task's own vars:-scoped
+    # l3_release/l3_catalog_key/l3_chart_* names — undefined the instant
+    # that task finishes) shipped for a full round undetected: nothing
+    # ever exercised the return boundary.
+    #
+    # This scenario deliberately crosses it: NO l3_* identity extra-vars
+    # (a genuine caller, not a forger), l3_override=true (required — the
+    # harness's stub_helm.sh `template` case always echoes an empty
+    # manifest, see tests/harness/README.md's "Known gaps", so
+    # capacity.yml's own missing-budget refusal would otherwise refuse
+    # before the gate ever returns; the override is a legitimate,
+    # supported bypass of THAT specific refusal, unrelated to the
+    # single-source property under test here), and the fault is injected
+    # at post-mutation-start — the FIRST boundary reachable strictly AFTER
+    # the gate include has already returned and the playbook's own "mark
+    # mutation as STARTED" task has already run.
+    #
+    # Discriminator: gate_rescue.yml classifies purely on whether
+    # l3_mutation_started was ever set (R4a Backbone) — marker token
+    # preflight-error (pre-mutation) vs post-mutation-failed (post-
+    # mutation; gate_rescue.yml:123). Against the OLD broken assert, the
+    # "mark mutation as STARTED" set_fact task is UNREACHABLE (the assert
+    # immediately before it fails first) — the run fails with an
+    # "l3_release is undefined" error and a PRE-mutation preflight-error
+    # marker. Against the FIXED code (no assert, single play-scope
+    # source), the run reaches "mark mutation as STARTED" cleanly, so the
+    # SAME fault instead produces a POST-mutation post-mutation-failed
+    # marker — a different, cleanly assertable token, not just "did it
+    # fail". See this round's report for the actual discrimination proof
+    # (temporarily reverting to the old broken assert and re-running this
+    # exact scenario).
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(8) launch-nmos-cpp.yml SUCCESS-PATH gate-return probe (R6a-2a) — start fresh stubs, run the REAL playbook as a nested ansible-playbook"
+      vars:
+        _pe8_run_id: "88888888888888888888888888888888"
+      block:
+        - name: "(8) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-8.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(8) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-pe-8.json]
+          register: _pe8_start
+          changed_when: false
+
+        - name: "(8) parse stub URLs"
+          ansible.builtin.set_fact:
+            _pe8_k8s_url: "{{ _pe8_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _pe8_netbox_url: "{{ _pe8_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(8) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-pe-8-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _pe8_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        # This scenario is the first in this file whose fault fires LATE
+        # enough (post-mutation-start, strictly after the gate returns) to
+        # reach snapshot.yml's own pre-run `helm list` baseline capture —
+        # scenarios 1-7 all fault at post-lock, BEFORE snapshot.yml ever
+        # runs, so none of them needed a `helm` PATH shim at all. Without
+        # one, `helm list` resolves to the REAL system helm binary, which
+        # (since KUBECONFIG points at the K8s stub) fails with "no route
+        # for GET .../secrets" — a harness-only false failure, not a
+        # single-source regression. See tests/harness/README.md's "Calling
+        # stub_helm.sh as helm" section for this exact pattern.
+        - name: "(8) create the helm PATH shim dir"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin
+            state: directory
+
+        - name: "(8) symlink helm -> stub_helm.sh"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin/helm
+            src: "{{ l3_harness_dir }}/stub_helm.sh"
+            state: link
+            force: true
+
+        - name: "(8) run the REAL playbooks/launch-nmos-cpp.yml as a nested ansible-playbook — no l3_* identity extra-vars, l3_override for the stub's empty-render, fault injected at post-mutation-start (strictly after the gate returns)"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/launch-nmos-cpp.yml"
+              - -e
+              - "l3_kube_api_url={{ _pe8_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _pe8_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - l3_override=true
+              - -e
+              - l3_override_reason=R6a-2a probe - stub helm template always renders empty, expected
+              - -e
+              - l3_fault_inject=post-mutation-start
+              - -e
+              - "l3_request_id={{ _pe8_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-pe-8-kubeconfig.yaml
+            PATH: "/tmp/l3-harness-bin:{{ lookup('env', 'PATH') }}"
+          register: _pe8_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(8) ASSERT: the REAL playbook run FAILED (the injected fault propagated)"
+          ansible.builtin.assert:
+            that:
+              - _pe8_run.rc != 0
+            fail_msg: "(8) FAIL — launch-nmos-cpp.yml (post-mutation-start) exited 0; the injected fault did not propagate. stdout={{ _pe8_run.stdout }}"
+
+        - name: "(8) ASSERT: no undefined-variable failure occurred (the exact old R5a-2 symptom) — belt-and-suspenders alongside the marker-token check below"
+          ansible.builtin.assert:
+            that:
+              - "'is undefined' not in _pe8_run.stdout"
+            fail_msg: >-
+              (8) FAIL — stdout contains 'is undefined': the gate-return
+              boundary crossing broke again (R5a-2-shaped regression).
+              stdout={{ _pe8_run.stdout }}
+
+        - name: "(8) ASSERT: exactly ONE DMF_L3_OUTCOME marker, token post-mutation-failed (gate_rescue.yml:123) — proves the run reached mutation-start (l3_mutation_started was set) before the injected fault fired, i.e. the gate genuinely RETURNED control to the playbook first"
+          ansible.builtin.set_fact:
+            _pe8_markers: "{{ (_pe8_run.stdout_lines | select('match', '.*DMF_L3_OUTCOME:.*') | list) }}"
+
+        - name: "(8) assert marker-count + token"
+          ansible.builtin.assert:
+            that:
+              - _pe8_markers | length == 1
+              - "'post-mutation-failed' in _pe8_markers[0]"
+            fail_msg: >-
+              (8) FAIL — expected exactly one post-mutation-failed
+              marker (proving the gate-return boundary was crossed
+              cleanly and mutation-start was reached), got:
+              {{ _pe8_markers }}. A preflight-error token here would mean
+              the run refused BEFORE mutation-start — i.e. the R5a-2
+              gate-return regression is back.
+
+        - name: "(8) ASSERT (via real HTTP against the stub): the facility lock was released"
+          ansible.builtin.uri:
+            url: "{{ _pe8_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(8) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-8.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 9 (R6a-2b, codex round-5 P2-1): launch-nmos-crosspoint.yml
+    # with the admin secret ACTUALLY ABSENT — no
+    # vault_nmos_crosspoint_admin_password extra_var supplied at all (the
+    # EXISTING crosspoint scenario, #2 above, always supplies a real fake
+    # password and injects its fault at post-lock, before the R5a-3
+    # in-block credential assert is ever reached — codex's exact P2-1
+    # finding: the "missing secret" scenario the round claimed to have was
+    # never actually exercising a missing secret). This one supplies
+    # l3_override (same reason as scenario 8 — reach the gate's own
+    # return) and NO password at all, so crosspoint_admin_password
+    # resolves to '' via its own `| default('', true)`, and the R5a-3
+    # in-block assert (moved inside the outer block specifically so a
+    # missing secret gets honest gate cleanup, not a raw task-zero crash)
+    # should fire — BEFORE "mark mutation as STARTED" runs, so this is a
+    # PRE-mutation refusal: exactly one preflight-error marker, lock
+    # released.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(9) launch-nmos-crosspoint.yml with admin secret ACTUALLY ABSENT (R6a-2b) — start fresh stubs, run the REAL playbook as a nested ansible-playbook"
+      vars:
+        _pe9_run_id: "99999999999999999999999999999999"
+      block:
+        - name: "(9) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-9.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(9) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-pe-9.json]
+          register: _pe9_start
+          changed_when: false
+
+        - name: "(9) parse stub URLs"
+          ansible.builtin.set_fact:
+            _pe9_k8s_url: "{{ _pe9_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _pe9_netbox_url: "{{ _pe9_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(9) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-pe-9-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _pe9_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        # Same reason as scenario (8) above: this fault (the R5a-3 admin-
+        # password assert) fires AFTER the gate has already run
+        # snapshot.yml's own pre-run `helm list` baseline capture, so the
+        # `helm` PATH shim is required here too.
+        - name: "(9) create the helm PATH shim dir"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin
+            state: directory
+
+        - name: "(9) symlink helm -> stub_helm.sh"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin/helm
+            src: "{{ l3_harness_dir }}/stub_helm.sh"
+            state: link
+            force: true
+
+        - name: "(9) run the REAL playbooks/launch-nmos-crosspoint.yml as a nested ansible-playbook — deliberately NO vault_nmos_crosspoint_admin_password extra_var"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/launch-nmos-crosspoint.yml"
+              - -e
+              - "l3_kube_api_url={{ _pe9_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _pe9_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - l3_override=true
+              - -e
+              - l3_override_reason=R6a-2b probe - stub helm template always renders empty, expected
+              - -e
+              - "l3_request_id={{ _pe9_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-pe-9-kubeconfig.yaml
+            PATH: "/tmp/l3-harness-bin:{{ lookup('env', 'PATH') }}"
+          register: _pe9_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(9) ASSERT: the REAL playbook run FAILED (the missing-secret assert fired)"
+          ansible.builtin.assert:
+            that:
+              - _pe9_run.rc != 0
+            fail_msg: "(9) FAIL — launch-nmos-crosspoint.yml exited 0 with NO admin password supplied at all. stdout={{ _pe9_run.stdout }}"
+
+        - name: "(9) ASSERT: exactly ONE DMF_L3_OUTCOME marker, token preflight-error (pre-mutation — the R5a-3 in-block assert fired before mutation-start)"
+          ansible.builtin.set_fact:
+            _pe9_markers: "{{ (_pe9_run.stdout_lines | select('match', '.*DMF_L3_OUTCOME:.*') | list) }}"
+
+        - name: "(9) assert marker-count + token"
+          ansible.builtin.assert:
+            that:
+              - _pe9_markers | length == 1
+              - "'preflight-error' in _pe9_markers[0]"
+            fail_msg: "(9) FAIL — expected exactly one preflight-error marker, got: {{ _pe9_markers }}"
+
+        - name: "(9) ASSERT: the empty-password fail_msg text is present (proves THIS assert fired, not some unrelated failure)"
+          ansible.builtin.assert:
+            that:
+              - "'vault_nmos_crosspoint_admin_password is empty' in _pe9_run.stdout"
+            fail_msg: "(9) FAIL — expected fail_msg not found in stdout={{ _pe9_run.stdout }}"
+
+        - name: "(9) ASSERT (via real HTTP against the stub): the facility lock was released"
+          ansible.builtin.uri:
+            url: "{{ _pe9_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(9) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-9.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 10: launch-mxl-fabrics-demo.yml — forged l3_chart_set_values
+    # no-divergence probe. R6a's single-source fix (see launch-mxl-
+    # fabrics-demo.yml's own header comment) made l3_chart_set_values ONE
+    # play-scoped variable consumed identically by capacity.yml's own
+    # `helm template` render (via l3_set_flag_argv) AND this playbook's
+    # own `helm upgrade --install` step (also via l3_set_flag_argv, for
+    # mxl specifically — the raw-command launch play). Scenarios 1-9 all
+    # prove CONTROL-FLOW properties (fault propagation, lock release,
+    # marker tokens); none of them ever inspects the actual --set VALUES
+    # either call receives. This scenario closes that gap: it forges
+    # l3_chart_set_values via extra_vars (a caller supplying the exact
+    # same name a legitimate playbook var also uses) and proves, via
+    # stub_helm.sh's new unconditional L3_STUB_HELM_LOG, that the SAME
+    # concrete --set argument set reaches BOTH the render and the real
+    # install call — not merely that both reference the same variable
+    # NAME, but that the same forged VALUE flows through to both.
+    #
+    # mxl is the target (not nmos-cpp/nmos-crosspoint) because its install
+    # step is already a raw `ansible.builtin.command: argv: [helm,
+    # upgrade, --install, ...]` built via l3_set_flag_argv(
+    # l3_chart_set_values) directly — the same filter+source pair
+    # capacity.yml's own render uses — so there's no
+    # kubernetes.core.helm module indirection to account for; the
+    # L3_STUB_HELM_LOG argv capture is the single, uniform observation
+    # mechanism for both calls. l3_override=true is required for the same
+    # reason scenarios 8-9 need it: stub_helm.sh's `template` case always
+    # echoes an empty manifest, so capacity.yml's own missing-budget
+    # refusal would otherwise fire before either call under test can be
+    # compared.
+    #
+    # A forged l3_chart_set_values is passed as a single JSON-object `-e`
+    # argument (`{"l3_chart_set_values": ["forged.key=forged-value"]}`),
+    # not the `-e l3_chart_set_values=[...]` k=v form the plan sketch
+    # suggested — verified empirically (ansible-core 2.20.5) that the k=v
+    # form leaves the value as the literal STRING
+    # '["forged.key=forged-value"]' (parse_kv never JSON-decodes an
+    # individual value), which l3_set_flag_argv would then iterate
+    # CHARACTER BY CHARACTER (Python iterates a string by char), silently
+    # producing a "pass" that isn't actually exercising a real forged
+    # list. A single `-e` argument whose FIRST character is `{` is instead
+    # parsed as a JSON/YAML document by ansible-core's own extra_vars
+    # loader (see `ansible/cli/__init__.py:load_extra_vars`), which is
+    # what actually round-trips l3_chart_set_values as a real Python list.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(10) launch-mxl-fabrics-demo.yml forged l3_chart_set_values — prove the render (helm template) and the install (helm upgrade --install) consume the IDENTICAL concrete --set values"
+      vars:
+        _pe10_run_id: "1010101010101010101010101010101a"
+        _pe10_forged_value: "forged.key=forged-value"
+      block:
+        - name: "(10) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-10.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(10) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-pe-10.json]
+          register: _pe10_start
+          changed_when: false
+
+        - name: "(10) parse stub URLs"
+          ansible.builtin.set_fact:
+            _pe10_k8s_url: "{{ _pe10_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _pe10_netbox_url: "{{ _pe10_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(10) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-pe-10-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _pe10_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        # Same reason as scenarios (8)/(9): this run reaches PAST the gate
+        # (snapshot.yml's own `helm list` baseline capture, capacity.yml's
+        # `helm pull`+`helm template` render) and then the playbook's own
+        # `helm pull`+`helm upgrade --install`, so the `helm` PATH shim is
+        # required.
+        - name: "(10) create the helm PATH shim dir"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin
+            state: directory
+
+        - name: "(10) symlink helm -> stub_helm.sh"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin/helm
+            src: "{{ l3_harness_dir }}/stub_helm.sh"
+            state: link
+            force: true
+
+        - name: "(10) remove any stale helm invocation log from a prior run"
+          ansible.builtin.file:
+            path: /tmp/l3-pe-10-helm.log
+            state: absent
+
+        - name: "(10) run the REAL playbooks/launch-mxl-fabrics-demo.yml as a nested ansible-playbook — l3_chart_set_values forged via a single JSON -e argument, l3_override for the stub's empty-render"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/launch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _pe10_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _pe10_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - l3_override=true
+              - -e
+              - l3_override_reason=(10) no-divergence probe - stub helm template always renders empty, expected
+              - -e
+              - "l3_request_id={{ _pe10_run_id }}"
+              - -e
+              - '{"l3_chart_set_values": ["{{ _pe10_forged_value }}"]}'
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-pe-10-kubeconfig.yaml
+            PATH: "/tmp/l3-harness-bin:{{ lookup('env', 'PATH') }}"
+            L3_STUB_HELM_LOG: /tmp/l3-pe-10-helm.log
+          register: _pe10_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(10) stat the helm invocation log"
+          ansible.builtin.stat:
+            path: /tmp/l3-pe-10-helm.log
+          register: _pe10_helm_log_stat
+
+        - name: "(10) ASSERT: the helm invocation log exists (both the template render and the upgrade/install call must have reached stub_helm.sh)"
+          ansible.builtin.assert:
+            that:
+              - _pe10_helm_log_stat.stat.exists
+            fail_msg: >-
+              (10) FAIL — /tmp/l3-pe-10-helm.log does not exist; stub_helm.sh
+              was never invoked (PATH shim broken, or the run never even
+              reached the gate's own render call). stdout={{ _pe10_run.stdout }}
+
+        - name: "(10) read the helm invocation log"
+          ansible.builtin.slurp:
+            src: /tmp/l3-pe-10-helm.log
+          register: _pe10_helm_log_raw
+
+        - name: "(10) parse helm invocation log lines, isolate the template (render) and upgrade (install) invocations"
+          ansible.builtin.set_fact:
+            _pe10_helm_log_lines: "{{ (_pe10_helm_log_raw.content | b64decode).splitlines() }}"
+
+        - name: "(10) isolate the template and upgrade invocation lines"
+          ansible.builtin.set_fact:
+            _pe10_template_lines: "{{ _pe10_helm_log_lines | select('match', '^template ') | list }}"
+            _pe10_upgrade_lines: "{{ _pe10_helm_log_lines | select('match', '^upgrade ') | list }}"
+
+        - name: "(10) ASSERT: both the render call (helm template, from capacity.yml) and the install call (helm upgrade --install, from this playbook's own Deploy step) were logged — proves the run got PAST both calls under test"
+          ansible.builtin.assert:
+            that:
+              - _pe10_template_lines | length >= 1
+              - _pe10_upgrade_lines | length >= 1
+            fail_msg: >-
+              (10) FAIL — expected at least one 'template' and one
+              'upgrade' helm invocation logged, got
+              template={{ _pe10_template_lines | length }}
+              upgrade={{ _pe10_upgrade_lines | length }}. Full log:
+              {{ _pe10_helm_log_lines }}. stdout={{ _pe10_run.stdout }}
+
+        - name: "(10) extract the --set arguments each call actually received (sorted — order may legitimately differ)"
+          ansible.builtin.set_fact:
+            _pe10_template_set_values: "{{ _pe10_template_lines[-1] | regex_findall('--set\\s+(\\S+)') | sort }}"
+            _pe10_upgrade_set_values: "{{ _pe10_upgrade_lines[-1] | regex_findall('--set\\s+(\\S+)') | sort }}"
+
+        - name: "(10) ASSERT: the CONCRETE --set value sets from the render and the install are equal, and BOTH contain the forged value — the render and the real install consumed the identical concrete rendered-demand inputs for a forged extra_var, not just the same variable NAME"
+          ansible.builtin.assert:
+            that:
+              - _pe10_template_set_values == _pe10_upgrade_set_values
+              - _pe10_forged_value in _pe10_template_set_values
+              - _pe10_forged_value in _pe10_upgrade_set_values
+            fail_msg: >-
+              (10) FAIL — the render's (helm template) --set values and the
+              install's (helm upgrade --install) --set values diverged for
+              a forged l3_chart_set_values extra_var.
+              template={{ _pe10_template_set_values }}
+              upgrade={{ _pe10_upgrade_set_values }}
+      always:
+        - name: "(10) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-10.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 11 (R6b, codex round-6, umbrella #267): mxl NetBox-identity
+    # no-divergence probe — the NetBox-axis twin of scenario 10's helm-
+    # axis probe. R6b's single-source fix (roles/mxl/defaults/main.yml)
+    # made netbox_service_name/the app:<> tag/the monitoring
+    # cluster_service+cluster_namespace all read l3_catalog_key/l3_release/
+    # l3_target_namespace FIRST — the SAME play-scope vars
+    # snapshot.yml:80's own pre-run NetBox lookup uses — falling back to
+    # mxl_function_key/mxl_release/mxl_namespace only for a standalone,
+    # non-L3-gated use of the role. Before R6b, a caller-supplied
+    # mxl_function_key extra_var could retarget mxl's OWN NetBox mutation
+    # (provision.yml's lookup-then-create) independently of what
+    # snapshot.yml's pre-run baseline looked up by, breaking rollback for
+    # mxl (the snapshot's baseline and the actual mutated record would be
+    # two different NetBox objects). This scenario forges mxl_function_key
+    # via extra_vars to a DIFFERENT value than l3_catalog_key and proves,
+    # via stub_netbox_api.py's new L3_STUB_NETBOX_LOG request capture,
+    # that EVERY ipam.services request this run makes — snapshot.yml's own
+    # lookup AND mxl's provision.yml's own lookup-then-create — uses the
+    # SAME concrete record name (l3_catalog_key's value), never the forged
+    # mxl_function_key.
+    #
+    # L3_STUB_NETBOX_LOG is set on the "start stubs" task's own
+    # environment, NOT the later nested-playbook-run task's — the stub
+    # server is a DETACHED child process spawned by start_stubs.py, so the
+    # env var must be present when THAT process is spawned (it inherits
+    # its parent's environment once, at spawn time) for
+    # stub_netbox_api.py's own os.environ.get() to see it for the whole
+    # server lifetime; setting it only on the later nested-playbook task
+    # would have no effect on the already-running, separate server
+    # process.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(11) launch-mxl-fabrics-demo.yml forged mxl_function_key — prove snapshot.yml's own NetBox lookup and mxl's own provision.yml mutation target the IDENTICAL concrete record name"
+      vars:
+        _pe11_run_id: "1111111111111111111111111111111b"
+        _pe11_forged_mxl_function_key: "evil-forged-mxl-function-key"
+        _pe11_canonical_catalog_key: "mxl-videotestsrc"
+      block:
+        - name: "(11) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-11.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(11) remove any stale netbox invocation log from a prior run"
+          ansible.builtin.file:
+            path: /tmp/l3-pe-11-netbox.log
+            state: absent
+
+        - name: "(11) start stubs (L3_STUB_NETBOX_LOG set HERE — the detached stub server child inherits this environment at spawn time)"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-pe-11.json]
+          environment:
+            L3_STUB_NETBOX_LOG: /tmp/l3-pe-11-netbox.log
+          register: _pe11_start
+          changed_when: false
+
+        - name: "(11) parse stub URLs"
+          ansible.builtin.set_fact:
+            _pe11_k8s_url: "{{ _pe11_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _pe11_netbox_url: "{{ _pe11_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(11) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-pe-11-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _pe11_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        # Same reason as scenarios (8)/(9)/(10): this run reaches PAST the
+        # gate (snapshot.yml's own `helm list` baseline capture,
+        # capacity.yml's `helm pull`+`helm template` render), so the
+        # `helm` PATH shim is required even though this scenario's own
+        # assertions only inspect the NetBox log.
+        - name: "(11) create the helm PATH shim dir"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin
+            state: directory
+
+        - name: "(11) symlink helm -> stub_helm.sh"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin/helm
+            src: "{{ l3_harness_dir }}/stub_helm.sh"
+            state: link
+            force: true
+
+        - name: "(11) run the REAL playbooks/launch-mxl-fabrics-demo.yml as a nested ansible-playbook — mxl_function_key forged via a single JSON -e argument to a DIFFERENT value than l3_catalog_key"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/launch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _pe11_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _pe11_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - l3_override=true
+              - -e
+              - l3_override_reason=(11) netbox-identity no-divergence probe - stub helm template always renders empty, expected
+              - -e
+              - "l3_request_id={{ _pe11_run_id }}"
+              - -e
+              - '{"mxl_function_key": "{{ _pe11_forged_mxl_function_key }}"}'
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-pe-11-kubeconfig.yaml
+            PATH: "/tmp/l3-harness-bin:{{ lookup('env', 'PATH') }}"
+          register: _pe11_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(11) stat the netbox invocation log"
+          ansible.builtin.stat:
+            path: /tmp/l3-pe-11-netbox.log
+          register: _pe11_netbox_log_stat
+
+        - name: "(11) ASSERT: the netbox invocation log exists (both snapshot.yml's own lookup and mxl's own provision.yml calls must have reached the stub)"
+          ansible.builtin.assert:
+            that:
+              - _pe11_netbox_log_stat.stat.exists
+            fail_msg: >-
+              (11) FAIL — /tmp/l3-pe-11-netbox.log does not exist; the
+              netbox stub was never queried by name (the run never even
+              reached snapshot.yml's own lookup). stdout={{ _pe11_run.stdout }}
+
+        - name: "(11) read the netbox invocation log"
+          ansible.builtin.slurp:
+            src: /tmp/l3-pe-11-netbox.log
+          register: _pe11_netbox_log_raw
+
+        - name: "(11) parse netbox invocation log lines"
+          ansible.builtin.set_fact:
+            _pe11_netbox_log_lines: "{{ (_pe11_netbox_log_raw.content | b64decode).splitlines() }}"
+
+        - name: "(11) ASSERT: at least 2 ipam.services requests were logged (snapshot.yml's own GET, PLUS at least one of mxl's own provision.yml GET/POST) — proves the run got PAST both call sites under test"
+          ansible.builtin.assert:
+            that:
+              - _pe11_netbox_log_lines | length >= 2
+            fail_msg: >-
+              (11) FAIL — expected at least 2 logged ipam.services
+              requests (snapshot.yml's lookup + mxl provision.yml's own
+              lookup/create), got {{ _pe11_netbox_log_lines | length }}:
+              {{ _pe11_netbox_log_lines }}. stdout={{ _pe11_run.stdout }}
+
+        - name: "(11) extract the concrete record name each logged request used, in call order"
+          ansible.builtin.set_fact:
+            _pe11_logged_names: "{{ _pe11_netbox_log_lines | map('regex_replace', '^(GET|POST) services name=', '') | list }}"
+
+        - name: "(11) ASSERT: EVERY logged request — snapshot.yml's own pre-run lookup (first, chronologically, since the gate's own main.yml stages run before this playbook's own mutation-started task) AND mxl's own provision.yml lookup-then-create (later) — used the SAME concrete record name, the l3_catalog_key value, NEVER the forged mxl_function_key. This is observed-value equality across BOTH call sites, not merely same-variable-NAME equality."
+          ansible.builtin.assert:
+            that:
+              - _pe11_logged_names | unique | length == 1
+              - _pe11_logged_names[0] == _pe11_canonical_catalog_key
+              - _pe11_forged_mxl_function_key not in _pe11_logged_names
+            fail_msg: >-
+              (11) FAIL — NetBox-identity divergence: snapshot.yml's own
+              lookup and mxl's own provision.yml mutation did NOT target
+              the same record name for a forged mxl_function_key extra_var.
+              logged names (call order)={{ _pe11_logged_names }}
+              expected (every entry)={{ _pe11_canonical_catalog_key }}
+              forged mxl_function_key (must NOT appear)={{ _pe11_forged_mxl_function_key }}
+      always:
+        - name: "(11) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-11.json]
+          changed_when: false
+          failed_when: false
+
+    - name: ALL L3 REAL-PLAYBOOK EXECUTION TESTS PASSED
+      ansible.builtin.debug:
+        msg: >-
+          umbrella #202 WP3 R5a-6 (codex round-4 P2-3): all 7 REAL entry
+          playbooks under playbooks/ — launch-nmos-cpp, launch-mxl-
+          fabrics-demo, launch-nmos-crosspoint, teardown-nmos-cpp,
+          teardown-mxl-fabrics-demo, teardown-nmos-crosspoint,
+          rollback-run — were run as real ansible-playbook subprocesses
+          against the test harness stubs with a fault injected at the
+          shared post-lock boundary. Launch/teardown: fault propagates
+          (rc != 0), exactly one honest preflight-error marker is
+          emitted, and the facility lock is unconditionally released.
+          Rollback: fault propagates, the lock is unconditionally
+          released, and (R5a-6 FINDING, FIXED same round by enclosing
+          rollback.yml's stages 1-2 in its own outer block — see this
+          file's own header) exactly one honest rollback_incomplete
+          marker is now emitted too, matching the other two flows. This
+          closes codex round-4's exact P2-3 gap: the prior execution-test
+          suite (tests/l3-control-flow.yml) only ever ran a FIXTURE
+          replicating the real playbooks' shape, never the real playbooks
+          themselves — a gap that let the crosspoint credential-check-
+          before-the-block bug (R5a-3), missing lock-checkpoint bugs
+          (R5a-4), and rollback's own unenclosed early stages all ship
+          undetected. Scenarios 8-9 (R6a-2a/2b, codex round-5): (8)
+          launch-nmos-cpp.yml with NO l3_* identity extra-vars and a fault
+          injected AFTER the gate returns (post-mutation-start) — the
+          success-path gate-return boundary none of scenarios 1-7 ever
+          crossed, and exactly where R5a-2's broken post-hoc identity
+          assert lived; (9) launch-nmos-crosspoint.yml with the admin
+          secret genuinely ABSENT (not a fake password like scenario 2
+          supplies) — both pass against the current single-source fix and
+          scenario 8 discriminates the old broken assert (proven via a
+          temporary revert, see this round's report). Scenario 10: launch-
+          mxl-fabrics-demo.yml with l3_chart_set_values forged via a
+          single JSON -e argument — proves, via stub_helm.sh's new
+          L3_STUB_HELM_LOG argv capture, that the render (helm template,
+          capacity.yml) and the real install (helm upgrade --install,
+          this playbook's own Deploy step) receive the IDENTICAL concrete
+          --set value set for a forged extra_var, not merely the same
+          variable name (see this round's report for the discrimination
+          check proving the assertion actually fails on a genuine
+          divergence). Scenario 11 (umbrella #267): launch-mxl-fabrics-
+          demo.yml with mxl_function_key forged via a single JSON -e
+          argument — proves, via stub_netbox_api.py's new
+          L3_STUB_NETBOX_LOG request capture, that snapshot.yml's own
+          pre-run NetBox lookup and mxl's own provision.yml lookup-then-
+          create ALL target the identical concrete record name
+          (l3_catalog_key's value), never the forged mxl_function_key —
+          the NetBox-identity axis closed alongside R6a's helm-render
+          axis.

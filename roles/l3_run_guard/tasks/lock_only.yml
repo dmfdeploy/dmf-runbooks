@@ -1,0 +1,54 @@
+---
+# umbrella #202 WP3 R2a-4 (teardown lock-only guard), revised R3a-9/R3a-10
+# (codex round-2 P1-9/P2-2) — identity: SAME resolution as the launch flow
+# (identity.yml, shared) — a console-driven teardown DOES carry
+# l3_request_id (WP2 tracks teardown and defines its identity as the
+# launch's own l3_request_id; the R2a-4 draft self-minted UNCONDITIONALLY
+# and its own comment claiming "teardown isn't console-tracked" was WRONG
+# — it silently overwrote a console-supplied id with a fresh, uncorrelated
+# one on every teardown). Fixed by reusing identity.yml's own hex32-
+# validated preserve-or-self-mint logic verbatim, the same as launch.
+# Facility lock acquisition is the SAME mechanism as launch/rollback
+# (lock.yml, shared — mints its own attempt_id internally). NO capacity/
+# snapshot stage: a teardown only REMOVES workloads, it can never blow a
+# capacity budget, and there is no pre-mutation baseline to snapshot for
+# something whose whole job IS returning to a smaller footprint (a
+# teardown's own "rollback" is a no-op — there's nothing left to roll back
+# TO once removal succeeds).
+#
+# R3a-9 (codex round-2 P1-9): the scoped NetBox catalog-writer token check
+# runs BEFORE lock — every L3-participating teardown mutates NetBox (the
+# catalog role's own finalise stage), and this role's netbox_api_token
+# default no longer falls back to the admin token (R2c-runbooks) — a
+# teardown must fail closed here too, not just the launch/rollback flows
+# (the R2a-4 draft never gated teardown on this at all, leaving a
+# scoped-writer-enforcement bypass exactly at the one place still capable
+# of a silent admin-token finalise).
+#
+# R4a Backbone (codex round-3 P1-5): the supersede sweep NO LONGER runs
+# here. The R3a-5 draft swept right after lock-acquire — before this
+# flow's own identity/netbox-token/lock stages had even finished running,
+# let alone before the calling playbook's first mutation — so any
+# unexpected failure in that gap could invalidate an older dirty run's
+# rollback baseline even though THIS teardown never mutated anything
+# (the same class of bug as snapshot.yml's own R3a-5 draft, fixed
+# identically: see capacity.yml's launch-side equivalent). Moved to
+# teardown_pre_mutation.yml — see that file's own header — called by each
+# teardown-*.yml playbook immediately before its first real mutation
+# (the Helm removal), alongside a lock checkpoint.
+#
+# Invoked via `include_role: name: l3_run_guard, tasks_from: lock_only` as
+# the FIRST task of every teardown-*.yml playbook, now INSIDE that
+# playbook's own outer block (R4a Backbone) whose rescue: is
+# gate_rescue.yml (shared with launch) and whose always: is release.yml.
+
+- name: "L3 teardown-lock: identity (shared with launch — identity.yml;
+    R3a-10 preserves a console-supplied l3_request_id, hex32-validated,
+    self-minting ONLY when absent — also includes _override.yml)"
+  ansible.builtin.include_tasks: identity.yml
+
+- name: "L3 teardown-lock: scoped NetBox catalog-writer token check (ADR-0032, R3a-9 — before lock)"
+  ansible.builtin.include_tasks: _assert_netbox_token.yml
+
+- name: "L3 teardown-lock: acquire the facility lock (shared mechanism — lock.yml)"
+  ansible.builtin.include_tasks: lock.yml

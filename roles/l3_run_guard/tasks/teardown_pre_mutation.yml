@@ -1,0 +1,30 @@
+---
+# umbrella #202 WP3 R4a Backbone (codex round-3 P1-4/P1-5) — invoked via
+# `include_role: name: l3_run_guard, tasks_from: teardown_pre_mutation`
+# by each teardown-*.yml playbook IMMEDIATELY BEFORE its first real
+# mutation (the Helm release removal) — the teardown-flow counterpart of
+# what capacity.yml's own tail now does for launch (checkpoint + the
+# supersede sweep, in that order, right at the first-mutation boundary).
+#
+# P1-4: a lock checkpoint here (the SAME mechanism launch already uses
+# before its own Helm install / NetBox configure stages) catches a
+# holder-fenced-out condition BEFORE this teardown starts mutating —
+# previously teardown had ZERO checkpoints anywhere in its flow.
+#
+# P1-5: the supersede sweep moved HERE from lock_only.yml (see that
+# file's own header) — teardown has no capacity-style read-only planning
+# stage of its own, so "immediately before the first mutation" for
+# teardown IS this exact point, not some earlier stage that could still
+# fail.
+
+- name: "L3 teardown: lock checkpoint before first mutation (Helm removal) — R4a/P1-4"
+  ansible.builtin.include_tasks: lock_checkpoint.yml
+
+- name: "L3 teardown: supersede sweep (R4a/P1-5 — moved from lock_only.yml, right at the first-mutation boundary)"
+  ansible.builtin.include_tasks: _supersede_sweep.yml
+  when: l3_lock_acquired | default(false)
+
+- name: "L3 teardown: test-only fault injection boundary (R4a/P2-5 — no-op on every real run)"
+  ansible.builtin.include_tasks: fault_inject.yml
+  vars:
+    l3_fault_inject_boundary: pre-mutation-start

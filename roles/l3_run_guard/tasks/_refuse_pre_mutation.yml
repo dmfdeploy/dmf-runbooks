@@ -1,0 +1,70 @@
+---
+# umbrella #202 WP3 R2a-8/R2a-3e — shared pre-mutation refusal cleanup.
+# Used by every refusal path that can fire BEFORE this run's own provision
+# stage has mutated anything (preflight-error, facility-busy,
+# lock-unavailable, missing-budget, no-fit): nothing was ever mutated, so
+# a snapshot already captured for THIS run (if any — l3_snapshot_created is
+# only true for capacity.yml's post-snapshot refusals under the R2a-8
+# stage order identity -> preflight -> lock -> snapshot -> capacity; every
+# earlier refusal never reaches snapshot.yml at all, so the guard below
+# just no-ops for those) is moot for rollback purposes and is marked
+# superseded (never deleted — same "always mark, never delete" convention
+# snapshot.yml's own dead-run-residue handling already uses), and the lock
+# (if acquired) is released. No path may exit holding the lock except a
+# hard crash (TTL covers that case).
+#
+# Callers set:
+#   l3_outcome_token     — required, passed straight to _emit_outcome.yml
+#   l3_outcome_kv        — optional, passed straight to _emit_outcome.yml
+#   l3_refusal_fail_msg  — required, the message this file's own
+#                          ansible.builtin.fail raises after cleanup
+#
+# R4a Backbone (codex round-3 P1-3/P1-11): sets l3_pre_mutation_marker_
+# emitted BEFORE emitting, so the caller's outer gate_rescue.yml (now
+# that every hand-written refusal in this role bubbles into a REAL outer
+# rescue: for the first time) can tell "this refusal already emitted its
+# own honest marker and cleaned up" apart from "an unexpected exception
+# never went through here at all" — and just re-raise in the former case,
+# instead of emitting a SECOND, redundant (or wrong) marker on top.
+#
+# R5a (codex round-4 P1-4): the superseded patch below can itself be a
+# TERMINAL mutation of the snapshot's own lifecycle state — this file can
+# be reached well after a slow capacity/read-only stage (e.g. a chart pull
+# + template render can take real wall-clock time), long enough for THIS
+# attempt's own lock hold to have TTL-expired and been reclaimed by a new
+# owner. A fenced-out attempt must never patch a snapshot the new owner
+# now owns the lifecycle of — checked read-only (no second marker; see
+# _lock_fenced_check.yml's own header) immediately before the patch.
+
+- name: "L3 pre-mutation refusal: mark this refusal as having emitted its own marker (R4a Backbone)"
+  ansible.builtin.set_fact:
+    l3_pre_mutation_marker_emitted: true
+
+- name: "L3 pre-mutation refusal: fenced-check before the superseded patch (R5a/P1-4)"
+  ansible.builtin.include_tasks: _lock_fenced_check.yml
+  when: l3_snapshot_created | default(false)
+
+- name: "L3 pre-mutation refusal: mark this run's own snapshot superseded (moot — nothing was mutated; skipped if fenced, R5a/P1-4)"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ l3_run_configmap_prefix }}{{ l3_run_id }}"
+        namespace: "{{ l3_lock_namespace }}"
+      data:
+        status: superseded
+  when:
+    - l3_snapshot_created | default(false)
+    - not (_l3_fenced_out | default(false))
+
+- name: "L3 pre-mutation refusal: emit outcome marker"
+  ansible.builtin.include_tasks: _emit_outcome.yml
+
+- name: "L3 pre-mutation refusal: release the facility lock"
+  ansible.builtin.include_tasks: lock_release.yml
+
+- name: "L3 pre-mutation refusal: fail the play"
+  ansible.builtin.fail:
+    msg: "{{ l3_refusal_fail_msg }}"

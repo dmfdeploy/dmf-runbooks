@@ -1,0 +1,90 @@
+---
+# One iteration of the "pre-existed" NetBox record restore path (§4.2).
+# Invoked via loop+include_tasks from rollback_netbox_surface.yml.
+# `item` is one entry of _l3_netbox_classification.restore:
+#   {"current": {id, name, tags, custom_fields}, "snapshot": {id, name, tags, custom_fields}}
+#
+# R2a-7 §4.6-honest: call-success never equals clean — a PATCH 200 only
+# proves NetBox accepted the request, not that a subsequent read reflects
+# it. A fresh GET readback taken AFTER the PATCH is what actually
+# determines this item's dirty state now, via the pure
+# l3_netbox_restore_dirty (not the PATCH call's own failed flag). R3a-7:
+# l3_netbox_restore_dirty now does EXACT owned-tag-set equality (not
+# subset-only) — it needs _netbox_owned_namespace itself to filter the
+# readback's own tags down to the owned subset before comparing.
+#
+# R4a (codex round-3 P1-10): custom_fields gets the SAME owned/non-owned
+# split tags already get. The R2a/R3a draft PATCHed the snapshot's ENTIRE
+# custom_fields map — L3 only owns the monitoring keys named in
+# l3_netbox_monitoring_custom_fields_clear (probe_module, probe_path,
+# cluster_service, cluster_namespace, cluster_port); any OTHER custom
+# field a human/other controller changed on this record since the
+# snapshot was taken got silently reverted to stale data by that
+# unfiltered PATCH — the exact anti-stale-ownership posture already
+# applied to tags, just missed for custom_fields. Filtered via the pure
+# l3_filter_owned_custom_fields (NetBox's own custom_fields PATCH is a
+# server-side shallow merge — see that function's docstring — so sending
+# just the owned subset leaves every non-owned field current-preserved).
+# The SAME filtered dict is reused below as l3_netbox_restore_dirty's
+# desired_custom_fields input, so the readback comparison is scoped to
+# just the owned keys too, for free.
+
+- name: "L3 rollback: compute the owned-desired tag set from the snapshot (pure — l3_filter_owned_tags)"
+  ansible.builtin.set_fact:
+    _l3_restore_owned_desired: "{{ item.snapshot.tags | l3_filter_owned_tags(_netbox_owned_namespace) }}"
+
+- name: "L3 rollback: compute the owned-desired custom_fields subset from the snapshot (pure — l3_filter_owned_custom_fields, R4a/P1-10)"
+  ansible.builtin.set_fact:
+    _l3_restore_owned_desired_cf: "{{ item.snapshot.custom_fields | l3_filter_owned_custom_fields(l3_netbox_monitoring_custom_fields_clear.keys() | list) }}"
+
+- name: "L3 rollback: PATCH restore record to snapshot state (MANDATORY merge_owned_tags)"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/{{ item.current.id }}/"
+    method: PATCH
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      # merge_owned_tags is MANDATORY for any tags write (ADR-0046 decision
+      # 4) — item.current.tags is the record's CURRENT tag set (so any
+      # non-owned tag, e.g. workload:*, that changed since the snapshot is
+      # respected as-is); the snapshot's tags filtered to just the owned
+      # subset is what THIS restore wants to own (the snapshot's OWN
+      # lifecycle:*/monitoring:* values, not a freshly-derived default).
+      tags: "{{ item.current.tags | merge_owned_tags(_netbox_owned_namespace, _l3_restore_owned_desired) }}"
+      custom_fields: "{{ _l3_restore_owned_desired_cf }}"
+    validate_certs: false
+    status_code: [200]
+  register: _l3_netbox_restore_patch
+  ignore_errors: true
+  no_log: true
+
+- name: "L3 rollback: readback — fresh GET after the restore PATCH (R2a-7)"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/{{ item.current.id }}/"
+    method: GET
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+    validate_certs: false
+    return_content: true
+    status_code: [200, 404]
+  register: _l3_netbox_restore_readback
+  ignore_errors: true
+  no_log: true
+
+- name: "L3 rollback: determine this item's dirty state (pure — l3_netbox_restore_dirty, readback-authoritative)"
+  ansible.builtin.set_fact:
+    _l3_netbox_dirty_accum: >-
+      {{
+        (_l3_netbox_dirty_accum | default([]))
+        + [
+            _l3_restore_owned_desired
+            | l3_netbox_restore_dirty(
+                _l3_restore_owned_desired_cf,
+                _l3_netbox_restore_readback.json | default(None),
+                (_l3_netbox_restore_readback.failed | default(false)) or (_l3_netbox_restore_readback.status | default(0)) != 200,
+                _netbox_owned_namespace
+              )
+          ]
+      }}

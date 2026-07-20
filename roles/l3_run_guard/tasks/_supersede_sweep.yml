@@ -1,0 +1,57 @@
+---
+# umbrella #202 WP3 R3a-5 (codex round-2 P1-5) — shared supersede sweep:
+# ANY later mutating run (a fresh launch OR a teardown) invalidates ALL
+# OLDER rollback-eligible snapshots ({in-progress, failed_rollback_required,
+# rollback_incomplete} — l3_classify_run_records' widened definition,
+# l3_budget.py) at the just-before-mutation point. The lock guarantees no
+# genuinely concurrent run holds any of those statuses at the moment a NEW
+# mutating run acquires it, so all of them are dead-run residue from this
+# new run's own perspective, safe to mark superseded (never deleted — the
+# CM stays as an audit trail).
+#
+# Called from TWO places, BOTH now at the just-before-first-mutation
+# boundary (R4a/P1-5 — moved from right-after-lock-acquire; a refusal
+# during read-only planning, before this run is known to mutate anything,
+# must never invalidate an older dirty run's only safe rollback baseline
+# — codex round-3's exact finding):
+#   * capacity.yml (launch flow) — after missing-budget/no-fit have
+#     either passed or been explicitly overridden, right before this
+#     stage's own fault-injection boundary and the caller's provision
+#     stage.
+#   * teardown_pre_mutation.yml (teardown flow) — teardown has no
+#     capacity-style read-only planning stage of its own, so its
+#     just-before-first-mutation point is right before the Helm removal;
+#     the SAME invariant holds — a teardown removing the workload makes
+#     any older run's rollback baseline for the same facility moot the
+#     same way a fresh launch's own mutation does.
+#
+# Requires l3_run_id and l3_lock_namespace already in scope (both callers
+# have them by this point).
+
+- name: "L3 supersede sweep: list all dmf-run-* ConfigMaps"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ l3_lock_namespace }}"
+    label_selectors:
+      - "dmf.io/run-id"
+  register: _l3_all_run_cms
+
+- name: "L3 supersede sweep: classify records (pure — l3_classify_run_records, R3a-5 widened)"
+  ansible.builtin.set_fact:
+    _l3_run_classification: "{{ _l3_all_run_cms.resources | l3_classify_run_records(l3_run_id) }}"
+
+- name: "L3 supersede sweep: mark superseded ALL older rollback-eligible residue"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ item.metadata.name }}"
+        namespace: "{{ l3_lock_namespace }}"
+      data:
+        status: superseded
+  loop: "{{ _l3_run_classification.supersede_candidates }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"

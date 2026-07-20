@@ -10,65 +10,137 @@
     mxl_release: mxl-videotestsrc
     mxl_function_key: "{{ mxl_release }}"
   tasks:
-    - name: List current MXL Helm releases before teardown
-      ansible.builtin.command:
-        argv:
-          - helm
-          - list
-          - -n
-          - "{{ mxl_namespace }}"
-          - -q
-      register: _mxl_helm_list
-      changed_when: false
+    - name: "L3 gate through terminal — ONE outer block/rescue/always (R4a
+        Backbone, codex round-3 P1-3/P1-11: the teardown-lock guard used
+        to run OUTSIDE any block — an exception there had nothing to
+        catch it and leaked the lock to TTL. Now inside this SAME outer
+        block as the caller's own mutation, so gate_rescue.yml (shared
+        with launch) sees every failure in this whole span, and
+        release.yml is the unconditional lock-release backstop)"
+      block:
+        - name: L3 teardown-lock guard (identity/netbox-token/lock — umbrella #202 WP3 R2a-4)
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: lock_only
 
-    - name: Compute other MXL releases still present
-      ansible.builtin.set_fact:
-        _mxl_other_releases: >-
-          {{
-            _mxl_helm_list.stdout_lines
-            | default([])
-            | reject('equalto', mxl_release)
-            | select('match', '^mxl-')
-            | list
-          }}
+        - name: "L3: mark mutation as STARTED (everything from here on is a
+            real mutating action; gate_rescue.yml reads this to decide
+            superseded[pre-mutation] vs failed_rollback_required
+            [post-mutation])"
+          ansible.builtin.set_fact:
+            l3_mutation_started: true
 
-    - name: Remove MXL Helm release
-      ansible.builtin.command:
-        argv:
-          - helm
-          - uninstall
-          - "{{ mxl_release }}"
-          - -n
-          - "{{ mxl_namespace }}"
-      register: _mxl_uninstall
-      changed_when: "'release: not found' not in (_mxl_uninstall.stderr | default(''))"
-      # Tolerate an already-gone release so a finalise re-run after a partial
-      # failure (e.g. job #164: teardown died between uninstall and the NetBox
-      # flip) can converge instead of dying at this step.
-      failed_when:
-        - _mxl_uninstall.rc != 0
-        - "'release: not found' not in (_mxl_uninstall.stderr | default(''))"
+        - name: "L3: test-only fault injection boundary (R4a/P2-5 — no-op on every real run)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: fault_inject
+          vars:
+            l3_fault_inject_boundary: post-mutation-start
 
-    - name: Remove shared coordinator ConfigMap when this was the last MXL release
-      # kubernetes.core.k8s, NOT a kubectl shell-out — the catalog EE image
-      # carries helm + the k8s collection but no kubectl binary (job #164
-      # failed exactly here the first time this last-release path ran live).
-      kubernetes.core.k8s:
-        api_version: v1
-        kind: ConfigMap
-        name: mxl-coordinator
-        namespace: "{{ mxl_namespace }}"
-        state: absent
-      when: _mxl_other_releases | length == 0
-      # If no other mxl-* releases were present, the shared flow coordinator can
-      # be cleaned up safely. The domain tmpfs dies with the pod emptyDir.
+        - name: "L3 teardown: lock checkpoint + supersede sweep before first mutation (R4a/P1-4/P1-5 — moved from lock_only.yml, no checkpoint existed anywhere in teardown before this round)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: teardown_pre_mutation
 
-    - name: Note flow-domain cleanup is handled by pod teardown
-      ansible.builtin.debug:
-        msg: "MXL flow domain cleanup is implicit: the pod emptyDir disappears with the Helm release."
+        - name: List current MXL Helm releases before teardown
+          ansible.builtin.command:
+            argv:
+              - helm
+              - list
+              - -n
+              - "{{ mxl_namespace }}"
+              - -q
+          register: _mxl_helm_list
+          changed_when: false
 
-    - name: Include mxl role (finalise stage - reset NetBox, clear monitoring stamps)
-      ansible.builtin.include_role:
-        name: mxl
-      vars:
-        mxl_stage: finalise
+        - name: Compute other MXL releases still present
+          ansible.builtin.set_fact:
+            _mxl_other_releases: >-
+              {{
+                _mxl_helm_list.stdout_lines
+                | default([])
+                | reject('equalto', mxl_release)
+                | select('match', '^mxl-')
+                | list
+              }}
+
+        - name: Remove MXL Helm release
+          ansible.builtin.command:
+            argv:
+              - helm
+              - uninstall
+              - "{{ mxl_release }}"
+              - -n
+              - "{{ mxl_namespace }}"
+          register: _mxl_uninstall
+          changed_when: "'release: not found' not in (_mxl_uninstall.stderr | default(''))"
+          # Tolerate an already-gone release so a finalise re-run after a partial
+          # failure (e.g. job #164: teardown died between uninstall and the NetBox
+          # flip) can converge instead of dying at this step.
+          failed_when:
+            - _mxl_uninstall.rc != 0
+            - "'release: not found' not in (_mxl_uninstall.stderr | default(''))"
+
+        - name: "L3: test-only fault injection boundary (R4a/P2-5 — after the first real mutation)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: fault_inject
+          vars:
+            l3_fault_inject_boundary: post-first-mutation
+
+        - name: Remove shared coordinator ConfigMap when this was the last MXL release
+          # kubernetes.core.k8s, NOT a kubectl shell-out — the catalog EE image
+          # carries helm + the k8s collection but no kubectl binary (job #164
+          # failed exactly here the first time this last-release path ran live).
+          kubernetes.core.k8s:
+            api_version: v1
+            kind: ConfigMap
+            name: mxl-coordinator
+            namespace: "{{ mxl_namespace }}"
+            state: absent
+          when: _mxl_other_releases | length == 0
+          # If no other mxl-* releases were present, the shared flow coordinator can
+          # be cleaned up safely. The domain tmpfs dies with the pod emptyDir.
+
+        - name: Note flow-domain cleanup is handled by pod teardown
+          ansible.builtin.debug:
+            msg: "MXL flow domain cleanup is implicit: the pod emptyDir disappears with the Helm release."
+
+        - name: "L3 lock checkpoint before NetBox finalise (R4a/P1-4 — no checkpoint existed here before this round)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: lock_checkpoint
+
+        - name: Include mxl role (finalise stage - reset NetBox, clear monitoring stamps)
+          ansible.builtin.include_role:
+            name: mxl
+          vars:
+            mxl_stage: finalise
+
+        - name: "L3 teardown success — release the lock (no marker: a
+            started teardown failure maps to RUN_STATUS_UNKNOWN/RUN_FAILED
+            console-side regardless of any token, and
+            FAILED_ROLLBACK_REQUIRED is deploy-only — teardown genuinely
+            has no success marker to emit; job success is the signal)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: lock_release
+      rescue:
+        - name: "L3 gate rescue — shared launch/teardown cleanup (R4a Backbone: informational
+            preflight-error/post-mutation-failed marker — teardown never auto-triggers
+            rollback from this, purely for operator legibility)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: gate_rescue
+
+        - name: Re-raise (gate_rescue.yml only does cleanup, never terminates the play itself)
+          ansible.builtin.fail:
+            msg: >-
+              MXL fabrics-demo teardown failed for run_id={{ l3_run_id | default('<unknown>') }}.
+              See the task error above for the root cause; the L3 gate's
+              own cleanup (facility lock released) has already run.
+      always:
+        - name: "L3 release — idempotent lock-release backstop (R4a Backbone)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: release

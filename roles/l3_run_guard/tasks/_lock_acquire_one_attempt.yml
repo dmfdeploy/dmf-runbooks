@@ -1,0 +1,288 @@
+---
+# umbrella #202 WP3 R4a (codex round-3 P1-1) — one bounded attempt at
+# atomic lock creation. THE CALLER (lock.yml) drives the retry via a
+# NATIVE Ansible `loop:` on `include_tasks` — NOT recursion. R3a's own
+# draft had this file `include_tasks` ITSELF, passing
+# `l3_lock_attempt_number: "{{ (l3_lock_attempt_number | int) + 1 }}"` as
+# an include var — codex round-3 reproduced this EXACT pattern in
+# isolation and got a hard Ansible failure, "Recursive loop detected in
+# template": self-referencing an include's OWN loop variable through a
+# recursive `include_tasks` call is a templating-engine dead end, not a
+# supported construct, regardless of what the surrounding logic does. The
+# first 409+empty-read race aborted the play raw — attempt 2 was never
+# reached, and the lock-race refusal marker never fired either. This file
+# no longer retries anything itself: it does ONE POST + (if held) one
+# READ + decide, and leaves EMPTY-READ RACE handling to the caller's loop
+# (see lock.yml) — every path through THIS file either sets
+# l3_lock_acquired, fails the play via _refuse_pre_mutation.yml
+# (facility-busy, genuine hold), or falls through having done neither
+# (the empty-read race — the caller's loop notices l3_lock_acquired is
+# still undefined and runs another iteration, or gives up after the
+# bound is reached).
+#
+# Caller sets l3_lock_attempt_number (1-based, for logging now) and must
+# have already rendered _l3_lock_manifest and confirmed _l3_api_available.
+#
+# R4a Backbone (execution-tested, codex round-3 P2-5 — this is exactly
+# the class of bug pure-filter tests can't catch): the CALLER's own loop
+# `when: l3_lock_acquired is not defined` on lock.yml's `include_tasks:`
+# does NOT reliably stop later loop iterations once an EARLIER iteration
+# of that SAME `loop:` sets `l3_lock_acquired` via `set_fact` — a real
+# execution-harness run against the stub proved this empirically: attempt
+# 3 acquired the lock for real, yet attempt 4 still ran its own atomic
+# create for real, got a genuine 409 against its own freshly-created lock,
+# and refused facility-busy against itself. This is a documented Ansible
+# gotcha (a `when:` on a looped `include_tasks` is not guaranteed to see
+# `set_fact` state from a PRIOR iteration of that same loop by the time
+# the NEXT iteration's own `when:` is evaluated). Fixed by wrapping this
+# entire file's body in its OWN block with the SAME guard — a block's
+# `when:` is evaluated fresh at THIS file's own entry for whichever
+# single loop iteration is currently running it, which is reliable.
+# lock.yml's own outer loop `when:` is kept too (belt-and-suspenders,
+# cheap) but this file no longer trusts it alone.
+
+- name: "L3 lock: one bounded attempt (guarded again, INSIDE the include — see this file's own header for why the caller's loop when: alone isn't sufficient)"
+  when: l3_lock_acquired is not defined
+  block:
+    - name: "L3 lock: attempt atomic create (attempt {{ l3_lock_attempt_number }}/{{ l3_lock_acquire_max_attempts }})"
+      ansible.builtin.uri:
+        url: "{{ _l3_api_url }}/api/v1/namespaces/{{ l3_lock_namespace }}/configmaps"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _l3_api_token }}"
+          Content-Type: application/json
+        body_format: json
+        body: "{{ _l3_lock_manifest }}"
+        ca_path: "{{ _l3_api_ca_path if (_l3_api_ca_path | default('')) != '' else omit }}"
+        validate_certs: "{{ _l3_api_validate_certs }}"
+        status_code: [201, 409]
+        return_content: true
+      register: _l3_lock_create
+      no_log: true
+
+    # ── R5a/P1-1 (codex round-4): CLUSTER-TRUTH READBACK before trusting a
+    #    claimed acquisition. _l3_lock_create is itself just a registered
+    #    variable — codex proved live that `-e
+    #    '{"_l3_lock_create":{"status":201,...}}'` makes the task above's
+    #    OWN register look like a genuine 201 without ever POSTing
+    #    anything real, and (until this fix) the very next task trusted
+    #    that value blindly. This is not fixable by reserving
+    #    _l3_lock_create alone (extra_vars beats register regardless of
+    #    whether the NAME is reserved — reservation only blocks it at
+    #    IDENTITY.YML's entry-time check, which already runs before this
+    #    file; the meta-test — see tests/scripts/check_reserved_vars.py —
+    #    is what closes THAT gap). The readback below is the SECOND,
+    #    independent layer: even if a forged register somehow reached
+    #    here, a FRESH k8s_info re-read of the SAME ConfigMap is a live
+    #    cluster call this role's own extra_vars handling cannot influence
+    #    — it either shows OUR OWN l3_attempt_id as the holder (genuine
+    #    acquisition) or it doesn't (nothing to trust). ─────────────────────
+    - name: "L3 lock: fresh create (201) — cluster-truth readback (R5a/P1-1)"
+      when: _l3_lock_create.status == 201
+      block:
+        - name: "L3 lock: readback — re-read the lock CM from the cluster (independent of the create call's own register)"
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: ConfigMap
+            name: "{{ l3_lock_configmap_name }}"
+            namespace: "{{ l3_lock_namespace }}"
+          register: _l3_lock_verify_read
+
+        - name: "L3 lock: verify ownership — the readback CM's holder_attempt_id must be OUR OWN l3_attempt_id"
+          block:
+            - name: "L3 lock: verify ownership assert"
+              ansible.builtin.assert:
+                that:
+                  - (_l3_lock_verify_read.resources | default([])) | length > 0
+                  - (_l3_lock_verify_read.resources | first).data.holder_attempt_id | default('') == l3_attempt_id
+                fail_msg: >-
+                  L3 lock: cluster-truth readback after a claimed create
+                  (201) does not show this attempt as the holder.
+                  Refusing to trust an unverified acquisition.
+          rescue:
+            - name: "L3 lock: verification-failed refusal (never override-able)"
+              ansible.builtin.include_tasks: _refuse_pre_mutation.yml
+              vars:
+                l3_outcome_token: facility-busy
+                l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }} detail=lock-verify-failed"
+                l3_refusal_fail_msg: >-
+                  L3 launcher refused: facility-busy (lock-verify-failed) —
+                  cluster-truth readback after a claimed lock acquisition
+                  did not confirm ownership. This refusal is NOT
+                  override-able.
+
+        - name: "L3 lock: acquired (attempt {{ l3_lock_attempt_number }}, cluster-truth VERIFIED)"
+          ansible.builtin.set_fact:
+            l3_lock_acquired: true
+
+    - name: "L3 lock: held — read (attempt {{ l3_lock_attempt_number }})"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: ConfigMap
+        name: "{{ l3_lock_configmap_name }}"
+        namespace: "{{ l3_lock_namespace }}"
+      register: _l3_lock_read
+      when: _l3_lock_create.status == 409
+
+    # ── Held, NON-EMPTY read — decide via the shared filter (reclaim/refuse) ──
+    - name: "L3 lock: held, non-empty read — decide + act (R2a-3b)"
+      when:
+        - _l3_lock_create.status == 409
+        - (_l3_lock_read.resources | default([])) | length > 0
+      block:
+        - name: "L3 lock: decide (pure — l3_lock_decision, TTL-only, no same-run reclaim)"
+          ansible.builtin.set_fact:
+            _l3_lock_decision: >-
+              {{
+                (_l3_lock_read.resources | first).data | default({})
+                | l3_lock_decision(l3_now_epoch | int, l3_lock_ttl_seconds | int)
+              }}
+
+        # ── Reclaim: TTL-expired only (R2a-3b) ──────────────────────────────
+        - name: "L3 lock: reclaim (ttl-expired)"
+          when: _l3_lock_decision.action == 'reclaim'
+          block:
+            - name: Log reclaim (stale holder + age)
+              ansible.builtin.debug:
+                msg: >-
+                  L3 lock RECLAIM (ttl-expired): lock held by
+                  {{ _l3_lock_decision.stale_holder }} (attempt_id
+                  {{ _l3_lock_decision.stale_attempt_id }}) for
+                  {{ _l3_lock_decision.age_seconds }}s — TTL
+                  ({{ l3_lock_ttl_seconds }}s) exceeded, reclaiming for
+                  run_id={{ l3_run_id }} attempt_id={{ l3_attempt_id }}.
+
+            - name: "L3 lock: preconditioned DELETE of the stale lock (uid from the read above — R2a-3c)"
+              ansible.builtin.uri:
+                url: "{{ _l3_api_url }}/api/v1/namespaces/{{ l3_lock_namespace }}/configmaps/{{ l3_lock_configmap_name }}"
+                method: DELETE
+                headers:
+                  Authorization: "Bearer {{ _l3_api_token }}"
+                  Content-Type: application/json
+                body_format: json
+                body:
+                  apiVersion: v1
+                  kind: DeleteOptions
+                  preconditions:
+                    uid: "{{ (_l3_lock_read.resources | first).metadata.uid }}"
+                ca_path: "{{ _l3_api_ca_path if (_l3_api_ca_path | default('')) != '' else omit }}"
+                validate_certs: "{{ _l3_api_validate_certs }}"
+                status_code: [200, 202, 404, 409]
+              register: _l3_lock_reclaim_delete
+              no_log: true
+
+            - name: "L3 lock: LOUD ABORT on reclaim precondition conflict (a concurrent reclaimer won the race)"
+              ansible.builtin.fail:
+                msg: >-
+                  L3 lock reclaim aborted: preconditioned DELETE returned 409 —
+                  the lock's uid changed between our read and our delete (a
+                  concurrent reclaimer already deleted/recreated it). Refusing
+                  to proceed; retry this launch.
+              when: _l3_lock_reclaim_delete.status == 409
+
+            - name: Re-create-only after reclaim (still atomic — a concurrent
+                reclaimer racing us here will hit the SAME 409 we just
+                recovered from, via the same raw REST POST)
+              ansible.builtin.uri:
+                url: "{{ _l3_api_url }}/api/v1/namespaces/{{ l3_lock_namespace }}/configmaps"
+                method: POST
+                headers:
+                  Authorization: "Bearer {{ _l3_api_token }}"
+                  Content-Type: application/json
+                body_format: json
+                body: "{{ _l3_lock_manifest }}"
+                ca_path: "{{ _l3_api_ca_path if (_l3_api_ca_path | default('')) != '' else omit }}"
+                validate_certs: "{{ _l3_api_validate_certs }}"
+                status_code: [201, 409]
+              register: _l3_lock_reclaim_create
+              no_log: true
+
+            - name: Assert the reclaim create actually succeeded
+              ansible.builtin.assert:
+                that:
+                  - _l3_lock_reclaim_create.status == 201
+                fail_msg: >-
+                  Facility lock reclaim create failed (status
+                  {{ _l3_lock_reclaim_create.status }}) — likely a concurrent
+                  reclaimer won the race.
+
+            # ── R5a/P1-1: the SAME cluster-truth readback the fresh-create
+            #    path above uses — a forged _l3_lock_reclaim_create.status
+            #    could equally fake a reclaim acquisition. ─────────────────
+            - name: "L3 lock: reclaim — readback (R5a/P1-1)"
+              kubernetes.core.k8s_info:
+                api_version: v1
+                kind: ConfigMap
+                name: "{{ l3_lock_configmap_name }}"
+                namespace: "{{ l3_lock_namespace }}"
+              register: _l3_lock_reclaim_verify_read
+
+            - name: "L3 lock: reclaim — verify ownership"
+              block:
+                - name: "L3 lock: reclaim — verify ownership assert"
+                  ansible.builtin.assert:
+                    that:
+                      - (_l3_lock_reclaim_verify_read.resources | default([])) | length > 0
+                      - (_l3_lock_reclaim_verify_read.resources | first).data.holder_attempt_id | default('') == l3_attempt_id
+                    fail_msg: >-
+                      L3 lock: cluster-truth readback after a claimed
+                      reclaim create (201) does not show this attempt as
+                      the holder. Refusing to trust an unverified
+                      acquisition.
+              rescue:
+                - name: "L3 lock: reclaim verification-failed refusal (never override-able)"
+                  ansible.builtin.include_tasks: _refuse_pre_mutation.yml
+                  vars:
+                    l3_outcome_token: facility-busy
+                    l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }} detail=lock-verify-failed"
+                    l3_refusal_fail_msg: >-
+                      L3 launcher refused: facility-busy (lock-verify-failed)
+                      — cluster-truth readback after a claimed lock reclaim
+                      did not confirm ownership. This refusal is NOT
+                      override-able.
+
+            - name: "L3 lock: acquired via reclaim (cluster-truth VERIFIED)"
+              ansible.builtin.set_fact:
+                l3_lock_acquired: true
+
+        # ── Held by ANYONE, within TTL — genuine refusal, NEVER override-able (R2a-3d) ──
+        - name: "L3 lock: facility-busy refusal (NEVER override-able — R2a-3d)"
+          when: _l3_lock_decision.action == 'refuse'
+          block:
+            - name: Report facility-busy
+              ansible.builtin.debug:
+                msg: >-
+                  L3 launcher refused: facility-busy. Held by
+                  {{ _l3_lock_decision.holder }} for run_id
+                  {{ _l3_lock_decision.run_id }}, age
+                  {{ _l3_lock_decision.age_seconds }}s (TTL
+                  {{ l3_lock_ttl_seconds }}s not yet exceeded).
+
+            - name: "L3 facility-busy refusal cleanup (never override-able)"
+              ansible.builtin.include_tasks: _refuse_pre_mutation.yml
+              vars:
+                l3_outcome_token: facility-busy
+                l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }}"
+                l3_refusal_fail_msg: >-
+                  L3 launcher refused: facility-busy (run_id={{ l3_run_id }},
+                  held by {{ _l3_lock_decision.holder }} for run_id
+                  {{ _l3_lock_decision.run_id }}). This refusal is NOT
+                  override-able (umbrella #202 WP3 R2a-3d) — a concurrent run
+                  genuinely holds the facility; wait for it to finish or its
+                  lock to expire (TTL {{ l3_lock_ttl_seconds }}s).
+
+    # ── Held, EMPTY read (the create-then-read race) — report only; the
+    #    CALLER's loop (lock.yml) is what decides whether to try again or
+    #    give up once the bound is reached (P1-1: no recursion here). ──────
+    - name: "L3 lock: held, EMPTY read (create-then-read race) — this attempt yields, caller's loop decides next step"
+      ansible.builtin.debug:
+        msg: >-
+          L3 lock: attempt {{ l3_lock_attempt_number }}/{{ l3_lock_acquire_max_attempts }}
+          hit the create-then-read race (POST 409, immediate read found
+          nothing — the prior holder released/deleted it between our two
+          calls). l3_lock_acquired stays unset; the caller's loop will retry
+          if attempts remain, or refuse facility-busy (lock-race) once
+          exhausted.
+      when:
+        - _l3_lock_create.status == 409
+        - (_l3_lock_read.resources | default([])) | length == 0

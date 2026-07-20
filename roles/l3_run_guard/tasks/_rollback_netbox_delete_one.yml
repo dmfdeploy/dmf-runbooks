@@ -1,0 +1,72 @@
+---
+# One iteration of the "run-created" NetBox record finalise-then-delete
+# path (§4.2). Invoked via loop+include_tasks from
+# rollback_netbox_surface.yml. `item` is one entry of
+# _l3_netbox_classification.delete: {id, name, tags, custom_fields}
+# (l3_netbox_surface_with_id's own output shape).
+#
+# PATCH-then-DELETE stays properly sequenced per item (a plain module loop
+# can't express "do step B only if step A succeeded, for THIS item") — the
+# delete only runs if the finalise PATCH succeeded.
+#
+# R2a-7 §4.6-honest: call-success never equals clean — a fresh GET
+# readback taken AFTER the DELETE call, expecting 404, is what actually
+# determines this item's dirty state now (l3_netbox_delete_dirty), not the
+# DELETE call's own reported status.
+
+- name: "L3 rollback: PATCH finalise-shape before delete (MANDATORY merge_owned_tags)"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/{{ item.id }}/"
+    method: PATCH
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      tags: >-
+        {{
+          item.tags
+          | merge_owned_tags(_netbox_owned_namespace, item.tags | l3_finalise_tags_for_delete(_netbox_owned_namespace))
+        }}
+      custom_fields: "{{ l3_netbox_monitoring_custom_fields_clear }}"
+    validate_certs: false
+    status_code: [200]
+  register: _l3_netbox_delete_patch
+  ignore_errors: true
+  no_log: true
+
+- name: "L3 rollback: delete the record (idempotent — 404 tolerated as already-gone)"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/{{ item.id }}/"
+    method: DELETE
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+    validate_certs: false
+    status_code: [204, 404]
+  register: _l3_netbox_delete_delete
+  ignore_errors: true
+  no_log: true
+  when: not (_l3_netbox_delete_patch.failed | default(false))
+
+- name: "L3 rollback: readback — fresh GET after the delete (R2a-7, expects 404)"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/{{ item.id }}/"
+    method: GET
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+    validate_certs: false
+    status_code: [200, 404]
+  register: _l3_netbox_delete_readback
+  ignore_errors: true
+  no_log: true
+
+- name: "L3 rollback: determine this item's dirty state (pure — l3_netbox_delete_dirty, readback-authoritative)"
+  ansible.builtin.set_fact:
+    _l3_netbox_dirty_accum: >-
+      {{
+        (_l3_netbox_dirty_accum | default([]))
+        + [
+            _l3_netbox_delete_readback.status | default(0)
+            | l3_netbox_delete_dirty(_l3_netbox_delete_readback.failed | default(false))
+          ]
+      }}

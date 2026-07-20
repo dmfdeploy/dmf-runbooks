@@ -1,0 +1,46 @@
+---
+# umbrella #202 WP3-B — L3 rollback-run: authoritative launcher-tier
+# rollback of a run whose deploy started then failed (plan §4.1-§4.6).
+#
+# Inputs (extra_vars):
+#   l3_run_id           — REQUIRED, bare 32-char lowercase hex — the failed
+#                         deploy's own request_id/run_id (plan §4.1's
+#                         request_id correlation). l3_catalog_key/l3_release
+#                         are derived from that run's own snapshot, not
+#                         separately supplied.
+#   l3_rollback_reason   — REQUIRED, non-empty (C5 attributability).
+#   l3_request_id        — optional: this rollback DISPATCH's own
+#                         correlator (console-driven runs always supply
+#                         it; a direct run-playbook.sh invocation
+#                         self-mints one, ADR-0010).
+#   l3_override/_reason  — optional; honored ONLY on the facility-lock
+#                         refusal path (both structural precondition
+#                         refusals — no-snapshot/stale-snapshot — are
+#                         NOT override-able, see rollback_snapshot_read.yml).
+#
+# Runs in-cluster via the same custom AWX EE (Container Group
+# dmf-catalog-cg) as every launch-*.yml playbook, or directly via
+# run-playbook.sh from an operator workstation (ADR-0010).
+- name: L3 rollback-run — authoritative launcher-tier rollback
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: "L3 rollback — always: lock-release backstop (R4a Backbone: rollback.yml's OWN
+        rescue: is intentionally bespoke — not gate_rescue.yml, see that
+        file's header for why — but the SAME generic always:-backstop gap
+        applies here too: an error INSIDE rollback.yml's own rescue: (or
+        inside rollback_terminal.yml before it reaches its own
+        lock_release.yml call) has nothing else to catch it. release.yml
+        is idempotent and never fails the play, so it's a safe backstop
+        regardless of what rollback.yml's own cleanup already did)"
+      block:
+        - name: Include l3_run_guard role (rollback flow)
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: rollback
+      always:
+        - name: "L3 release — idempotent lock-release backstop (R4a Backbone)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: release

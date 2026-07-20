@@ -1,0 +1,146 @@
+---
+# umbrella #202 WP3-A — L3 launcher authoritative gate defaults.
+
+# ── Facility lock (§4.5) ────────────────────────────────────────────────────
+# One fixed lock object for the single facility — namespace nmos is the
+# catalog EE's home namespace; the launcher ServiceAccount has full
+# ConfigMap rights there (and in mxl), so this is reachable from both
+# entry paths (console-driven AWX job, and a direct run-playbook.sh
+# invocation, ADR-0010) regardless of which namespace the RUN itself
+# targets.
+l3_lock_namespace: nmos
+l3_lock_configmap_name: dmf-facility-lock
+# R5a (codex round-4 P1-2): NO LONGER "overridable per-invocation via
+# extra_vars" — that was never actually safe. TTL directly controls when a
+# genuine, currently-live holder becomes reclaimable; codex demonstrated
+# `l3_lock_ttl_seconds=0` makes any positive-age live holder immediately
+# TTL-expired, defeating the "facility-busy is never override-able"
+# invariant this role otherwise protects at length. This value, along with
+# l3_lock_namespace/l3_lock_configmap_name/l3_ee_reserve (§3.2), is now
+# asserted == its frozen literal at entry — see _assert_authority.yml.
+l3_lock_ttl_seconds: 3600
+# R3a-3a (codex round-2 P1-3a), retry mechanism rebuilt R4a (codex
+# round-3 P1-1 — a recursive include hit Ansible's own "Recursive loop
+# detected in template" wall; now a native `loop:` over
+# _lock_acquire_one_attempt.yml, see lock.yml): bounded retries for the
+# create-then-read race (POST returns 409 held, but an immediate
+# follow-up read finds nothing — the holder released/deleted it between
+# our two calls). After this many consecutive empty-read collisions, the
+# attempt refuses facility-busy (lock-race) rather than retrying forever
+# or falling through unprotected.
+l3_lock_acquire_max_attempts: 3
+
+# R4a (codex round-3 P2-4): same class of bug as the lock's own 409-then-
+# empty-read race (P1-1) — the snapshot's create-only POST can hit the
+# identical race against a CONCURRENT deleter of a same-named CM. Same
+# bounded-native-loop pattern as l3_lock_acquire_max_attempts above, see
+# snapshot.yml + _snapshot_create_one_attempt.yml.
+l3_snapshot_create_max_attempts: 3
+
+# R4a Backbone (codex round-3 P2-5) — TEST-ONLY fault injection. Empty by
+# default (a no-op on every real run). A control-flow execution test sets
+# this to the NAME of a stage boundary (see _fault_inject.yml's own
+# header for the full, current list of boundary names) via extra_vars;
+# _fault_inject.yml raises a distinctive, easily-greppable failure at
+# that exact point, letting a test drive "what happens if THIS specific
+# post-acquire stage throws" without needing to actually break a real K8s
+# call. NEVER read/checked outside test runs — a production run always
+# leaves this empty, so the check is always false and costs one cheap
+# string comparison per boundary.
+l3_fault_inject: ""
+
+# codex A2-1: direct/off-cluster API access for the facility lock (no
+# kubectl in the catalog EE — see lock.yml's header comment for the full
+# in-pod-vs-direct rationale). Empty by default (documents the contract,
+# doesn't silently enable anything) — an in-pod run (console-driven or a
+# direct run-playbook.sh invocation that happens to execute FROM inside
+# the cluster) never needs these at all, since the pod's own
+# ServiceAccount token + in-cluster env vars are used instead. Only a
+# genuinely off-cluster direct run (an operator's workstation against a
+# kubeconfig, ADR-0010) needs them, and only for lock protection — every
+# OTHER L3 stage (capacity, snapshot, helm/netbox surfaces) already uses
+# kubernetes.core modules/uri calls that work identically both ways.
+l3_kube_api_url: ""
+l3_kube_api_token: ""
+l3_kube_api_ca_path: ""
+l3_kube_api_validate_certs: true
+# R4a (codex round-3 P1-9): these two ABOVE are now REQUIRED on the
+# direct/off-cluster path — there is no lockless/un-rollbackable escape
+# hatch anymore (removed entirely; the R3a-11 draft's "proceed lockless,
+# marker gains snapshot=skipped" story never actually shipped an
+# observable snapshot=skipped marker and left every such run silently
+# un-rollbackable with no signal of that fact to dmf-cms — codex's exact
+# P1-9 finding). Absent either, lock.yml refuses lock-unavailable, NEVER
+# override-able.
+
+# ── Run snapshot (§4.1) ─────────────────────────────────────────────────────
+l3_run_configmap_prefix: "dmf-run-"
+
+# ── NetBox (snapshot surface #1) ────────────────────────────────────────────
+# Mirrors the SAME defaults every other launcher role declares (nmos-cpp,
+# nmos-crosspoint, mxl) — deliberately the identical var names/values, not
+# an l3_-prefixed shadow copy, so an operator/inventory override of
+# netbox_api_url|netbox_api_token applies uniformly whether l3_run_guard
+# or the catalog role reads it. This role runs BEFORE the catalog role's
+# own include (per playbook ordering, WP3-A stage 6), so it cannot rely on
+# that role's defaults/main.yml having loaded yet — it must carry its own
+# copy, same as every other role in this tree already does independently.
+netbox_api_url: "http://netbox.netbox.svc.cluster.local"
+# umbrella #202 WP3 R2c-runbooks (codex round-1 P1-10, other half of the
+# dmf-infra fix): NO fallback to vault_netbox_api_token (the admin token)
+# anymore — a missing scoped catalog-writer token must FAIL, never
+# silently upgrade to the admin token (ADR-0032). preflight.yml asserts
+# this is non-empty (for flows that will touch NetBox) before any NetBox
+# call is ever made.
+netbox_api_token: "{{ vault_netbox_catalog_token | default('') }}"
+
+# R3a-12 (codex round-2 P2-5): optional local chart path — when a caller
+# (mxl's own mxl_chart_local play var) sets this, capacity.yml renders
+# THAT exact local path instead of pulling from the OCI ref, so the
+# capacity gate evaluates the SAME artifact the install step actually
+# uses. Empty by default (the normal OCI-pull path, unaffected).
+l3_chart_local: ""
+
+# ── Capacity preflight (§3.2) ───────────────────────────────────────────────
+# ee_reserve is ALWAYS zero on both launcher entry paths — see l3_budget.py's
+# module docstring for the full no-double-count reasoning. Kept as an
+# explicit, named default (never inlined as a bare 0 in the task) so the
+# "why" travels with the value and a future change is a one-line diff, not
+# an archaeology exercise.
+l3_ee_reserve:
+  cpu_m: 0
+  mem_b: 0
+
+# AWX injects job identity as extra_vars under one of these names depending
+# on branding/version — check both, falling back to 'direct' (the ADR-0010
+# escape-hatch holder value) when neither is present, e.g. a genuinely
+# direct run-playbook.sh invocation with no AWX context at all.
+l3_awx_job_id: "{{ awx_job_id | default(tower_job_id | default('direct'), true) }}"
+
+# R2a-10iv: the v1 identity contract for the snapshot's dmf.io/owner label
+# — an explicit l3_owner extra_var if the operator/console supplied one,
+# else l3_awx_job_id (itself AWX-job-id-or-'direct'). Empty by default
+# (documents the contract, doesn't silently stamp a fake identity).
+# topology_params.target_facility integration (a richer facility/owner
+# model) is umbrella #201 WP3a's concern, not this role's.
+l3_owner: ""
+
+# ── Rollback (WP3-B, §4.2) ───────────────────────────────────────────────
+# The custom-fields-clear shape a run-created NetBox record's finalise
+# PATCH sends before deletion — the SAME key set every catalog role
+# already declares as its own netbox_service_monitoring_custom_fields_clear
+# default (nmos-cpp, mxl); duplicated here for the same load-order reason
+# as netbox_api_url/netbox_api_token above (this role never has the
+# catalog role's own defaults loaded). R4a (codex round-3 P2-2): gained
+# probe_path — the R2a-7 draft's set was missing it despite the MXL
+# finalise shape carrying it; if a run-created record's DELETE ever fails
+# after this PATCH, the residue would otherwise retain a stale probe_path.
+# This is the UNION of every catalog-owned monitoring field, not a
+# per-catalog-entry subset — a field one entry doesn't use is harmlessly
+# cleared to null for it too.
+l3_netbox_monitoring_custom_fields_clear:
+  probe_module: null
+  probe_path: null
+  cluster_service: null
+  cluster_namespace: null
+  cluster_port: null

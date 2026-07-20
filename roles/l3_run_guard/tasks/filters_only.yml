@@ -1,0 +1,7 @@
+---
+# Intentionally empty. tasks/main.yml IS this role's real entry point (every
+# launch-*.yml playbook includes it bare, no tasks_from, to run the actual
+# gate) — unlike netbox_catalog_common, this role can't have an empty
+# main.yml. tests/l3-budget-logic.yml instead loads THIS file via
+# `include_role: tasks_from: filters_only` to pull in the role's
+# filter_plugins + defaults without executing any live-cluster task.

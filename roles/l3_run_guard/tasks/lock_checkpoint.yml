@@ -1,0 +1,124 @@
+---
+# umbrella #202 WP3 R3a-3b (codex round-2 P1-3, holder-liveness half) —
+# checkpoint THIS attempt's continued ownership of the facility lock,
+# invoked immediately before EACH mutating stage (helm install, each
+# NetBox provision/configure include in the calling playbook; every
+# rollback surface stage — see each call site). A TTL-expired lock with
+# no active-holder heartbeat could otherwise be reclaimed by a DIFFERENT
+# attempt while THIS one is still genuinely in-flight and mutating —
+# UID-conditioned deletion (R2a-3c) protects the delete RACE, but does
+# nothing to stop a live holder's LATER writes once it's already been
+# reclaimed out from under it. This checkpoint catches that: a holder
+# mismatch means this run has been FENCED OUT (someone else now
+# legitimately holds the facility), so it halts IMMEDIATELY rather than
+# continuing to mutate lock-unprotected — it never attempts to reacquire
+# or steal the lock back.
+#
+# On a MATCHING holder, refreshes the lock's created_at via a
+# PRECONDITIONED PUT (the read's own metadata.resourceVersion rides along
+# in the body — K8s enforces the optimistic-concurrency check natively on
+# any update whose resourceVersion doesn't match current; no separate
+# preconditions wrapper the way DELETE needs one), extending this
+# attempt's TTL window since it's actively still working.
+#
+# RESIDUAL WINDOW (documented, not eliminated by this checkpoint): a
+# checkpoint only proves liveness AT THE MOMENT IT RUNS — a reclaim can
+# still happen in the gap between this checkpoint returning and the
+# mutation it guards actually landing (the two are not one atomic
+# operation). This narrows the window from "the whole stage" to "between
+# this checkpoint and the very next mutating call," which is the best
+# achievable here without a heavier distributed-consensus primitive this
+# launcher tier does not have.
+#
+# Only meaningful when l3_lock_acquired is true — a run proceeding
+# WITHOUT the lock (the direct-path override, R2a-3d/R3a-11) has nothing
+# to check and no lock-protected mutation to guard.
+
+- name: "L3 lock checkpoint: read own lock (fresh)"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    name: "{{ l3_lock_configmap_name }}"
+    namespace: "{{ l3_lock_namespace }}"
+  register: _l3_checkpoint_read
+  when: l3_lock_acquired | default(false)
+
+- name: "L3 lock checkpoint: FENCED OUT — this run no longer holds the lock (R3a-3b)"
+  when:
+    - l3_lock_acquired | default(false)
+    - >-
+      (_l3_checkpoint_read.resources | default([])) | length == 0
+      or (_l3_checkpoint_read.resources[0].data.holder_attempt_id | default('')) != (l3_attempt_id | default(''))
+  block:
+    - name: Report fenced-out
+      ansible.builtin.debug:
+        msg: >-
+          L3 lock checkpoint FAILED: this attempt (attempt_id={{ l3_attempt_id }})
+          no longer holds the facility lock —
+          {{ 'the lock object is gone entirely'
+             if (_l3_checkpoint_read.resources | default([])) | length == 0
+             else ('now held by attempt_id=' ~ _l3_checkpoint_read.resources[0].data.holder_attempt_id) }}.
+          This run has been FENCED OUT; halting immediately rather than
+          continuing to mutate without lock protection.
+
+    - name: "L3 lock checkpoint: mark this refusal as having emitted its own marker (R4a Backbone — gate_rescue.yml must not double-emit)"
+      ansible.builtin.set_fact:
+        l3_pre_mutation_marker_emitted: true
+
+    - name: "L3 lock checkpoint: emit outcome marker (post-mutation-failed, lock-lost)"
+      ansible.builtin.include_tasks: _emit_outcome.yml
+      vars:
+        l3_outcome_token: post-mutation-failed
+        l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }} detail=lock-lost"
+
+    - name: "L3 lock checkpoint: fail the play IMMEDIATELY (do not continue mutating)"
+      ansible.builtin.fail:
+        msg: >-
+          L3 lock checkpoint FAILED for run_id={{ l3_run_id }} — this
+          attempt no longer holds the facility lock (fenced out). Halting
+          immediately; the caller's own rescue handles snapshot
+          terminalization from here. This checkpoint deliberately does
+          NOT touch the snapshot or attempt a lock release — releasing a
+          lock this attempt doesn't own would be exactly the mistake
+          lock_release.yml's own ownership check (R2a-3c) exists to
+          prevent.
+
+- name: "L3 lock checkpoint: live holder — refresh created_at (preconditioned PUT)"
+  when:
+    - l3_lock_acquired | default(false)
+    - (_l3_checkpoint_read.resources | default([])) | length > 0
+    - (_l3_checkpoint_read.resources[0].data.holder_attempt_id | default('')) == (l3_attempt_id | default(''))
+  block:
+    - name: "L3 lock checkpoint: render the refreshed manifest (same object, new created_at)"
+      ansible.builtin.set_fact:
+        _l3_checkpoint_manifest: >-
+          {{
+            _l3_checkpoint_read.resources[0]
+            | combine({'data': _l3_checkpoint_read.resources[0].data
+                                | combine({'created_at': lookup('pipe', 'date +%s') | string})},
+                       recursive=true)
+          }}
+
+    - name: "L3 lock checkpoint: preconditioned PUT (this read's own resourceVersion rides in the body)"
+      ansible.builtin.uri:
+        url: "{{ _l3_api_url }}/api/v1/namespaces/{{ l3_lock_namespace }}/configmaps/{{ l3_lock_configmap_name }}"
+        method: PUT
+        headers:
+          Authorization: "Bearer {{ _l3_api_token }}"
+          Content-Type: application/json
+        body_format: json
+        body: "{{ _l3_checkpoint_manifest }}"
+        ca_path: "{{ _l3_api_ca_path if (_l3_api_ca_path | default('')) != '' else omit }}"
+        validate_certs: "{{ _l3_api_validate_certs }}"
+        status_code: [200, 409]
+      register: _l3_checkpoint_refresh
+      no_log: true
+
+    - name: "L3 lock checkpoint: LOUD ABORT on refresh conflict (someone else mutated the lock concurrently — treat as fenced-out too)"
+      ansible.builtin.fail:
+        msg: >-
+          L3 lock checkpoint: the TTL-refresh PUT was rejected (status
+          {{ _l3_checkpoint_refresh.status }}) — the lock object changed
+          between our read and our write (a concurrent actor). Treating
+          this as fenced-out; halting immediately for run_id={{ l3_run_id }}.
+      when: _l3_checkpoint_refresh.status != 200

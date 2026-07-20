@@ -1,0 +1,39 @@
+---
+# umbrella #202 WP3 R5a (codex round-4 P1-1) — self-maintaining reserved-var
+# meta-test. Thin ansible-playbook wrapper around
+# tests/scripts/check_reserved_vars.py (kept as a standalone Python script,
+# not embedded Ansible/Jinja, since the actual work is text-parsing every
+# task file's register:/set_fact: targets — awkward and unreadable to do in
+# Jinja, trivial in Python) so it fits this repo's existing
+# `ansible-playbook tests/l3-*.yml` invocation convention for operators/CI.
+#
+# Run:  ansible-playbook tests/l3-reserved-var-meta-test.yml
+#
+# FAILS if roles/l3_run_guard/tasks/*.yml declares any register:/set_fact:
+# name that _assert_reserved_vars.yml's blocklist doesn't reserve (codex
+# round-4's exact finding: the R4a blocklist covered set_fact but not
+# register targets) — see the script's own module docstring for the full
+# rationale.
+
+- name: "umbrella #202 WP3 R5a — L3 reserved-var meta-test"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run the reserved-var coverage check
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/scripts/check_reserved_vars.py"]
+      register: _meta_check
+      changed_when: false
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "{{ _meta_check.stdout }}"
+
+    - name: ALL RESERVED-VAR COVERAGE CHECKS PASSED
+      ansible.builtin.debug:
+        msg: >-
+          umbrella #202 WP3 R5a: every register:/set_fact: name in
+          roles/l3_run_guard/tasks/*.yml is present in
+          _assert_reserved_vars.yml's blocklist — the blocklist cannot
+          silently drift out of sync with the task files again.

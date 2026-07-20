@@ -1,0 +1,26 @@
+---
+# umbrella #202 WP3-A/B — shared override handling, honored on EVERY path
+# (launch AND rollback) regardless of eventual verdict: the banner below
+# always prints when override is set, whether the downstream checks would
+# themselves have refused or not. Requires l3_run_id already set by the
+# caller (identity.yml or rollback_identity.yml).
+
+- name: "L3 override: determine active state"
+  ansible.builtin.set_fact:
+    l3_override_active: "{{ (l3_override | default(false)) | bool }}"
+    l3_override_reason: "{{ l3_override_reason | default('') }}"
+
+- name: "L3 override: assert a reason was supplied when active"
+  ansible.builtin.assert:
+    that:
+      - (l3_override_reason | trim) != ''
+    fail_msg: >-
+      l3_override=true was supplied without l3_override_reason — an override
+      of the L3 authoritative gate must always be attributable. Supply a
+      non-empty l3_override_reason extra_var.
+  when: l3_override_active
+
+- name: "L3 override: log banner (regardless of eventual verdict)"
+  ansible.builtin.debug:
+    msg: "L3 OVERRIDE ACTIVE: {{ l3_override_reason }} run_id={{ l3_run_id }}"
+  when: l3_override_active
