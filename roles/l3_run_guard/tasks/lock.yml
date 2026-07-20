@@ -1,0 +1,202 @@
+---
+# umbrella #202 WP3 stage — facility lock (§4.5, atomic), revised by codex
+# round-1 R2a-3.
+#
+# R2a-3a: every lock ACQUISITION ATTEMPT mints its own attempt_id (uuid4,
+# distinct from run_id/request_id) — two attempts of the SAME run are
+# still two DIFFERENT attempts (a retry after a crash is a NEW attempt,
+# not a continuation of the old one). R2a-3b: this means there is NO
+# same-run-residue reclaim anymore (see l3_budget.py's l3_lock_decision
+# docstring for the full reasoning) — every within-TTL hold, regardless of
+# who holds it, refuses. R2a-3c: both the TTL-expired reclaim's delete AND
+# every release (lock_release.yml) use a PRECONDITIONED delete (the lock
+# object's own metadata.uid from a fresh read) — a mismatched-uid 409
+# means a concurrent actor already deleted/recreated the lock between our
+# read and our delete, and that race aborts loudly rather than silently
+# deleting a lock we may no longer own. R2a-3d/R4a (codex round-3 P1-9):
+# facility-busy AND lock-unavailable are BOTH now NEVER override-able —
+# the R2a/R3a draft's "proceed lockless" escape hatch for the direct/
+# off-cluster path is REMOVED entirely. It was never actually coherent: a
+# run that proceeds without a lock also cannot safely CAPTURE a snapshot
+# (the held plan note claimed "either way a snapshot is captured", but no
+# task ever emitted the advertised `snapshot=skipped` marker, and
+# snapshot.yml's own skip branch made every such run un-rollbackable with
+# no observable signal of that fact to dmf-cms at all — codex's exact P1-9
+# finding). A run this role CANNOT lock+snapshot is now simply not
+# permitted, full stop; ADR-0010's direct/off-cluster escape hatch still
+# works, it just now REQUIRES l3_kube_api_url/l3_kube_api_token like any
+# other credential this role needs.
+#
+# codex A2-1 (carried forward unchanged): no kubectl in the catalog EE —
+# every lock mutation is either a raw ansible.builtin.uri REST call
+# against the K8s API server directly (create, and now delete-with-
+# preconditions) or kubernetes.core.k8s_info (read-only, always safe).
+#
+# Two execution contexts, detected by SA-token-file presence:
+#   * In-pod (AWX EE, console-driven OR a direct run-playbook.sh invocation
+#     that happens to run FROM inside the cluster): the pod's own
+#     ServiceAccount token + CA cert + the standard KUBERNETES_SERVICE_HOST/
+#     PORT in-cluster env vars are always available — no operator input
+#     needed.
+#   * Direct, off-cluster (an operator's workstation running
+#     run-playbook.sh against a kubeconfig, ADR-0010): there is no in-pod
+#     SA token. The API server URL + a bearer token MUST be supplied via
+#     l3_kube_api_url/l3_kube_api_token extra_vars — absent either, this
+#     run REFUSES (lock-unavailable), never override-able (R4a/P1-9).
+
+- name: "L3 lock: mint this attempt's own attempt_id (R2a-3a — distinct from run_id)"
+  ansible.builtin.set_fact:
+    l3_attempt_id: "{{ lookup('pipe', 'python3 -c \"import uuid; print(uuid.uuid4().hex)\"') }}"
+
+- name: "L3 lock: current epoch time"
+  ansible.builtin.set_fact:
+    l3_now_epoch: "{{ lookup('pipe', 'date +%s') }}"
+
+- name: "L3 lock: detect execution context (in-pod SA vs direct/off-cluster)"
+  ansible.builtin.stat:
+    path: /var/run/secrets/kubernetes.io/serviceaccount/token
+  register: _l3_sa_token_stat
+
+- name: "L3 lock: in-pod API access (SA token, CA cert, in-cluster env)"
+  when: _l3_sa_token_stat.stat.exists
+  block:
+    - name: Read in-pod SA token + compute in-pod API base URL
+      ansible.builtin.set_fact:
+        _l3_api_token: "{{ lookup('file', '/var/run/secrets/kubernetes.io/serviceaccount/token') }}"
+        _l3_api_url: "https://{{ lookup('env', 'KUBERNETES_SERVICE_HOST') }}:{{ lookup('env', 'KUBERNETES_SERVICE_PORT') }}"
+        _l3_api_ca_path: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        _l3_api_validate_certs: true
+        _l3_api_available: true
+      no_log: true
+
+- name: "L3 lock: direct/off-cluster API access (operator-provided, optional)"
+  when: not _l3_sa_token_stat.stat.exists
+  block:
+    - name: Use operator-provided direct-path API creds, if any
+      ansible.builtin.set_fact:
+        _l3_api_url: "{{ l3_kube_api_url | default('') }}"
+        _l3_api_token: "{{ l3_kube_api_token | default('') }}"
+        _l3_api_ca_path: "{{ l3_kube_api_ca_path | default('') }}"
+        _l3_api_validate_certs: "{{ l3_kube_api_validate_certs | default(true) | bool }}"
+      no_log: true
+
+    - name: Determine direct-path API availability
+      ansible.builtin.set_fact:
+        _l3_api_available: "{{ (_l3_api_url | trim) != '' and (_l3_api_token | trim) != '' }}"
+
+    - name: Warn loudly when the facility lock is unavailable on this path
+      ansible.builtin.debug:
+        msg: >-
+          L3 facility lock UNAVAILABLE on the direct/off-cluster path: set
+          BOTH l3_kube_api_url and l3_kube_api_token extra_vars to enable
+          the atomic facility lock (and pre-run snapshot) here (ADR-0010).
+          This refusal is NOT override-able (R4a/P1-9) — a run this role
+          cannot lock+snapshot is not permitted; there is no lockless/
+          un-rollbackable path anymore.
+      when: not _l3_api_available
+
+    - name: "L3 lock-unavailable refusal (direct path only — NEVER
+        override-able, R4a/P1-9: the lockless escape hatch is REMOVED)"
+      ansible.builtin.include_tasks: _refuse_pre_mutation.yml
+      vars:
+        l3_outcome_token: lock-unavailable
+        l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }}"
+        l3_refusal_fail_msg: >-
+          L3 facility lock UNAVAILABLE on the direct/off-cluster path
+          (l3_kube_api_url/l3_kube_api_token not supplied) — refusing to
+          proceed. This refusal is NOT override-able. Supply both
+          extra_vars to run this way.
+      when: not _l3_api_available
+
+- name: "L3 lock: render lock ConfigMap manifest (R3a-2: every data value
+    coerced |string — AWX injects awx_job_id/tower_job_id as a native
+    INTEGER, and a whole-template expression like l3_awx_job_id's own
+    default preserves that native type through Jinja's native-type
+    substitution; an unstringified int here becomes a JSON number in the
+    POST body, which the K8s API server rejects for a ConfigMap's
+    map[string]string data field)"
+  ansible.builtin.set_fact:
+    _l3_lock_manifest:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ l3_lock_configmap_name }}"
+        namespace: "{{ l3_lock_namespace }}"
+      data:
+        run_id: "{{ l3_run_id | string }}"
+        holder_attempt_id: "{{ l3_attempt_id | string }}"
+        holder: "{{ l3_awx_job_id | string }}"
+        created_at: "{{ l3_now_epoch | string }}"
+        ttl_seconds: "{{ l3_lock_ttl_seconds | string }}"
+  when: _l3_api_available
+
+- name: "L3 lock: type gate — assert every manifest data value is a string (R3a-2)"
+  ansible.builtin.assert:
+    that:
+      - (_l3_lock_manifest.data.values() | list | map('type_debug') | select('ne', 'str') | list | length) == 0
+    fail_msg: >-
+      L3 lock: one or more ConfigMap data values are not strings after
+      coercion: {{ _l3_lock_manifest.data }}
+  when: _l3_api_available
+
+- name: "L3 lock: acquire (bounded NATIVE loop over attempts, P1-1 — see
+    _lock_acquire_one_attempt.yml's own header for why this is a `loop:`,
+    never a recursive include). Each iteration is guarded on
+    l3_lock_acquired still being undefined, so a SUCCESSFUL earlier
+    iteration (create, or reclaim, or a refusal that already failed the
+    whole play) short-circuits every later one — only the create-then-
+    read-EMPTY race actually consumes more than one iteration."
+  ansible.builtin.include_tasks: _lock_acquire_one_attempt.yml
+  loop: "{{ range(1, (l3_lock_acquire_max_attempts | int) + 1) | list }}"
+  loop_control:
+    loop_var: l3_lock_attempt_number
+  when:
+    - _l3_api_available
+    - l3_lock_acquired is not defined
+
+- name: "L3 lock: create-then-read race EXHAUSTED — refuse facility-busy
+    (lock-race, never override-able) — only reached if the loop above ran
+    its full bound without ever setting l3_lock_acquired (every OTHER
+    exit path either sets it or already failed the whole play via
+    _refuse_pre_mutation.yml)"
+  when:
+    - _l3_api_available
+    - l3_lock_acquired is not defined
+  block:
+    - name: Report the exhausted create-read race
+      ansible.builtin.debug:
+        msg: >-
+          L3 launcher refused: facility-busy (lock-race).
+          {{ l3_lock_acquire_max_attempts }} consecutive create->read
+          attempts all raced (POST 409, then an immediate read found
+          nothing) — never falling through lockless.
+
+    - name: "L3 lock-race refusal cleanup (never override-able)"
+      ansible.builtin.include_tasks: _refuse_pre_mutation.yml
+      vars:
+        l3_outcome_token: facility-busy
+        l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }} detail=lock-race"
+        l3_refusal_fail_msg: >-
+          L3 launcher refused: facility-busy (lock-race) — the create/read
+          race repeated {{ l3_lock_acquire_max_attempts }} times without
+          resolving. This refusal is NOT override-able. Retry this launch.
+
+- name: "L3 lock: structural backstop — l3_lock_acquired MUST be set by now
+    (every path through the acquire loop + exhaustion-refusal above
+    either sets it or fails the play; if this ever trips, a new code
+    path was added without preserving that invariant — never silently
+    proceed lockless)"
+  ansible.builtin.assert:
+    that:
+      - l3_lock_acquired is defined
+    fail_msg: >-
+      L3 lock: l3_lock_acquired was never set after the acquire attempt
+      sequence completed for run_id={{ l3_run_id }} — this must be
+      structurally impossible. Refusing to proceed lockless.
+  when: _l3_api_available
+
+- name: "L3 lock: test-only fault injection boundary (R4a/P2-5 — no-op on every real run)"
+  ansible.builtin.include_tasks: fault_inject.yml
+  vars:
+    l3_fault_inject_boundary: post-lock
+  when: _l3_api_available

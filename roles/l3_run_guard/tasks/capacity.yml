@@ -1,0 +1,243 @@
+---
+# umbrella #202 WP3 stage — capacity recompute (§3.2, scheduler-accurate),
+# revised by codex round-1 R2a-9 (multi-node hard-fail + RBAC-forbidden
+# handling moved to preflight.yml, which now runs BEFORE the lock — see
+# its header comment) and R2a-8 (this stage now runs AFTER snapshot.yml:
+# the pre-run baseline is captured as early as possible after the lock,
+# so a missing-budget/no-fit refusal here is a "pre-mutation refusal AFTER
+# snapshot creation" — nothing was ever mutated, but a snapshot now
+# exists and must be marked superseded + the lock released, which
+# _refuse_pre_mutation.yml handles uniformly).
+#
+# Unlike the console's conservative Prometheus/KSM-derived upper bound
+# (umbrella #202 WP1), this tier reads LIVE specs directly — node
+# allocatable, every pod's actual containers/initContainers (including the
+# restartPolicy==Always restartable-sidecar distinction the console can't
+# see at all), and the chart's OWN rendered manifest for the run about to
+# be dispatched. This listing is INTENTIONALLY a fresh, independent read
+# from preflight.yml's own node/pod listing (that one was a cheap
+# existence/RBAC probe taken before the lock; this one is the
+# authoritative, lock-protected capacity read). ee_reserve is always
+# {{ l3_ee_reserve }} (0/0) — see l3_budget.py's module docstring for the
+# no-double-count reasoning this role never overrides.
+
+- name: "L3 capacity: list cluster nodes (fresh, lock-protected read)"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: _l3_capacity_nodes
+
+- name: "L3 capacity: node allocatable (pure — l3_node_allocatable)"
+  ansible.builtin.set_fact:
+    _l3_allocatable: "{{ _l3_capacity_nodes.resources | l3_node_allocatable }}"
+
+- name: "L3 capacity: defensive assert — still single-node (preflight.yml already validated this pre-lock)"
+  # R4a Backbone (execution-tested, codex round-3 P2-5): fail_msg used to
+  # reference `_l3_allocatable.count` — l3_node_allocatable's OWN docstring
+  # is explicit that `count` only exists in its `{"ok": False, "count": N}`
+  # shape; the (overwhelmingly common) `{"ok": True, "name", "cpu_m",
+  # "mem_b"}` shape never has it. Ansible templates EVERY task parameter
+  # (including fail_msg) regardless of whether the assertion itself
+  # passes, so this crashed on `AttributeError: 'dict' object has no
+  # attribute 'count'` on literally every successful (single-node) run —
+  # a real execution-harness run against the stub caught this for real;
+  # the pure-filter suite never exercises this task file at all. Fixed by
+  # referencing the raw node-list length instead, which is always present
+  # regardless of `_l3_allocatable`'s own shape.
+  ansible.builtin.assert:
+    that:
+      - _l3_allocatable.ok
+    fail_msg: >-
+      L3 capacity: node count changed between the pre-lock preflight probe
+      and this lock-protected read ({{ _l3_capacity_nodes.resources | length }} nodes now)
+      — an environment change mid-run. Not a normal refusal path; this
+      indicates the facility itself changed shape while a run held the
+      lock.
+
+- name: "L3 capacity: list all pods cluster-wide (fresh, lock-protected read
+    — RBAC already validated by preflight.yml)"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+  register: _l3_all_pods
+
+- name: "L3 capacity: existing demand on the facility node (pure — l3_existing_demand)"
+  ansible.builtin.set_fact:
+    _l3_existing_demand: "{{ _l3_all_pods.resources | l3_existing_demand(_l3_allocatable.name) }}"
+
+# ── Run demand: recomputed from the chart about to be installed, NOT read
+#    from the catalog file (the launcher never reads it) — helm template
+#    with the SAME --set values the play's own install step will use,
+#    summed via the filter plugin.
+#
+#    codex A2-2: pull-and-untar-then-template-from-local-path, mirroring
+#    the launch plays' own proven chart-fetch pattern EXACTLY (tempdir,
+#    `helm pull --plain-http --untar`, always-cleanup) — a prior draft
+#    called `helm template` directly against the oci:// ref in one step,
+#    an unverified flag-support assumption that must not ride into the
+#    live env untested.
+#
+#    R3a-12 (codex round-2 P2-5): optional l3_chart_local — when the
+#    caller passes a non-empty local chart path (mxl's own mxl_chart_local
+#    play var, threaded through by launch-mxl-fabrics-demo.yml), render
+#    THAT exact path directly instead of pulling from the OCI ref. Without
+#    this, a sanctioned direct-local-chart launch (mxl_chart_local set)
+#    would gate capacity against the REMOTE Zot artifact while the actual
+#    install step used the LOCAL one — two different artifacts, one gate.
+#    ─────────────────────────────────────────────────────────────────────
+- name: "L3 capacity: fetch + render the chart"
+  block:
+    - name: Create temporary chart directory (capacity preflight's own copy;
+        skipped entirely when l3_chart_local is set — nothing to pull)
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: l3-capacity-chart
+      register: _l3_chart_tmp
+      changed_when: false
+      when: (l3_chart_local | default('') | trim) == ''
+
+    - name: Pull chart from plain-HTTP Zot (same flags every launch play
+        already uses; skipped when l3_chart_local is set)
+      ansible.builtin.command:
+        argv:
+          - helm
+          - pull
+          - "{{ l3_chart_ref }}/{{ l3_chart_name }}"
+          - --version
+          - "{{ l3_chart_version }}"
+          - --untar
+          - --untardir
+          - "{{ _l3_chart_tmp.path }}"
+          - --plain-http
+      changed_when: false
+      when: (l3_chart_local | default('') | trim) == ''
+
+    - name: "L3 capacity: resolve the chart path to render (R3a-12 — the SAME artifact the install step will use)"
+      ansible.builtin.set_fact:
+        _l3_chart_render_path: >-
+          {{
+            (l3_chart_local | trim) if (l3_chart_local | default('') | trim) != ''
+            else (_l3_chart_tmp.path ~ '/' ~ l3_chart_name)
+          }}
+
+    - name: Render the chart from the resolved path
+      ansible.builtin.command:
+        argv: >-
+          {{
+            ['helm', 'template', l3_release, _l3_chart_render_path,
+             '-n', l3_target_namespace]
+            + (l3_chart_set_values | default([]) | l3_set_flag_argv)
+          }}
+      register: _l3_helm_template
+      changed_when: false
+  always:
+    - name: Remove temporary chart directory (only when one was created)
+      ansible.builtin.file:
+        path: "{{ _l3_chart_tmp.path | default('') }}"
+        state: absent
+      changed_when: false
+      when: _l3_chart_tmp.path is defined
+
+- name: "L3 capacity: parse rendered manifests"
+  ansible.builtin.set_fact:
+    _l3_rendered_manifests: "{{ _l3_helm_template.stdout | from_yaml_all | list | select('mapping') | list }}"
+
+- name: "L3 capacity: run demand from the rendered chart (pure — l3_render_demand, R2a-6a fail-closed)"
+  ansible.builtin.set_fact:
+    _l3_run_demand_result: "{{ _l3_rendered_manifests | l3_render_demand }}"
+
+- name: "L3 capacity: run demand (cpu_m/mem_b pair for l3_evaluate_fit)"
+  ansible.builtin.set_fact:
+    _l3_run_demand:
+      cpu_m: "{{ _l3_run_demand_result.cpu_m }}"
+      mem_b: "{{ _l3_run_demand_result.mem_b }}"
+
+# ── missing-budget refusal ──────────────────────────────────────────────────
+- name: "L3 capacity: missing-budget refusal (unless overridden)"
+  when: not _l3_run_demand_result.has_requests
+  block:
+    - name: Report missing-budget
+      ansible.builtin.debug:
+        msg: >-
+          L3 launcher refused: missing-budget. The rendered chart for
+          release={{ l3_release }} has at least one app or init container
+          across its pod templates missing a parseable cpu AND/OR memory
+          request (R2a-6a fail-closed — every container must be budgeted,
+          not just the workload as a whole).
+
+    - name: "L3 override: WARNING — missing-budget would have refused"
+      ansible.builtin.debug:
+        msg: >-
+          L3 OVERRIDE ACTIVE: proceeding DESPITE missing-budget — reason:
+          {{ l3_override_reason }} run_id={{ l3_run_id }}.
+      when: l3_override_active
+
+    - name: "L3 missing-budget refusal cleanup (unless overridden)"
+      ansible.builtin.include_tasks: _refuse_pre_mutation.yml
+      vars:
+        l3_outcome_token: missing-budget
+        l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }}"
+        l3_refusal_fail_msg: >-
+          L3 launcher refused: missing-budget (run_id={{ l3_run_id }},
+          release={{ l3_release }}). Set l3_override=true with a non-empty
+          l3_override_reason to proceed anyway.
+      when: not l3_override_active
+
+# ── FIT/NO-FIT evaluation (only reached with a real, nonzero run demand —
+#    missing-budget above already handled the has_requests==False case,
+#    including the override-and-continue path) ─────────────────────────────
+- name: "L3 capacity: evaluate fit (pure — l3_evaluate_fit)"
+  ansible.builtin.set_fact:
+    _l3_fit: "{{ _l3_allocatable | l3_evaluate_fit(_l3_existing_demand, l3_ee_reserve, _l3_run_demand) }}"
+  when: _l3_run_demand_result.has_requests
+
+- name: "L3 capacity: report verdict"
+  ansible.builtin.debug:
+    msg: "{{ _l3_fit.report }}"
+  when: _l3_run_demand_result.has_requests
+
+- name: "L3 capacity: no-fit refusal (unless overridden)"
+  when: _l3_run_demand_result.has_requests and _l3_fit.verdict == 'no-fit'
+  block:
+    - name: "L3 override: WARNING — no-fit would have refused"
+      ansible.builtin.debug:
+        msg: >-
+          L3 OVERRIDE ACTIVE: proceeding DESPITE no-fit — reason:
+          {{ l3_override_reason }} run_id={{ l3_run_id }}.
+      when: l3_override_active
+
+    - name: "L3 no-fit refusal cleanup (unless overridden)"
+      ansible.builtin.include_tasks: _refuse_pre_mutation.yml
+      vars:
+        l3_outcome_token: no-fit
+        l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }}"
+        l3_refusal_fail_msg: >-
+          L3 launcher refused: no-fit (run_id={{ l3_run_id }},
+          release={{ l3_release }}). See the capacity report above. Set
+          l3_override=true with a non-empty l3_override_reason to proceed
+          anyway.
+      when: not l3_override_active
+
+# ── R4a Backbone (codex round-3 P1-5): supersede sweep moved HERE, from
+#    its former home right after lock-acquire in snapshot.yml. Reaching
+#    this point means every read-only planning stage (missing-budget,
+#    no-fit) has either passed or been explicitly overridden — this run
+#    IS actually going to mutate something. The OLD placement swept other
+#    runs' rollback-eligible baselines BEFORE that was known, so a
+#    missing-budget/no-fit refusal (or a chart-render failure) could
+#    invalidate an older dirty run's only safe rollback baseline even
+#    though THIS run never touched a single workload surface — codex's
+#    exact finding. Runs unconditionally reached here (this file has no
+#    _l3_api_available guard of its own — lock.yml already refused
+#    lock-unavailable, unconditionally, before this stage could ever run
+#    with it false, R4a/P1-9). ─────────────────────────────────────────────
+- name: "L3 lock checkpoint before the supersede sweep's own mutations (R5a/P1-4 — no checkpoint existed here before this round; the chart pull/template render above this stage can take real wall-clock time, long enough for this attempt's own hold to have TTL-expired)"
+  ansible.builtin.include_tasks: lock_checkpoint.yml
+
+- name: "L3 supersede sweep (R4a/P1-5 — moved from snapshot.yml: only NOW, after capacity/read-only planning succeeded, is this run known to actually mutate)"
+  ansible.builtin.include_tasks: _supersede_sweep.yml
+
+- name: "L3 capacity: test-only fault injection boundary (R4a/P2-5 — no-op on every real run)"
+  ansible.builtin.include_tasks: fault_inject.yml
+  vars:
+    l3_fault_inject_boundary: post-capacity

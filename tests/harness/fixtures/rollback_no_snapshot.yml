@@ -1,0 +1,34 @@
+---
+# umbrella #202 WP3 R4a/P2-5 — control-flow execution fixture: a real
+# `rollback-run.yml`-shaped invocation (l3_run_guard's own `rollback`
+# tasks_from) for a run_id that has NO snapshot ConfigMap at all, against
+# the test harness stubs. Run as a nested `ansible-playbook` subprocess
+# (see fixtures/fault_boundary.yml's own header for why) so
+# tests/l3-control-flow.yml can grep its REAL stdout for the number of
+# DMF_L3_OUTCOME marker lines emitted — proving P1-7's fix: exactly ONE
+# marker (no-snapshot), not a second rollback_incomplete on top of it.
+#
+# Required extra_vars: l3_k8s_stub_url, l3_netbox_stub_url, l3_run_id
+# (a run_id that deliberately has no snapshot CM seeded for it).
+
+- name: "L3 control-flow fixture: rollback with no snapshot"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    l3_rollback_reason: "control-flow fixture — no-snapshot repro"
+    l3_kube_api_url: "{{ l3_k8s_stub_url }}"
+    l3_kube_api_token: fake-fixture-token
+    l3_kube_api_validate_certs: false
+    netbox_api_url: "{{ l3_netbox_stub_url }}"
+    netbox_api_token: fake-fixture-netbox-token
+  module_defaults:
+    group/kubernetes.core.k8s:
+      host: "{{ l3_k8s_stub_url }}"
+      api_key: fake-fixture-token
+      validate_certs: false
+  tasks:
+    - name: Include l3_run_guard role (rollback flow)
+      ansible.builtin.include_role:
+        name: l3_run_guard
+        tasks_from: rollback

@@ -1,0 +1,108 @@
+---
+# umbrella #202 WP3 R2a-9 — structural preconditions, BEFORE lock
+# acquisition. Multi-node facility shape, target-namespace reachability,
+# and the cluster-wide pod-list RBAC probe are ENVIRONMENT preconditions,
+# not per-run capacity/lock decisions — there's no reason to hold the
+# facility lock (denying every other run the facility) while checking
+# things that don't depend on the lock at all and can't be affected by
+# holding it. All three fail through the SAME frozen marker token
+# 'preflight-error' (pre-mutation AND pre-lock — nothing has touched
+# anything yet at this point in the play), never a bare ansible fail, so a
+# reattaching console watcher can still classify the outcome (maps to
+# RUN_FAILED console-side, R2b). None of these are override-able — an
+# operator cannot override their way past a multi-node facility, a
+# missing namespace, or missing RBAC; the environment itself needs fixing.
+#
+# Node listing here also seeds _l3_allocatable (name + capacity) for
+# snapshot.yml's dmf.io/facility label — capacity.yml (which now runs
+# AFTER snapshot, R2a-8) re-lists nodes/pods itself for FRESH,
+# lock-protected demand data rather than reusing these facts, so the two
+# listings are intentionally independent (this one is a cheap existence/
+# RBAC probe, not the authoritative capacity read).
+
+- name: "L3 preflight: list cluster nodes"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: _l3_nodes
+
+- name: "L3 preflight: node allocatable (pure — l3_node_allocatable)"
+  ansible.builtin.set_fact:
+    _l3_allocatable: "{{ _l3_nodes.resources | l3_node_allocatable }}"
+
+- name: "L3 preflight: target namespace reachability"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ l3_target_namespace }}"
+  register: _l3_target_ns
+
+- name: "L3 preflight: cluster-wide pod-list RBAC probe (requires the
+    dmf-l3-preflight-reader ClusterRole, umbrella #202 WP3-C)"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+  register: _l3_all_pods
+  # R3a-1 (codex round-2 P1-1): the WP3-A draft used `failed_when` here —
+  # a documented Ansible gotcha: `failed_when` OVERWRITES the registered
+  # result's own `.failed` field with the failed_when expression's outcome,
+  # it does not merely gate whether the TASK aborts. So a genuine Forbidden
+  # response (failed_when evaluates to false, tolerating it) left
+  # `_l3_all_pods.failed` permanently false too — the classification task
+  # below could never see it, and the RBAC-missing refusal branch was
+  # dead code. `ignore_errors: true` does NOT touch `.failed` this way —
+  # it only suppresses the play abort, leaving the module's own raw
+  # success/failure intact for the classification (and the explicit
+  # re-raise immediately below) to read accurately.
+  ignore_errors: true
+
+- name: "L3 preflight: re-raise pod-probe failures that are NOT RBAC-forbidden
+    (a real connectivity/auth problem must still hard-fail immediately,
+    not be silently converted into a graceful preflight-error marker;
+    case-insensitive match, R3a-1)"
+  ansible.builtin.fail:
+    msg: >-
+      L3 preflight: cluster-wide pod-list probe failed for a reason OTHER
+      than RBAC-forbidden. Raw error: {{ _l3_all_pods.msg | default('') }}
+  when:
+    - _l3_all_pods.failed | default(false)
+    - "'forbidden' not in (_l3_all_pods.msg | default('') | lower)"
+
+- name: "L3 preflight: structural failure classification"
+  ansible.builtin.set_fact:
+    _l3_preflight_failure: >-
+      {{
+        ('multi-node facility unsupported (' ~ _l3_allocatable.count ~ ' nodes found)')
+        if not _l3_allocatable.ok
+        else ('target namespace ' ~ l3_target_namespace ~ ' not reachable')
+        if (_l3_target_ns.resources | default([]) | length) == 0
+        else ('cluster-wide pod-list RBAC missing (dmf-l3-preflight-reader ClusterRole, umbrella #202 WP3-C): ' ~ (_l3_all_pods.msg | default('')))
+        if (_l3_all_pods.failed | default(false))
+        else None
+      }}
+
+- name: "L3 preflight: structural precondition failure (frozen 'preflight-error' marker, never override-able)"
+  when: _l3_preflight_failure is not none
+  block:
+    - name: Report preflight failure
+      ansible.builtin.debug:
+        msg: >-
+          L3 launcher refused: preflight-error. {{ _l3_preflight_failure }}.
+          This is a structural environment precondition, not a per-run
+          decision — l3_override does not apply.
+
+    - name: "L3 preflight-error refusal cleanup (never override-able, pre-lock)"
+      ansible.builtin.include_tasks: _refuse_pre_mutation.yml
+      vars:
+        l3_outcome_token: preflight-error
+        l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }}"
+        l3_refusal_fail_msg: >-
+          L3 launcher refused: preflight-error ({{ _l3_preflight_failure }}).
+          Structural environment precondition — cannot be overridden.
+
+# ── R2c-runbooks: scoped NetBox catalog-writer token check (ADR-0032) —
+#    only reached if the checks above passed (a failure there already
+#    aborted the play); launch's own snapshot.yml (stage 4) always
+#    queries NetBox, so this is unconditional here too. ────────────────────
+- name: "L3 preflight: scoped NetBox catalog-writer token check (ADR-0032, R2c)"
+  ansible.builtin.include_tasks: _assert_netbox_token.yml

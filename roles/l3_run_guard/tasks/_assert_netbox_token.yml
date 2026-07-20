@@ -1,0 +1,39 @@
+---
+# umbrella #202 WP3 R2c-runbooks (codex round-1 P1-10, other half of the
+# dmf-infra fix) — shared structural precondition: the scoped NetBox
+# catalog-writer token (ADR-0032) must be present before ANY flow that
+# will touch NetBox proceeds. Launch's own snapshot.yml always queries
+# NetBox (every launch); rollback's own rollback_netbox_surface.yml always
+# does too — so this is included from BOTH preflight.yml (launch, before
+# lock) and rollback_identity.yml (rollback, before lock; rollback never
+# includes preflight.yml itself, this is the equivalent pre-lock
+# structural check for that flow).
+#
+# defaults/main.yml's netbox_api_token no longer falls back to
+# vault_netbox_api_token (the admin token) when the scoped catalog-writer
+# token is absent — this makes that absence loud and structural (frozen
+# 'preflight-error' token, never override-able, pre-lock/pre-mutation)
+# rather than a silent credential upgrade to broader access than ADR-0032
+# intends a launcher/rollback run to ever carry.
+
+- name: "L3: scoped NetBox catalog-writer token check (ADR-0032, R2c)"
+  when: (netbox_api_token | default('') | trim) == ''
+  block:
+    - name: Report missing scoped NetBox token
+      ansible.builtin.debug:
+        msg: >-
+          L3 launcher refused: preflight-error. Scoped NetBox catalog
+          writer token absent — rollback/snapshot never runs on the admin
+          token (ADR-0032). Ensure vault_netbox_catalog_token is supplied
+          (the AWX job template's own extra_vars, or an operator-provided
+          extra_var on a direct run-playbook.sh invocation).
+
+    - name: "L3 missing-token refusal cleanup (never override-able, structural)"
+      ansible.builtin.include_tasks: _refuse_pre_mutation.yml
+      vars:
+        l3_outcome_token: preflight-error
+        l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }}"
+        l3_refusal_fail_msg: >-
+          L3 launcher/rollback refused: preflight-error (scoped NetBox
+          catalog writer token absent, ADR-0032). Structural precondition
+          — cannot be overridden.

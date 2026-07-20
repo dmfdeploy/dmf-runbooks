@@ -1,0 +1,55 @@
+---
+# umbrella #202 WP3 R5a (codex round-4 P1-4) — READ-ONLY fenced-out check,
+# for use INSIDE a rescue/refusal path that is already about to emit its
+# OWN single outcome marker (gate_rescue.yml's branches B/C,
+# _refuse_pre_mutation.yml's own superseded patch). Deliberately NOT the
+# same as lock_checkpoint.yml (the NORMAL-flow checkpoint used before
+# provision/helm-install/netbox-configure/supersede/run_complete): that
+# file emits its OWN marker + fails the play on a fenced-out holder, which
+# is correct mid-flow but would be a SECOND marker if called again from
+# inside a rescue/refusal path that already emitted one — the exact
+# "exactly one marker" invariant R4a/P1-7 established, now generalized: a
+# lock-lost condition discovered DURING cleanup must not double-emit.
+#
+# Sets ONLY `_l3_fenced_out` (bool) — never fails the play, never emits a
+# marker, never touches the snapshot CM. The CALLER decides what to do
+# with the result: gate_rescue.yml/_refuse_pre_mutation.yml both use it to
+# SKIP their own terminal/superseded snapshot patch when fenced (the new
+# owner now owns that snapshot's lifecycle — overwriting its state would
+# be exactly the mistake this exists to prevent), while still emitting
+# their own already-planned marker and releasing (release.yml's own
+# idempotent, ownership-checked delete is safe to call regardless — it
+# already no-ops on a lock held by someone else, see lock_release.yml).
+#
+# Only meaningful when l3_lock_acquired is true — nothing to check if this
+# attempt never held the lock to begin with (e.g. a pre-lock refusal).
+
+- name: "L3 lock fenced-check (read-only): read own lock"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    name: "{{ l3_lock_configmap_name }}"
+    namespace: "{{ l3_lock_namespace }}"
+  register: _l3_fenced_check_read
+  when: l3_lock_acquired | default(false)
+  ignore_errors: true
+
+- name: "L3 lock fenced-check (read-only): determine fenced state (fail-closed — a failed READ itself counts as fenced, never assumed-still-ours)"
+  ansible.builtin.set_fact:
+    _l3_fenced_out: >-
+      {{
+        (l3_lock_acquired | default(false)) and (
+          (_l3_fenced_check_read.failed | default(false))
+          or ((_l3_fenced_check_read.resources | default([])) | length == 0)
+          or ((_l3_fenced_check_read.resources | default([]) | first | default({})).data.holder_attempt_id | default('') != (l3_attempt_id | default('')))
+        )
+      }}
+
+- name: "L3 lock fenced-check (read-only): log if fenced"
+  ansible.builtin.debug:
+    msg: >-
+      L3 lock-lost: this attempt (attempt_id={{ l3_attempt_id | default('<unknown>') }})
+      no longer holds the facility lock for run_id={{ l3_run_id | default('<unknown>') }}
+      — skipping this attempt's own terminal/superseded snapshot patch (the
+      new owner now owns that snapshot's lifecycle; never overwriting it).
+  when: _l3_fenced_out

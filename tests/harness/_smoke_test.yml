@@ -1,0 +1,243 @@
+---
+# tests/harness/_smoke_test.yml
+#
+# Self-verification for the l3_run_guard test harness itself (NOT the role —
+# roles/l3_run_guard/ is out of scope here, owned concurrently elsewhere).
+# Starts both stub servers via start_stubs.py, then drives each harness
+# surface with the SAME module types the role's real tasks use:
+#   * kubernetes.core.k8s_info (Node list) against the K8s stub
+#   * ansible.builtin.uri (ConfigMap create/get/delete-with-precondition)
+#     against the K8s stub
+#   * ansible.builtin.uri (NetBox service get) against the NetBox stub
+#   * ansible.builtin.command invoking stub_helm.sh (prepended to PATH)
+#
+# Run directly: ansible-playbook tests/harness/_smoke_test.yml
+#
+# Everything runs against localhost — no inventory needed, connection is
+# forced to local.
+
+- name: L3 run_guard test harness self-check
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    l3_harness_dir: "{{ playbook_dir }}"
+    l3_harness_pidfile: "/tmp/l3-run-guard-harness-smoke.json"
+    # `ansible.builtin.command: argv: [helm, ...]` resolves "helm" by exact
+    # filename via PATH — tests/harness/stub_helm.sh is deliberately named
+    # for what it IS (a stub of helm), not what it must be CALLED, so a
+    # dedicated shim dir holding a `helm` symlink -> stub_helm.sh goes first
+    # on PATH instead of pointing PATH at tests/harness/ directly.
+    l3_harness_bin_dir: "/tmp/l3-run-guard-harness-bin"
+
+  pre_tasks:
+    - name: "Harness: create the PATH shim dir"
+      ansible.builtin.file:
+        path: "{{ l3_harness_bin_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: "Harness: symlink helm -> stub_helm.sh inside the shim dir"
+      ansible.builtin.file:
+        path: "{{ l3_harness_bin_dir }}/helm"
+        src: "{{ l3_harness_dir }}/stub_helm.sh"
+        state: link
+        force: true
+
+    - name: "Harness: stop any stale stub servers from a previous interrupted run"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ l3_harness_dir }}/stop_stubs.py"
+          - --pidfile
+          - "{{ l3_harness_pidfile }}"
+      changed_when: false
+      failed_when: false
+
+    - name: "Harness: write a NetBox seed fixture (one pre-existing service, for the GET assertion below)"
+      ansible.builtin.copy:
+        dest: "/tmp/l3-smoke-netbox-seed.json"
+        content: |
+          {
+            "services": {
+              "42": {
+                "id": 42,
+                "name": "nmos-crosspoint",
+                "tags": [{"name": "app:nmos-crosspoint"}, {"name": "lifecycle:active"}],
+                "custom_fields": {"monitoring_probe": "http"}
+              }
+            }
+          }
+        mode: "0644"
+
+    - name: "Harness: start the K8s + NetBox stub servers (detached, NetBox pre-seeded)"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ l3_harness_dir }}/start_stubs.py"
+          - --pidfile
+          - "{{ l3_harness_pidfile }}"
+          - --netbox-seed-file
+          - "/tmp/l3-smoke-netbox-seed.json"
+      register: _l3_harness_start
+      changed_when: false
+
+    - name: "Harness: parse stub base URLs from start_stubs.py stdout"
+      ansible.builtin.set_fact:
+        l3_k8s_stub_url: "{{ _l3_harness_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+        l3_netbox_stub_url: "{{ _l3_harness_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+    - name: "Harness: report resolved stub URLs"
+      ansible.builtin.debug:
+        msg: "K8s stub: {{ l3_k8s_stub_url }} | NetBox stub: {{ l3_netbox_stub_url }}"
+
+  tasks:
+    # ---- kubernetes.core.k8s_info against the K8s stub -------------------
+    - name: "Smoke: k8s_info list Nodes against the K8s stub"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Node
+        host: "{{ l3_k8s_stub_url }}"
+        api_key: fake-smoke-test-token
+        validate_certs: false
+      register: _smoke_nodes
+
+    - name: "Smoke: assert exactly the fixed single stub node came back"
+      ansible.builtin.assert:
+        that:
+          - _smoke_nodes.resources | length == 1
+          - _smoke_nodes.resources[0].metadata.name == 'test-node-1'
+          - _smoke_nodes.resources[0].status.allocatable.cpu == '4000m'
+          - _smoke_nodes.resources[0].status.allocatable.memory == '8Gi'
+        fail_msg: "k8s_info Node list against the stub did not match the expected fixture: {{ _smoke_nodes.resources }}"
+
+    # ---- ansible.builtin.uri ConfigMap create/get/delete ------------------
+    - name: "Smoke: uri POST create a ConfigMap on the K8s stub"
+      ansible.builtin.uri:
+        url: "{{ l3_k8s_stub_url }}/api/v1/namespaces/nmos/configmaps"
+        method: POST
+        headers:
+          Authorization: "Bearer fake-smoke-test-token"
+          Content-Type: application/json
+        body_format: json
+        body:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: dmf-l3-smoke-lock
+            namespace: nmos
+          data:
+            run_id: "smoke-run-1"
+        validate_certs: false
+        status_code: [201, 409]
+        return_content: true
+      register: _smoke_cm_create
+
+    - name: "Smoke: assert the create returned 201 with a minted uid + resourceVersion"
+      ansible.builtin.assert:
+        that:
+          - _smoke_cm_create.status == 201
+          - _smoke_cm_create.json.metadata.uid is defined
+          - _smoke_cm_create.json.metadata.resourceVersion is defined
+          - _smoke_cm_create.json.data.run_id == 'smoke-run-1'
+        fail_msg: "ConfigMap create against the stub did not behave as expected: {{ _smoke_cm_create.json }}"
+
+    - name: "Smoke: uri GET read the ConfigMap back"
+      ansible.builtin.uri:
+        url: "{{ l3_k8s_stub_url }}/api/v1/namespaces/nmos/configmaps/dmf-l3-smoke-lock"
+        method: GET
+        headers:
+          Authorization: "Bearer fake-smoke-test-token"
+        validate_certs: false
+        return_content: true
+      register: _smoke_cm_get
+
+    - name: "Smoke: assert the read-back content matches what was created"
+      ansible.builtin.assert:
+        that:
+          - _smoke_cm_get.json.data.run_id == 'smoke-run-1'
+          - _smoke_cm_get.json.metadata.uid == _smoke_cm_create.json.metadata.uid
+        fail_msg: "ConfigMap GET read-back did not match the created content: {{ _smoke_cm_get.json }}"
+
+    - name: "Smoke: uri DELETE with a matching uid precondition"
+      ansible.builtin.uri:
+        url: "{{ l3_k8s_stub_url }}/api/v1/namespaces/nmos/configmaps/dmf-l3-smoke-lock"
+        method: DELETE
+        headers:
+          Authorization: "Bearer fake-smoke-test-token"
+          Content-Type: application/json
+        body_format: json
+        body:
+          apiVersion: v1
+          kind: DeleteOptions
+          preconditions:
+            uid: "{{ _smoke_cm_create.json.metadata.uid }}"
+        validate_certs: false
+        status_code: [200, 202, 404, 409]
+        return_content: true
+      register: _smoke_cm_delete
+
+    - name: "Smoke: assert the preconditioned delete succeeded (200/202)"
+      ansible.builtin.assert:
+        that:
+          - _smoke_cm_delete.status in [200, 202]
+        fail_msg: "Preconditioned DELETE against the stub did not succeed: status={{ _smoke_cm_delete.status }} body={{ _smoke_cm_delete.json | default('') }}"
+
+    # ---- ansible.builtin.uri NetBox GET ------------------------------------
+    # (the service was seeded via --netbox-seed-file in the pre_tasks start
+    # step above — see start_stubs.py's _apply_netbox_seed docstring)
+    - name: "Smoke: uri GET a seeded NetBox service by exact name"
+      ansible.builtin.uri:
+        url: "{{ l3_netbox_stub_url }}/api/ipam/services/?name=nmos-crosspoint"
+        method: GET
+        headers:
+          Authorization: "Token fake-smoke-netbox-token"
+        validate_certs: false
+        return_content: true
+      register: _smoke_netbox_get
+
+    - name: "Smoke: assert the seeded NetBox fields came back"
+      ansible.builtin.assert:
+        that:
+          - _smoke_netbox_get.json.count == 1
+          - _smoke_netbox_get.json.results[0].id == 42
+          - _smoke_netbox_get.json.results[0].name == 'nmos-crosspoint'
+          - "'app:nmos-crosspoint' in (_smoke_netbox_get.json.results[0].tags | map(attribute='name') | list)"
+        fail_msg: "NetBox GET against the stub did not match the seeded fixture: {{ _smoke_netbox_get.json }}"
+
+    # ---- stub_helm.sh via ansible.builtin.command --------------------------
+    - name: "Smoke: helm list -n mxl -o json via stub_helm.sh (prepended to PATH)"
+      ansible.builtin.command:
+        argv: [helm, list, -n, mxl, -o, json]
+      environment:
+        # gather_facts is false above (this playbook needs nothing else from
+        # it), so ansible_env.PATH isn't populated — read PATH straight from
+        # the controller's own environment instead. Points at the shim dir
+        # (helm -> stub_helm.sh), NOT tests/harness/ directly — see
+        # l3_harness_bin_dir's comment above.
+        PATH: "{{ l3_harness_bin_dir }}:{{ lookup('env', 'PATH') }}"
+        L3_STUB_HELM_LIST_MXL: '[{"name":"mxl-fabrics-demo","namespace":"mxl","revision":1,"chart":"mxl-fabrics-demo-0.2.1","app_version":"0.2.1","status":"deployed"}]'
+      register: _smoke_helm_list
+      changed_when: false
+
+    - name: "Smoke: assert stub_helm.sh returned the canned JSON list"
+      ansible.builtin.assert:
+        that:
+          - (_smoke_helm_list.stdout | from_json) | length == 1
+          - (_smoke_helm_list.stdout | from_json)[0].name == 'mxl-fabrics-demo'
+          - (_smoke_helm_list.stdout | from_json)[0].revision == 1
+        fail_msg: "stub_helm.sh 'helm list' did not return the expected fixture: {{ _smoke_helm_list.stdout }}"
+
+  post_tasks:
+    - name: "Harness: stop the stub servers"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ l3_harness_dir }}/stop_stubs.py"
+          - --pidfile
+          - "{{ l3_harness_pidfile }}"
+      changed_when: false
+
+    - name: "Smoke test: ALL ASSERTIONS PASSED"
+      ansible.builtin.debug:
+        msg: "L3 run_guard test harness smoke test: PASS"

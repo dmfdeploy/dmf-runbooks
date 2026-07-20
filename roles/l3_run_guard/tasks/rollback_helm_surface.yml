@@ -1,0 +1,222 @@
+---
+# umbrella #202 WP3-B stage — helm surface rollback (§4.4), revised by
+# codex round-1 R2a-7 (readback verification — call-success never equals
+# clean), R2a-10ii (coordinator cleanup: check mxl-* releases
+# SPECIFICALLY, never suppress a listing failure), and codex round-2
+# R3a-8 (CONTENT-IDENTITY verification, replacing revision-number
+# comparison entirely — see l3_budget.py's l3_helm_content_restores
+# docstring: `helm rollback` always MINTS a new revision number by
+# design, so comparing the post-rollback revision against the pre-run
+# snapshot's revision would NEVER match, permanently flagging every
+# successful restore as dirty).
+#
+# releases-to-remove = releases present NOW but NOT in the run's pre-run
+# snapshot (this run's own provision created them). content-restores
+# (R3a-8) = releases present in BOTH the snapshot AND now, whose chart
+# name-version / app_version / values-hash content identity changed (this
+# run's own provision RE-DEPLOYED an already-existing release — a
+# redeploy/reconfigure scenario) — these get
+# `helm rollback <rel> <snapshot_revision>` (a revision NUMBER is still
+# operationally required to pick a `helm rollback` TARGET, even though
+# it's never used for verification afterward) instead of being left at
+# whatever the failed upgrade produced. Both are handled generically
+# regardless of whether the original install used a raw `helm upgrade
+# --install` command (mxl) or the kubernetes.core.helm module (nmos-cpp/
+# crosspoint) — uninstalling/rolling-back doesn't care which tool did the
+# original install.
+
+- name: "L3 rollback: list current helm releases (mxl namespace)"
+  ansible.builtin.command:
+    argv: [helm, list, -n, mxl, -o, json]
+  register: _l3_current_helm_mxl
+  changed_when: false
+
+- name: "L3 rollback: list current helm releases (nmos namespace)"
+  ansible.builtin.command:
+    argv: [helm, list, -n, nmos, -o, json]
+  register: _l3_current_helm_nmos
+  changed_when: false
+
+- name: "L3 rollback: build base current helm surface (list only)"
+  ansible.builtin.set_fact:
+    _l3_current_helm_surface_base:
+      mxl: "{{ _l3_current_helm_mxl.stdout | from_json }}"
+      nmos: "{{ _l3_current_helm_nmos.stdout | from_json }}"
+
+- name: "L3 rollback: flatten for per-release values fetch (R3a-8 content identity)"
+  ansible.builtin.set_fact:
+    _l3_current_helm_surface_flat: >-
+      {{
+        (_l3_current_helm_surface_base.mxl | map('combine', {'namespace': 'mxl'}) | list)
+        + (_l3_current_helm_surface_base.nmos | map('combine', {'namespace': 'nmos'}) | list)
+      }}
+
+- name: "L3 rollback: fetch per-release CURRENT values (R3a-8 — needed for
+    the content-identity diff against the snapshot)"
+  ansible.builtin.command:
+    argv: [helm, get, values, "{{ item.name }}", -n, "{{ item.namespace }}", -o, json]
+  register: _l3_current_helm_values_results
+  changed_when: false
+  failed_when: false
+  loop: "{{ _l3_current_helm_surface_flat }}"
+  loop_control:
+    label: "{{ item.namespace }}/{{ item.name }}"
+
+- name: "L3 rollback: attach content-identity to the current helm surface (pure — l3_helm_content_identity, R3a-8)"
+  ansible.builtin.set_fact:
+    _l3_current_helm_surface: "{{ _l3_current_helm_surface_base | l3_helm_content_identity(_l3_current_helm_values_results.results) }}"
+
+- name: "L3 rollback: compute releases to remove (pure — l3_releases_to_remove)"
+  ansible.builtin.set_fact:
+    _l3_releases_to_remove: "{{ _l3_snapshot_helm_surface | l3_releases_to_remove(_l3_current_helm_surface) }}"
+
+- name: "L3 rollback: flatten to a single loop target (pure — l3_flatten_releases_to_remove)"
+  ansible.builtin.set_fact:
+    _l3_releases_to_remove_flat: "{{ _l3_releases_to_remove | l3_flatten_releases_to_remove }}"
+
+- name: "L3 rollback: compute content-identity restores (pure — l3_helm_content_restores, R3a-8)"
+  ansible.builtin.set_fact:
+    _l3_helm_content_restores: "{{ _l3_snapshot_helm_surface | l3_helm_content_restores(_l3_current_helm_surface) }}"
+
+- name: "L3 rollback: report releases to remove + content restores"
+  ansible.builtin.debug:
+    msg: >-
+      L3 rollback: {{ _l3_releases_to_remove_flat | length }} release(s)
+      attributable to run_id={{ l3_run_id }} to remove:
+      {{ _l3_releases_to_remove_flat | map(attribute='namespace') | zip(_l3_releases_to_remove_flat | map(attribute='release')) | map('join', '/') | list }};
+      {{ _l3_helm_content_restores | length }} pre-existing release(s)
+      this run re-deployed (content-identity changed), to roll back to
+      their snapshot revision:
+      {{ _l3_helm_content_restores | map(attribute='namespace') | zip(_l3_helm_content_restores | map(attribute='release')) | map('join', '/') | list }}
+
+- name: "L3 rollback: uninstall run-created helm releases (idempotent — already-gone is success)"
+  kubernetes.core.helm:
+    name: "{{ item.release }}"
+    release_namespace: "{{ item.namespace }}"
+    state: absent
+    wait: true
+    wait_timeout: 2m
+  loop: "{{ _l3_releases_to_remove_flat }}"
+  loop_control:
+    label: "{{ item.namespace }}/{{ item.release }}"
+  register: _l3_helm_uninstall_results
+  ignore_errors: true
+
+- name: "L3 rollback: roll back pre-existing releases whose content changed (R3a-8 — helm rollback still needs a revision NUMBER as its target, content-identity is verified afterward via readback, not this call's own success)"
+  ansible.builtin.command:
+    argv:
+      - helm
+      - rollback
+      - "{{ item.release }}"
+      - "{{ item.snapshot_revision }}"
+      - -n
+      - "{{ item.namespace }}"
+      - --wait
+      - --timeout
+      - 2m
+  loop: "{{ _l3_helm_content_restores }}"
+  loop_control:
+    label: "{{ item.namespace }}/{{ item.release }} -> rev {{ item.snapshot_revision }}"
+  register: _l3_helm_content_restore_results
+  ignore_errors: true
+  changed_when: true
+
+# ── R2a-7 §4.6-honest readback: call-success never equals clean — a FRESH
+#    listing + per-release values fetch taken AFTER both loops above is
+#    what actually determines dirty state, not the calls' own reported
+#    success/failure. ────────────────────────────────────────────────────
+- name: "L3 rollback: readback — list helm releases after uninstall + content-restore (mxl namespace)"
+  ansible.builtin.command:
+    argv: [helm, list, -n, mxl, -o, json]
+  register: _l3_readback_helm_mxl
+  changed_when: false
+  failed_when: false
+
+- name: "L3 rollback: readback — list helm releases after uninstall + content-restore (nmos namespace)"
+  ansible.builtin.command:
+    argv: [helm, list, -n, nmos, -o, json]
+  register: _l3_readback_helm_nmos
+  changed_when: false
+  failed_when: false
+
+- name: "L3 rollback: readback — parse listings (a listing failure is dirty, never assumed-clean)"
+  ansible.builtin.set_fact:
+    _l3_readback_helm_surface_base:
+      mxl: "{{ (_l3_readback_helm_mxl.stdout | from_json) if _l3_readback_helm_mxl.rc == 0 else [] }}"
+      nmos: "{{ (_l3_readback_helm_nmos.stdout | from_json) if _l3_readback_helm_nmos.rc == 0 else [] }}"
+    _l3_readback_helm_list_failed: "{{ (_l3_readback_helm_mxl.rc | default(1)) != 0 or (_l3_readback_helm_nmos.rc | default(1)) != 0 }}"
+
+- name: "L3 rollback: readback — flatten for per-release values fetch (R3a-8, only when the listing itself succeeded)"
+  ansible.builtin.set_fact:
+    _l3_readback_helm_flat: >-
+      {{
+        (_l3_readback_helm_surface_base.mxl | map('combine', {'namespace': 'mxl'}) | list)
+        + (_l3_readback_helm_surface_base.nmos | map('combine', {'namespace': 'nmos'}) | list)
+      }}
+  when: not _l3_readback_helm_list_failed
+
+- name: "L3 rollback: readback — fetch per-release values (R3a-8 content identity)"
+  ansible.builtin.command:
+    argv: [helm, get, values, "{{ item.name }}", -n, "{{ item.namespace }}", -o, json]
+  register: _l3_readback_helm_values_results
+  changed_when: false
+  failed_when: false
+  loop: "{{ _l3_readback_helm_flat | default([]) }}"
+  loop_control:
+    label: "{{ item.namespace }}/{{ item.name }}"
+  when: not _l3_readback_helm_list_failed
+
+- name: "L3 rollback: readback — attach content-identity (pure — l3_helm_content_identity, R3a-8)"
+  ansible.builtin.set_fact:
+    _l3_readback_helm_surface: >-
+      {{
+        _l3_readback_helm_surface_base
+        | l3_helm_content_identity(_l3_readback_helm_values_results.results | default([]))
+      }}
+  when: not _l3_readback_helm_list_failed
+
+- name: "L3 rollback: determine helm surface dirty state (pure — l3_helm_readback_dirty, R4a/P1-8: compares
+    EVERY pre-existing release directly against the snapshot's own
+    recorded fields, not just the content_restores-scoped subset — see
+    the filter's own docstring)"
+  ansible.builtin.set_fact:
+    _l3_helm_dirty: >-
+      {{
+        _l3_snapshot_helm_surface
+        | l3_helm_readback_dirty(
+            _l3_releases_to_remove_flat,
+            _l3_readback_helm_surface | default({}),
+            _l3_readback_helm_list_failed
+          )
+      }}
+
+# ── mxl shared coordinator ConfigMap cleanup (lifted from
+#    teardown-mxl-fabrics-demo.yml's own last-release semantics) — only
+#    when this rollback removed at least one mxl-* release AND no OTHER
+#    mxl-* release remains afterward. R2a-10ii: check mxl-* releases
+#    SPECIFICALLY (not "any release" in the namespace — a non-mxl release
+#    in the mxl namespace, however unlikely, must never gate this), and a
+#    failed listing must count as "still present" (dirty), never
+#    assumed-clean via failed_when: false silently swallowing the error. ──
+- name: "L3 rollback: mxl coordinator cleanup"
+  when: (_l3_releases_to_remove.mxl | default([])) | length > 0
+  block:
+    - name: List remaining releases in the mxl namespace (readback, must succeed)
+      ansible.builtin.command:
+        argv: [helm, list, -n, mxl, -q]
+      register: _l3_mxl_remaining
+      changed_when: false
+
+    - name: Compute remaining mxl-* releases specifically (R2a-10ii)
+      ansible.builtin.set_fact:
+        _l3_mxl_remaining_prefixed: >-
+          {{ _l3_mxl_remaining.stdout_lines | default([]) | select('match', '^mxl-') | list }}
+
+    - name: Remove shared coordinator ConfigMap when no mxl-* release remains
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: ConfigMap
+        name: mxl-coordinator
+        namespace: mxl
+        state: absent
+      when: _l3_mxl_remaining_prefixed | length == 0

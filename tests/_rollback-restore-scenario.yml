@@ -1,0 +1,86 @@
+---
+# umbrella #202 WP3-B — rollback tag-restore scenario, extending ADR-0046
+# decision 4 coverage to the rollback path (codex's own instruction:
+# "tests/tag-preservation.yml must cover the rollback path too").
+#
+# Proves: (a) the OWNED subset (lifecycle:*, monitoring:*, dmf-catalog,
+# app:*, exposure:*) is restored to exactly what the snapshot recorded —
+# not a freshly-derived default; (b) a NON-owned tag (workload:*) that
+# DRIFTED between snapshot-time and rollback-time is respected AS-CURRENT,
+# never reverted to the snapshot's stale value — the restore only owns the
+# owned namespace, nothing else. MUST FAIL against a naive "just PATCH the
+# snapshot's tags verbatim" rollback implementation (which would both
+# erase the drifted workload:* tag AND require merge_owned_tags — the same
+# discriminating shape as the launch-path tag-preservation tests above).
+
+- name: "L3 rollback restore — owned namespace (explicit fixture, not
+    relying on netbox_catalog_common's role-default leaking into a task
+    file that lives outside that role — same value as its own
+    defaults/main.yml, ADR-0046 decision 4)"
+  ansible.builtin.set_fact:
+    _rb_owned_namespace:
+      - "dmf-catalog"
+      - "app:"
+      - "exposure:"
+      - "lifecycle:"
+      - "monitoring:"
+
+- name: "L3 rollback restore — snapshot recorded lifecycle:active + monitoring:probe"
+  ansible.builtin.set_fact:
+    _rb_snapshot_tags:
+      - workload:videotest
+      - dmf-catalog
+      - "app:mxl-videotestsrc"
+      - "exposure:private"
+      - "lifecycle:active"
+      - "monitoring:probe"
+
+- name: "L3 rollback restore — current record has DRIFTED (the failed run's own mutation + an unrelated retag)"
+  ansible.builtin.set_fact:
+    _rb_current_tags:
+      - workload:newvalue
+      - dmf-catalog
+      - "app:mxl-videotestsrc"
+      - "exposure:private"
+      - "lifecycle:bootstrapped"
+
+- name: "L3 rollback restore — compute the owned-desired set from the snapshot (pure — l3_filter_owned_tags)"
+  ansible.builtin.set_fact:
+    _rb_owned_desired: "{{ _rb_snapshot_tags | l3_filter_owned_tags(_rb_owned_namespace) }}"
+
+- name: "L3 rollback restore — merge (MANDATORY merge_owned_tags)"
+  ansible.builtin.set_fact:
+    _rb_merged: "{{ _rb_current_tags | merge_owned_tags(_rb_owned_namespace, _rb_owned_desired) }}"
+
+- name: "L3 rollback restore — extract result names"
+  ansible.builtin.set_fact:
+    _rb_merged_names: "{{ _rb_merged | map(attribute='name') | list }}"
+
+- name: "L3 rollback restore — assertions"
+  ansible.builtin.assert:
+    that:
+      # The DRIFTED workload tag survives AS-CURRENT — never reverted to
+      # the snapshot's stale "workload:videotest".
+      - "'workload:newvalue' in _rb_merged_names"
+      - "'workload:videotest' not in _rb_merged_names"
+      # The owned subset is restored to exactly the SNAPSHOT's recorded
+      # state (lifecycle:active + monitoring:probe), not left at the
+      # failed run's own mutation (lifecycle:bootstrapped, no monitoring).
+      - "'lifecycle:active' in _rb_merged_names"
+      - "'lifecycle:bootstrapped' not in _rb_merged_names"
+      - "'monitoring:probe' in _rb_merged_names"
+      - "'dmf-catalog' in _rb_merged_names"
+      - "'exposure:private' in _rb_merged_names"
+      - _rb_merged_names | length == _rb_merged_names | unique | length
+    fail_msg: >-
+      ROLLBACK RESTORE FAIL: expected the drifted workload:* tag preserved
+      AS-CURRENT, and the owned subset restored to exactly the snapshot's
+      recorded lifecycle:active + monitoring:probe (not the failed run's
+      own bootstrapped/no-monitoring mutation). Got: {{ _rb_merged_names }}
+
+- name: "L3 rollback restore — scenario complete"
+  ansible.builtin.debug:
+    msg: >-
+      Rollback restore: workload:* survives AS-CURRENT (drift-safe), and
+      the owned tag subset is restored to exactly the snapshot's recorded
+      state, not a freshly-derived default.

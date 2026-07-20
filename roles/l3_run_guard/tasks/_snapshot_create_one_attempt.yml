@@ -1,0 +1,182 @@
+---
+# umbrella #202 WP3 R4a (codex round-3 P1-6 + P2-4) — one bounded attempt
+# at CREATE-ONLY snapshot capture. THE CALLER (snapshot.yml) drives the
+# retry via a NATIVE Ansible `loop:` on `include_tasks` — same
+# non-recursive shape as _lock_acquire_one_attempt.yml (P1-1); see that
+# file's own header for why a recursive self-include is never used here.
+#
+# P1-6: the R3a-6 draft classified a 409 collision as either a narrowly-
+# defined "resumable retry of THIS run" (proceed without ownership) or a
+# fail-closed collision. Codex round-3 found the resumable path could
+# never reach an honest terminal (l3_snapshot_created stays unset for a
+# resumable retry BY DESIGN, so launch_success/launch_rescue's own
+# `when: l3_snapshot_created` guards never fire for it — a successful
+# resumed retry left the snapshot "in-progress" forever, and a FAILED
+# resumed retry could never be marked failed_rollback_required). Simplest
+# correct fix (flagged as a deviation in the WP3-R4a reply): resume is
+# REMOVED entirely. ANY snapshot-name 409 with a non-empty read is now a
+# fail-closed collision refusal, full stop — no classification, no
+# proceed-without-ownership path. `l3_snapshot_collision_resumable` (the
+# pure filter this replaces) has been deleted from l3_budget.py; nothing
+# else referenced it.
+#
+# P2-4: a 409 immediately followed by a k8s_info read that finds ZERO
+# resources (the same create-then-read race lock.yml's own P1-1 fix
+# handles) previously indexed `resources[0]` unconditionally while
+# building the collision report message — an IndexError on the empty-
+# read race, crashing before refusal cleanup could even run (and, per
+# finding 3/the backbone rescue, leaking the lock). Fixed the same way as
+# the lock: this file does ONE POST + (if 409) one READ + decide, and
+# leaves the EMPTY-READ RACE to the caller's loop — every path through
+# THIS file either sets l3_snapshot_created, fails the play via
+# _refuse_pre_mutation.yml (fail-closed collision), or falls through
+# having done neither (empty-read race — caller's loop retries or gives
+# up once its bound is reached). No `resources[0]` index is ever taken
+# without first checking `resources | length > 0`.
+#
+# Caller sets l3_snapshot_attempt_number (1-based, logging only) and must
+# have already rendered _l3_snapshot_manifest and confirmed
+# _l3_api_available.
+#
+# R4a Backbone (execution-tested, codex round-3 P2-5): the SAME class of
+# bug the sibling lock file's own header now documents — a `when:` on the
+# CALLER's looped `include_tasks` is not reliably visible to l3_lock_
+# acquire's own equivalent, `l3_snapshot_created is not defined`, once an
+# EARLIER loop iteration sets that fact — applies here identically. Fixed
+# the same way: this file's entire body is wrapped in its OWN block with
+# that guard, evaluated fresh at THIS file's own entry for whichever
+# single loop iteration is currently running it.
+
+- name: "L3 snapshot: one bounded attempt (guarded again, INSIDE the include — see this file's own header for why the caller's loop when: alone isn't sufficient)"
+  when: l3_snapshot_created is not defined
+  block:
+    - name: "L3 snapshot: attempt CREATE-ONLY (attempt {{ l3_snapshot_attempt_number }}/{{ l3_snapshot_create_max_attempts }})"
+      ansible.builtin.uri:
+        url: "{{ _l3_api_url }}/api/v1/namespaces/{{ l3_lock_namespace }}/configmaps"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _l3_api_token }}"
+          Content-Type: application/json
+        body_format: json
+        body: "{{ _l3_snapshot_manifest }}"
+        ca_path: "{{ _l3_api_ca_path if (_l3_api_ca_path | default('')) != '' else omit }}"
+        validate_certs: "{{ _l3_api_validate_certs }}"
+        status_code: [201, 409]
+        return_content: true
+      register: _l3_snapshot_create
+      no_log: true
+
+    # ── R5a/P1-1 (codex round-4): CLUSTER-TRUTH READBACK before trusting a
+    #    claimed snapshot creation — the same reasoning as the facility
+    #    lock's own fix (see _lock_acquire_one_attempt.yml's header). A
+    #    forged _l3_snapshot_create.status=201 with no real POST would
+    #    otherwise set l3_snapshot_created=true with nothing behind it —
+    #    every LATER stage that patches this CM's status
+    #    (kubernetes.core.k8s: state: present is upsert-like) would then
+    #    silently synthesize a broken, partial snapshot object instead of
+    #    ever failing loudly, leaving the run believing it has a valid
+    #    rollback baseline when it does not. Verified by comparing the
+    #    readback's OWN data.created_at against the manifest's — a value
+    #    ONLY our own real POST body could have produced (nothing else
+    #    could coincidentally match this run's own freshly-rendered
+    #    timestamp string). ───────────────────────────────────────────────
+    - name: "L3 snapshot: fresh create (201) — cluster-truth readback (R5a/P1-1)"
+      when: _l3_snapshot_create.status == 201
+      block:
+        - name: "L3 snapshot: readback — re-read the snapshot CM from the cluster (independent of the create call's own register)"
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: ConfigMap
+            name: "{{ l3_run_configmap_prefix }}{{ l3_run_id }}"
+            namespace: "{{ l3_lock_namespace }}"
+          register: _l3_snapshot_verify_read
+
+        - name: "L3 snapshot: verify ownership — the readback CM's data.created_at must match what THIS attempt's own manifest wrote"
+          block:
+            - name: "L3 snapshot: verify ownership assert"
+              ansible.builtin.assert:
+                that:
+                  - (_l3_snapshot_verify_read.resources | default([])) | length > 0
+                  - (_l3_snapshot_verify_read.resources | first).data.created_at | default('') == _l3_snapshot_manifest.data.created_at
+                fail_msg: >-
+                  L3 snapshot: cluster-truth readback after a claimed
+                  create (201) does not match this attempt's own
+                  manifest. Refusing to trust an unverified snapshot.
+          rescue:
+            - name: "L3 snapshot: verification-failed refusal (never override-able)"
+              ansible.builtin.include_tasks: _refuse_pre_mutation.yml
+              vars:
+                l3_outcome_token: preflight-error
+                l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }} detail=snapshot-verify-failed"
+                l3_refusal_fail_msg: >-
+                  L3 launcher refused: preflight-error (snapshot-verify-failed)
+                  — cluster-truth readback after a claimed snapshot
+                  creation did not confirm it. This refusal is NOT
+                  override-able.
+
+        - name: "L3 snapshot: fresh create — this attempt OWNS this baseline (cluster-truth VERIFIED —
+            l3_snapshot_created is set EXCLUSIVELY on the 201 path, never on
+            409 — P1-6 removed the only other path that used to leave it
+            unset on purpose; now EVERY 409 does)"
+          ansible.builtin.set_fact:
+            l3_snapshot_created: true
+
+        - name: "L3 snapshot: fresh create — report (attempt {{ l3_snapshot_attempt_number }})"
+          ansible.builtin.debug:
+            msg: "L3 snapshot: fresh pre-mutation baseline captured for run_id={{ l3_run_id }}"
+
+    - name: "L3 snapshot: 409 collision — read the existing CM (attempt {{ l3_snapshot_attempt_number }})"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: ConfigMap
+        name: "{{ l3_run_configmap_prefix }}{{ l3_run_id }}"
+        namespace: "{{ l3_lock_namespace }}"
+      register: _l3_snapshot_collision_read
+      when: _l3_snapshot_create.status == 409
+
+    # ── Held, NON-EMPTY read — ALWAYS a fail-closed collision now (P1-6: no
+    #    resumable classification, no proceed-without-ownership path) ──────
+    - name: "L3 snapshot: 409 — FAIL-CLOSED collision (P1-6 — every non-empty-read 409 refuses, unconditionally)"
+      when:
+        - _l3_snapshot_create.status == 409
+        - (_l3_snapshot_collision_read.resources | default([])) | length > 0
+      block:
+        - name: Report the snapshot collision
+          ansible.builtin.debug:
+            msg: >-
+              L3 launcher refused: preflight-error. A snapshot named
+              {{ l3_run_configmap_prefix }}{{ l3_run_id }} already exists —
+              recorded status:
+              {{ (_l3_snapshot_collision_read.resources | first).data.status | default('<unreadable>') }}.
+              P1-6: resume is no longer supported; refusing rather than risk
+              treating an unrelated or already-dirty baseline as this run's
+              own. If this run_id is genuinely intended to be retried, roll
+              it back first.
+
+        - name: "L3 snapshot collision refusal cleanup (never override-able;
+            l3_snapshot_created was never set, so this NEVER touches the
+            colliding CM)"
+          ansible.builtin.include_tasks: _refuse_pre_mutation.yml
+          vars:
+            l3_outcome_token: preflight-error
+            l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }} detail=snapshot-collision"
+            l3_refusal_fail_msg: >-
+              L3 launcher refused: preflight-error (snapshot-collision) for
+              run_id={{ l3_run_id }} — an existing snapshot already occupies
+              this run_id. Structural precondition — cannot be overridden.
+
+    # ── Held, EMPTY read (the create-then-read race, P2-4) — report only;
+    #    the CALLER's loop (snapshot.yml) is what decides whether to try
+    #    again or give up once the bound is reached. No resources[0]
+    #    index taken. ─────────────────────────────────────────────────────
+    - name: "L3 snapshot: held, EMPTY read (create-then-read race) — this attempt yields, caller's loop decides next step"
+      ansible.builtin.debug:
+        msg: >-
+          L3 snapshot: attempt {{ l3_snapshot_attempt_number }}/{{ l3_snapshot_create_max_attempts }}
+          hit the create-then-read race (POST 409, immediate read found
+          nothing). l3_snapshot_created stays unset; the caller's loop will
+          retry if attempts remain, or refuse preflight-error (snapshot-race)
+          once exhausted.
+      when:
+        - _l3_snapshot_create.status == 409
+        - (_l3_snapshot_collision_read.resources | default([])) | length == 0

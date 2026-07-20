@@ -1,0 +1,116 @@
+---
+# umbrella #202 WP3 R4a/P2-5 — control-flow execution fixture: replicates
+# the EXACT block/rescue/always shape every real launch-*.yml playbook now
+# uses (see playbooks/launch-nmos-cpp.yml) with a TRIVIAL stand-in for the
+# caller's own provision/install/configure stage, run against the test
+# harness stubs. Driven by tests/l3-control-flow.yml as a nested
+# `ansible-playbook` subprocess (NOT included directly) so its stdout —
+# including the real `dmf-l3-outcome` debug marker line — is captured
+# exactly the way AWX job events / dmf-cms parse it for real, and so a
+# raised l3_fault_inject exception here can never abort the CONTROLLING
+# test playbook's own run.
+#
+# Required extra_vars (see tests/l3-control-flow.yml's own invocation):
+#   l3_k8s_stub_url, l3_netbox_stub_url — stub base URLs
+#   l3_fault_inject                     — the boundary name to raise at
+#   l3_request_id                       — a hex32 request_id; identity.yml's
+#                                          console-driven path sets
+#                                          l3_run_id equal to it, so the
+#                                          controlling test can predict the
+#                                          snapshot ConfigMap's name from
+#                                          this value WITHOUT supplying
+#                                          l3_run_id directly — l3_run_id is
+#                                          a RESERVED var on the launch path
+#                                          (R4a/P1-2) and passing it here
+#                                          would itself trip that refusal,
+#                                          not exercise the boundary under
+#                                          test.
+
+- name: "L3 control-flow fixture: fault-injection boundary"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    l3_release: fixture-release
+    l3_target_namespace: nmos
+    l3_catalog_key: fixture-release
+    l3_chart_ref: "oci://unused.invalid/charts"
+    l3_chart_name: fixture-release
+    l3_chart_version: "0.0.0"
+    l3_chart_set_values: []
+    l3_kube_api_url: "{{ l3_k8s_stub_url }}"
+    l3_kube_api_token: fake-fixture-token
+    l3_kube_api_validate_certs: false
+    netbox_api_url: "{{ l3_netbox_stub_url }}"
+    netbox_api_token: fake-fixture-netbox-token
+    # capacity.yml's chart render goes through stub_helm.sh's own minimal
+    # `helm template` stub (empty manifest, see tests/harness/README.md's
+    # "Known gaps" — capacity.yml's real chart-fetch-and-render path is out
+    # of scope for THIS harness, which exists for lock/snapshot/checkpoint/
+    # rescue control flow), which would otherwise make EVERY fixture run
+    # hit missing-budget before ever reaching a post-capacity/post-mutation
+    # boundary. l3_override sidesteps that irrelevant-to-this-test refusal.
+    l3_override: true
+    l3_override_reason: "control-flow fixture — chart render is stubbed, not under test here"
+  environment:
+    PATH: "{{ l3_harness_bin_dir }}:{{ lookup('env', 'PATH') }}"
+  module_defaults:
+    group/kubernetes.core.k8s:
+      host: "{{ l3_k8s_stub_url }}"
+      api_key: fake-fixture-token
+      validate_certs: false
+  tasks:
+    - name: "L3 gate through terminal — ONE outer block/rescue/always (R4a Backbone shape)"
+      block:
+        - name: Include l3_run_guard role (identity/preflight/lock/snapshot/capacity)
+          ansible.builtin.include_role:
+            name: l3_run_guard
+
+        - name: "L3: mark mutation as STARTED"
+          ansible.builtin.set_fact:
+            l3_mutation_started: true
+
+        - name: "L3: test-only fault injection boundary (post-mutation-start)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: fault_inject
+          vars:
+            l3_fault_inject_boundary: post-mutation-start
+
+        - name: "L3 lock checkpoint before the fixture's own 'first mutation'"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: lock_checkpoint
+
+        - name: Fixture stand-in for the caller's own first real mutation (a no-op debug task)
+          ansible.builtin.debug:
+            msg: "fixture: caller's own first mutation would run here"
+
+        - name: "L3: test-only fault injection boundary (post-first-mutation)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: fault_inject
+          vars:
+            l3_fault_inject_boundary: post-first-mutation
+
+        - name: L3 launch success — terminalize snapshot + release lock
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: launch_success
+      rescue:
+        - name: L3 gate rescue — shared launch/teardown cleanup
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: gate_rescue
+
+        - name: Re-raise (gate_rescue.yml only does cleanup, never terminates the play itself)
+          ansible.builtin.fail:
+            msg: >-
+              L3 control-flow fixture: fault-injection boundary
+              '{{ l3_fault_inject }}' failed for run_id={{ l3_run_id }} as
+              intended. Gate cleanup already ran.
+      always:
+        - name: "L3 release — idempotent lock-release backstop"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: release

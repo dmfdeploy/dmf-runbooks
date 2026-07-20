@@ -1,0 +1,93 @@
+---
+# umbrella #202 WP3 R2a-3c — release the facility lock THIS ATTEMPT
+# acquired (§4.5), via a PRECONDITIONED delete (uid from a fresh read) —
+# never a blind delete. A blind delete could destroy a DIFFERENT attempt's
+# legitimately-reclaimed lock if our own hold somehow outlived its TTL and
+# someone else already reclaimed it while we were mid-flight; the
+# precondition makes that scenario fail loudly instead of silently
+# deleting a lock we no longer own. Only meaningful when l3_lock_acquired
+# is true — a run that proceeded WITHOUT the lock (override on an
+# unavailable direct path, see lock.yml) never held it and has nothing to
+# release.
+#
+# Released on every terminal path (launch success, launch rescue,
+# pre-mutation refusal, rollback terminal) — even a dirty/incomplete
+# rollback is TERMINAL for lock purposes: the run reached a stop, and a
+# retry (a plain create, or a reclaim once TTL expires) is the intended
+# recovery, not an indefinitely-held lock blocking the whole facility.
+
+- name: "L3 lock release: read the current lock (fresh, for its uid)"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    name: "{{ l3_lock_configmap_name }}"
+    namespace: "{{ l3_lock_namespace }}"
+  register: _l3_lock_release_read
+  when: l3_lock_acquired | default(false)
+
+- name: "L3 lock release: decide (pure — l3_lock_release_decision, R2a-3c/d)"
+  ansible.builtin.set_fact:
+    _l3_lock_release_decision: >-
+      {{
+        ((_l3_lock_release_read.resources | default([]) | first | default({})).data | default(None))
+        | l3_lock_release_decision(l3_attempt_id | default(''))
+      }}
+  when: l3_lock_acquired | default(false)
+
+- name: "L3 lock release: nothing to do (already gone / never acquired)"
+  ansible.builtin.debug:
+    msg: >-
+      L3 lock release: no lock object present — nothing to release
+      (already gone, or this attempt never acquired one).
+  when:
+    - l3_lock_acquired | default(false)
+    - (_l3_lock_release_read.resources | default([])) | length == 0
+
+- name: "L3 lock release: owned by THIS attempt — preconditioned delete"
+  when:
+    - l3_lock_acquired | default(false)
+    - (_l3_lock_release_read.resources | default([])) | length > 0
+    - _l3_lock_release_decision.permitted
+  block:
+    - name: "L3 lock release: preconditioned DELETE (uid from the fresh read)"
+      ansible.builtin.uri:
+        url: "{{ _l3_api_url }}/api/v1/namespaces/{{ l3_lock_namespace }}/configmaps/{{ l3_lock_configmap_name }}"
+        method: DELETE
+        headers:
+          Authorization: "Bearer {{ _l3_api_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          apiVersion: v1
+          kind: DeleteOptions
+          preconditions:
+            uid: "{{ _l3_lock_release_read.resources[0].metadata.uid }}"
+        ca_path: "{{ _l3_api_ca_path if (_l3_api_ca_path | default('')) != '' else omit }}"
+        validate_certs: "{{ _l3_api_validate_certs }}"
+        status_code: [200, 202, 404, 409]
+      register: _l3_lock_release_delete
+      no_log: true
+
+    - name: "L3 lock release: LOUD ABORT on precondition conflict (uid changed under us)"
+      ansible.builtin.fail:
+        msg: >-
+          L3 lock release: preconditioned DELETE returned 409 — the lock
+          object's uid changed between our read and our delete (someone
+          else already reclaimed/recreated it, meaning this attempt's own
+          hold had already expired). Refusing to delete a lock we may no
+          longer own; no further action needed here.
+      when: _l3_lock_release_delete.status == 409
+
+- name: "L3 lock release: LOUD WARNING — lock held by a DIFFERENT attempt (never deleting someone else's lock)"
+  ansible.builtin.debug:
+    msg: >-
+      L3 lock release SKIPPED: the current lock is held by
+      holder_attempt_id={{ _l3_lock_release_read.resources[0].data.holder_attempt_id | default('?') }},
+      not this attempt ({{ l3_attempt_id | default('?') }}) — this
+      attempt's own hold must have already expired (TTL) and been
+      reclaimed by someone else. Never deleting a lock this attempt
+      doesn't own.
+  when:
+    - l3_lock_acquired | default(false)
+    - (_l3_lock_release_read.resources | default([])) | length > 0
+    - not _l3_lock_release_decision.permitted

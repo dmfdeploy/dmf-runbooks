@@ -1,0 +1,884 @@
+---
+# umbrella #202 WP3 R4a (codex round-3 P2-5, "THE deliverable") — task-file
+# EXECUTION tests. tests/l3-budget-logic.yml proves the pure filter
+# functions are correct; it proves NOTHING about the task-file/control-flow
+# layer (codex round-3's own point — see docs referenced in the WP3-R4a
+# work order). This suite actually RUNS roles/l3_run_guard's real,
+# unmodified task files against tests/harness's stub K8s/NetBox/helm
+# backends and asserts on REAL observed behavior:
+#
+#   1. the bounded 409-then-empty-read lock retry loops-then-succeeds, and
+#      separately loops-then-refuses (facility-busy/lock-race) — never a
+#      raw "Recursive loop detected in template" crash (P1-1).
+#   2. a reserved-var extra_var (l3_attempt_id) is refused at entry, and
+#      separately l3_run_id is refused at entry on the LAUNCH path (P1-2).
+#   3. a fault injected at the post-lock boundary (before any mutation)
+#      releases the lock, marks the snapshot superseded, and emits exactly
+#      one preflight-error marker; a fault injected at the post-first-
+#      mutation boundary releases the lock, marks the snapshot
+#      failed_rollback_required, and emits exactly one post-mutation-failed
+#      marker (P1-3/P1-4/P1-11 Backbone; P1-7's "exactly one marker"
+#      invariant, generalized beyond just rollback).
+#   4. supersede does NOT fire on a pre-mutation refusal — an older
+#      rollback-eligible snapshot survives untouched when a NEW run's own
+#      reserved-var refusal fires before that new run ever reaches its
+#      first-mutation boundary (P1-5).
+#   5. a rollback against a run_id with no snapshot emits exactly ONE
+#      marker (no-snapshot) — not a second rollback_incomplete on top of
+#      it (P1-7).
+#
+# Run:  ansible-playbook tests/l3-control-flow.yml
+#
+# Each scenario below starts a FRESH stub-server process (a fresh OS
+# process = fresh STATE, no reset_state() call needed — the detached
+# stubs run out-of-process, see tests/harness/README.md) so scenarios
+# never leak state into each other.
+
+- name: "umbrella #202 WP3 R4a/P2-5 — L3 launcher task-file execution tests"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    l3_harness_dir: "{{ playbook_dir }}/harness"
+    l3_harness_bin_dir: "/tmp/l3-control-flow-bin"
+
+  pre_tasks:
+    - name: "Harness: create the PATH shim dir (helm -> stub_helm.sh)"
+      ansible.builtin.file:
+        path: "{{ l3_harness_bin_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: "Harness: symlink helm -> stub_helm.sh"
+      ansible.builtin.file:
+        path: "{{ l3_harness_bin_dir }}/helm"
+        src: "{{ l3_harness_dir }}/stub_helm.sh"
+        state: link
+        force: true
+
+  tasks:
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 1a: lock create-then-read race retries THEN SUCCEEDS
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(1a) lock race retry-then-succeed — start fresh stubs, phantom-conflict the lock CM twice"
+      block:
+        - name: "(1a) write phantom-conflict seed (2 phantom 409s, then a real create succeeds)"
+          ansible.builtin.copy:
+            dest: /tmp/l3-cf-1a-k8s-seed.json
+            content: |
+              {"phantom_conflicts": {"nmos|dmf-facility-lock": 2}}
+            mode: "0644"
+
+        - name: "(1a) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-cf-1a.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(1a) start stubs"
+          ansible.builtin.command:
+            argv:
+              - python3
+              - "{{ l3_harness_dir }}/start_stubs.py"
+              - --pidfile
+              - /tmp/l3-cf-1a.json
+              - --k8s-seed-file
+              - /tmp/l3-cf-1a-k8s-seed.json
+          register: _cf1a_start
+          changed_when: false
+
+        - name: "(1a) parse stub URLs"
+          ansible.builtin.set_fact:
+            _cf1a_k8s_url: "{{ _cf1a_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+
+        - name: "(1a) run the lock_retry fixture as a nested ansible-playbook (fact isolation — see that fixture's own header for why NOT a direct include_role here)"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ l3_harness_dir }}/fixtures/lock_retry.yml"
+              - -e
+              - "l3_k8s_stub_url={{ _cf1a_k8s_url }}"
+              - -e
+              - "l3_run_id=1a11111111111111111111111111111a"
+              - -e
+              - "l3_lock_acquire_max_attempts=5"
+            chdir: "{{ playbook_dir }}/.."
+          register: _cf1a_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(1a) ASSERT: the fixture play SUCCEEDED and reported LOCK_ACQUIRED=True (real retry loop survived 2 phantom conflicts, no crash)"
+          ansible.builtin.assert:
+            that:
+              - _cf1a_run.rc == 0
+              - "'LOCK_ACQUIRED=True' in _cf1a_run.stdout"
+            fail_msg: "(1a) FAIL — lock_retry fixture did not succeed/acquire: rc={{ _cf1a_run.rc }} stdout={{ _cf1a_run.stdout }}"
+      always:
+        - name: "(1a) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-cf-1a.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 1b: lock create-then-read race EXHAUSTS THEN REFUSES
+    # (never a raw "Recursive loop detected in template" crash — P1-1)
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(1b) lock race exhaustion — start fresh stubs, phantom-conflict beyond the attempt cap"
+      block:
+        - name: "(1b) write phantom-conflict seed (10 phantom 409s — more than the 3-attempt cap below)"
+          ansible.builtin.copy:
+            dest: /tmp/l3-cf-1b-k8s-seed.json
+            content: |
+              {"phantom_conflicts": {"nmos|dmf-facility-lock": 10}}
+            mode: "0644"
+
+        - name: "(1b) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-cf-1b.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(1b) start stubs"
+          ansible.builtin.command:
+            argv:
+              - python3
+              - "{{ l3_harness_dir }}/start_stubs.py"
+              - --pidfile
+              - /tmp/l3-cf-1b.json
+              - --k8s-seed-file
+              - /tmp/l3-cf-1b-k8s-seed.json
+          register: _cf1b_start
+          changed_when: false
+
+        - name: "(1b) parse stub URLs"
+          ansible.builtin.set_fact:
+            _cf1b_k8s_url: "{{ _cf1b_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+
+        - name: "(1b) run the lock_retry fixture as a nested ansible-playbook — expect a CLEAN refusal (lock-race), not a raw crash"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ l3_harness_dir }}/fixtures/lock_retry.yml"
+              - -e
+              - "l3_k8s_stub_url={{ _cf1b_k8s_url }}"
+              - -e
+              - "l3_run_id=1b11111111111111111111111111111b"
+              - -e
+              - "l3_lock_acquire_max_attempts=3"
+            chdir: "{{ playbook_dir }}/.."
+          register: _cf1b_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(1b) ASSERT: the fixture FAILED cleanly (lock-race/facility-busy), never a raw recursion/template crash"
+          ansible.builtin.assert:
+            that:
+              - _cf1b_run.rc != 0
+              - "'Recursive loop' not in _cf1b_run.stdout"
+              - "'lock-race' in _cf1b_run.stdout or 'facility-busy' in _cf1b_run.stdout"
+            fail_msg: >-
+              (1b) FAIL — expected a clean facility-busy/lock-race
+              refusal (rc!=0), got rc={{ _cf1b_run.rc }} stdout=
+              {{ _cf1b_run.stdout }}
+      always:
+        - name: "(1b) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-cf-1b.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 2: reserved-var + launch l3_run_id refused AT ENTRY (P1-2)
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(2) reserved-var rejection — start fresh stubs"
+      block:
+        - name: "(2) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-cf-2.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(2) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-cf-2.json]
+          register: _cf2_start
+          changed_when: false
+
+        - name: "(2) parse stub URLs"
+          ansible.builtin.set_fact:
+            _cf2_k8s_url: "{{ _cf2_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _cf2_netbox_url: "{{ _cf2_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(2a) run the identity_check fixture with a reserved-var extra_var (l3_attempt_id) — expect refusal"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ l3_harness_dir }}/fixtures/identity_check.yml"
+              - -e
+              - "l3_k8s_stub_url={{ _cf2_k8s_url }}"
+              - -e
+              - "l3_netbox_stub_url={{ _cf2_netbox_url }}"
+              - -e
+              - "l3_attempt_id=attacker-controlled"
+            chdir: "{{ playbook_dir }}/.."
+          register: _cf2a_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(2a) ASSERT: refused for the reserved-var reason (never IDENTITY_OK)"
+          ansible.builtin.assert:
+            that:
+              - _cf2a_run.rc != 0
+              - "'reserved-var' in _cf2a_run.stdout"
+              - "'IDENTITY_OK' not in _cf2a_run.stdout"
+            fail_msg: >-
+              (2a) FAIL — a caller-supplied l3_attempt_id extra_var was
+              NOT refused (the exact codex round-3 finding); rc={{ _cf2a_run.rc }}
+              stdout={{ _cf2a_run.stdout }}
+
+        - name: "(2b) run the identity_check fixture with l3_run_id supplied on the LAUNCH path — expect refusal (l3_run_id is role-derived here, never caller input)"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ l3_harness_dir }}/fixtures/identity_check.yml"
+              - -e
+              - "l3_k8s_stub_url={{ _cf2_k8s_url }}"
+              - -e
+              - "l3_netbox_stub_url={{ _cf2_netbox_url }}"
+              - -e
+              - "l3_run_id=2b22222222222222222222222222222b"
+            chdir: "{{ playbook_dir }}/.."
+          register: _cf2b_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(2b) ASSERT: refused for the reserved-var reason (never IDENTITY_OK)"
+          ansible.builtin.assert:
+            that:
+              - _cf2b_run.rc != 0
+              - "'reserved-var' in _cf2b_run.stdout"
+              - "'IDENTITY_OK' not in _cf2b_run.stdout"
+            fail_msg: >-
+              (2b) FAIL — a caller-supplied l3_run_id extra_var on the
+              LAUNCH path was NOT refused (codex round-3's exact repro:
+              request_id=A, l3_run_id=B, B stayed authoritative); rc=
+              {{ _cf2b_run.rc }} stdout={{ _cf2b_run.stdout }}
+      always:
+        - name: "(2) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-cf-2.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 3a: fault at post-lock boundary — lock released, snapshot
+    # superseded, EXACTLY ONE preflight-error marker (Backbone + P1-7-style
+    # single-marker invariant, generalized)
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(3a) fault at post-lock — start fresh stubs, run the fixture as a nested ansible-playbook"
+      block:
+        - name: "(3a) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-cf-3a.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(3a) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-cf-3a.json]
+          register: _cf3a_start
+          changed_when: false
+
+        - name: "(3a) parse stub URLs"
+          ansible.builtin.set_fact:
+            _cf3a_k8s_url: "{{ _cf3a_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _cf3a_netbox_url: "{{ _cf3a_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(3a) run the fault_boundary fixture as a nested ansible-playbook (real stdout capture, mirrors how AWX job events are parsed)"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ l3_harness_dir }}/fixtures/fault_boundary.yml"
+              - -e
+              - "l3_k8s_stub_url={{ _cf3a_k8s_url }}"
+              - -e
+              - "l3_netbox_stub_url={{ _cf3a_netbox_url }}"
+              - -e
+              - "l3_request_id=3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a"
+              - -e
+              - "l3_fault_inject=post-lock"
+              - -e
+              - "l3_harness_bin_dir={{ l3_harness_bin_dir }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+          register: _cf3a_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(3a) ASSERT: the fixture play itself FAILED (the injected fault propagated)"
+          ansible.builtin.assert:
+            that:
+              - _cf3a_run.rc != 0
+            fail_msg: "(3a) FAIL — the fault_boundary fixture (post-lock) exited 0; the injected fault did not propagate"
+
+        - name: "(3a) ASSERT: exactly ONE DMF_L3_OUTCOME marker, token preflight-error"
+          ansible.builtin.set_fact:
+            _cf3a_markers: "{{ (_cf3a_run.stdout_lines | select('match', '.*DMF_L3_OUTCOME:.*') | list) }}"
+
+        - ansible.builtin.assert:
+            that:
+              - _cf3a_markers | length == 1
+              - "'preflight-error' in _cf3a_markers[0]"
+            fail_msg: "(3a) FAIL — expected exactly one preflight-error marker, got: {{ _cf3a_markers }}"
+
+        - name: "(3a) ASSERT (via real HTTP against the stub): the facility lock was released"
+          ansible.builtin.uri:
+            url: "{{ _cf3a_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+
+        - name: "(3a) ASSERT (via real HTTP against the stub): the snapshot ConfigMap was NEVER created (fault fired before snapshot.yml ran)"
+          ansible.builtin.uri:
+            url: "{{ _cf3a_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-run-3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(3a) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-cf-3a.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 3b: fault at post-first-mutation boundary — lock released,
+    # snapshot failed_rollback_required, EXACTLY ONE post-mutation-failed
+    # marker
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(3b) fault at post-first-mutation — start fresh stubs, run the fixture as a nested ansible-playbook"
+      block:
+        - name: "(3b) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-cf-3b.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(3b) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-cf-3b.json]
+          register: _cf3b_start
+          changed_when: false
+
+        - name: "(3b) parse stub URLs"
+          ansible.builtin.set_fact:
+            _cf3b_k8s_url: "{{ _cf3b_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _cf3b_netbox_url: "{{ _cf3b_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(3b) run the fault_boundary fixture as a nested ansible-playbook"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ l3_harness_dir }}/fixtures/fault_boundary.yml"
+              - -e
+              - "l3_k8s_stub_url={{ _cf3b_k8s_url }}"
+              - -e
+              - "l3_netbox_stub_url={{ _cf3b_netbox_url }}"
+              - -e
+              - "l3_request_id=3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b"
+              - -e
+              - "l3_fault_inject=post-first-mutation"
+              - -e
+              - "l3_harness_bin_dir={{ l3_harness_bin_dir }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+          register: _cf3b_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(3b) ASSERT: the fixture play itself FAILED"
+          ansible.builtin.assert:
+            that:
+              - _cf3b_run.rc != 0
+            fail_msg: "(3b) FAIL — the fault_boundary fixture (post-first-mutation) exited 0"
+
+        - name: "(3b) ASSERT: exactly ONE DMF_L3_OUTCOME marker, token post-mutation-failed"
+          ansible.builtin.set_fact:
+            _cf3b_markers: "{{ (_cf3b_run.stdout_lines | select('match', '.*DMF_L3_OUTCOME:.*') | list) }}"
+
+        - ansible.builtin.assert:
+            that:
+              - _cf3b_markers | length == 1
+              - "'post-mutation-failed' in _cf3b_markers[0]"
+            fail_msg: "(3b) FAIL — expected exactly one post-mutation-failed marker, got: {{ _cf3b_markers }}"
+
+        - name: "(3b) ASSERT (via real HTTP against the stub): the facility lock was released"
+          ansible.builtin.uri:
+            url: "{{ _cf3b_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+
+        - name: "(3b) ASSERT (via real HTTP against the stub): the snapshot ConfigMap is failed_rollback_required (this attempt DID mutate, per l3_mutation_started)"
+          ansible.builtin.uri:
+            url: "{{ _cf3b_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-run-3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b"
+            method: GET
+            status_code: [200]
+            validate_certs: false
+            return_content: true
+          register: _cf3b_snapshot_readback
+
+        - ansible.builtin.assert:
+            that:
+              - _cf3b_snapshot_readback.json.data.status == 'failed_rollback_required'
+            fail_msg: "(3b) FAIL — snapshot status is {{ _cf3b_snapshot_readback.json.data.status }}, expected failed_rollback_required"
+      always:
+        - name: "(3b) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-cf-3b.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 4: supersede does NOT fire on a pre-mutation refusal (P1-5)
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(4) supersede-not-on-pre-mutation-refusal — start fresh stubs"
+      block:
+        - name: "(4) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-cf-4.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(4) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-cf-4.json]
+          register: _cf4_start
+          changed_when: false
+
+        - name: "(4) parse stub URLs"
+          ansible.builtin.set_fact:
+            _cf4_k8s_url: "{{ _cf4_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _cf4_netbox_url: "{{ _cf4_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(4) seed an OLDER rollback-eligible snapshot (a different, already-in-progress run)"
+          ansible.builtin.uri:
+            url: "{{ _cf4_k8s_url }}/api/v1/namespaces/nmos/configmaps"
+            method: POST
+            body_format: json
+            body:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: dmf-run-4444444444444444444444444444444a
+                namespace: nmos
+                labels:
+                  dmf.io/run-id: "4444444444444444444444444444444a"
+              data:
+                status: in-progress
+            validate_certs: false
+            status_code: [201]
+
+        - name: "(4) run the identity_check fixture with a reserved-var extra_var — a pre-mutation refusal that must NEVER reach a supersede sweep"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ l3_harness_dir }}/fixtures/identity_check.yml"
+              - -e
+              - "l3_k8s_stub_url={{ _cf4_k8s_url }}"
+              - -e
+              - "l3_netbox_stub_url={{ _cf4_netbox_url }}"
+              - -e
+              - "l3_attempt_id=attacker-controlled"
+              - -e
+              - "l3_run_id=4444444444444444444444444444444b"
+            chdir: "{{ playbook_dir }}/.."
+          register: _cf4_identity_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(4) ASSERT: the identity fixture actually refused (sanity — otherwise this scenario proves nothing)"
+          ansible.builtin.assert:
+            that:
+              - _cf4_identity_run.rc != 0
+              - "'reserved-var' in _cf4_identity_run.stdout"
+            fail_msg: "(4) FAIL — the identity_check fixture did not refuse as expected: rc={{ _cf4_identity_run.rc }} stdout={{ _cf4_identity_run.stdout }}"
+
+        - name: "(4) ASSERT (via real HTTP): the OLDER snapshot is UNTOUCHED (still in-progress, not superseded)"
+          ansible.builtin.uri:
+            url: "{{ _cf4_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-run-4444444444444444444444444444444a"
+            method: GET
+            validate_certs: false
+            return_content: true
+          register: _cf4_older_readback
+
+        - ansible.builtin.assert:
+            that:
+              - _cf4_older_readback.json.data.status == 'in-progress'
+            fail_msg: >-
+              (4) FAIL — the older run's snapshot was superseded by a
+              pre-mutation refusal (status={{ _cf4_older_readback.json.data.status }}) —
+              a reserved-var refusal at identity.yml fires WAY before this
+              run could ever reach its own first-mutation boundary; a real
+              supersede sweep never even runs for this refusal, but this
+              proves it structurally rather than by code inspection alone.
+      always:
+        - name: "(4) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-cf-4.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 5: rollback with no snapshot — EXACTLY ONE marker (P1-7)
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(5) rollback no-snapshot single-marker — start fresh stubs, run the fixture as a nested ansible-playbook"
+      block:
+        - name: "(5) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-cf-5.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(5) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-cf-5.json]
+          register: _cf5_start
+          changed_when: false
+
+        - name: "(5) parse stub URLs"
+          ansible.builtin.set_fact:
+            _cf5_k8s_url: "{{ _cf5_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _cf5_netbox_url: "{{ _cf5_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(5) run the rollback_no_snapshot fixture as a nested ansible-playbook (no snapshot CM seeded for this run_id)"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ l3_harness_dir }}/fixtures/rollback_no_snapshot.yml"
+              - -e
+              - "l3_k8s_stub_url={{ _cf5_k8s_url }}"
+              - -e
+              - "l3_netbox_stub_url={{ _cf5_netbox_url }}"
+              - -e
+              - "l3_run_id=5555555555555555555555555555555a"
+            chdir: "{{ playbook_dir }}/.."
+          register: _cf5_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(5) ASSERT: the fixture play itself FAILED (no-snapshot is a hard refusal)"
+          ansible.builtin.assert:
+            that:
+              - _cf5_run.rc != 0
+            fail_msg: "(5) FAIL — the rollback_no_snapshot fixture exited 0"
+
+        - name: "(5) ASSERT: exactly ONE DMF_L3_OUTCOME marker, token no-snapshot (NOT a second rollback_incomplete on top of it)"
+          ansible.builtin.set_fact:
+            _cf5_markers: "{{ (_cf5_run.stdout_lines | select('match', '.*DMF_L3_OUTCOME:.*') | list) }}"
+
+        - ansible.builtin.assert:
+            that:
+              - _cf5_markers | length == 1
+              - "'no-snapshot' in _cf5_markers[0]"
+              - "'rollback_incomplete' not in _cf5_markers[0]"
+            fail_msg: >-
+              (5) FAIL — expected exactly one no-snapshot marker (codex
+              round-3's exact P1-7 finding: dmf-cms selects the LAST
+              event, so a second rollback_incomplete marker here would
+              have hidden the real outcome), got: {{ _cf5_markers }}
+      always:
+        - name: "(5) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-cf-5.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 6: forged _l3_lock_create=201 extra_var against a GENUINE
+    # 409 must NOT acquire the lock (R5a/P1-1, codex round-4's exact
+    # executed proof) — the cluster-truth readback must catch it.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(6) forged register (_l3_lock_create=201) — start fresh stubs, pre-seed a REAL lock held by someone else"
+      block:
+        - name: "(6) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-cf-6.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(6) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-cf-6.json]
+          register: _cf6_start
+          changed_when: false
+
+        - name: "(6) parse stub URLs"
+          ansible.builtin.set_fact:
+            _cf6_k8s_url: "{{ _cf6_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+
+        - name: "(6) seed a REAL lock CM held by a DIFFERENT attempt (so a genuine create attempt gets a genuine 409)"
+          ansible.builtin.uri:
+            url: "{{ _cf6_k8s_url }}/api/v1/namespaces/nmos/configmaps"
+            method: POST
+            body_format: json
+            body:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: dmf-facility-lock
+                namespace: nmos
+              data:
+                run_id: "6666666666666666666666666666666a"
+                holder_attempt_id: "someone-elses-attempt-id"
+                holder: direct
+                created_at: "1700000000"
+                ttl_seconds: "3600"
+            validate_certs: false
+            status_code: [201]
+
+        - name: "(6) run the lock_retry fixture, FORGING _l3_lock_create to claim a 201 (codex's exact executed repro)"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ l3_harness_dir }}/fixtures/lock_retry.yml"
+              - -e
+              - "l3_k8s_stub_url={{ _cf6_k8s_url }}"
+              - -e
+              - "l3_run_id=6666666666666666666666666666666b"
+              - -e
+              - "l3_lock_acquire_max_attempts=3"
+              - -e
+              - '{"_l3_lock_create": {"status": 201, "rc": 0, "failed": false}}'
+            chdir: "{{ playbook_dir }}/.."
+          register: _cf6_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(6) ASSERT: the fixture did NOT report LOCK_ACQUIRED=True — the forged 201 must not fool the readback-verify"
+          ansible.builtin.assert:
+            that:
+              - "'LOCK_ACQUIRED=True' not in _cf6_run.stdout"
+            fail_msg: >-
+              (6) FAIL — a forged _l3_lock_create=201 extra_var acquired
+              the lock despite the real cluster showing a DIFFERENT
+              holder. This is codex round-4's exact executed proof; the
+              cluster-truth readback must catch this every time.
+              stdout={{ _cf6_run.stdout }}
+
+        - name: "(6) ASSERT (via real HTTP against the stub): the SEEDED lock is UNTOUCHED — the forged attempt never mutated the real lock"
+          ansible.builtin.uri:
+            url: "{{ _cf6_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            validate_certs: false
+            return_content: true
+          register: _cf6_lock_readback
+
+        - ansible.builtin.assert:
+            that:
+              - _cf6_lock_readback.json.data.holder_attempt_id == 'someone-elses-attempt-id'
+            fail_msg: >-
+              (6) FAIL — the real lock's holder changed
+              ({{ _cf6_lock_readback.json.data.holder_attempt_id }}) —
+              the forged attempt must never be able to mutate a lock it
+              does not genuinely hold.
+      always:
+        - name: "(6) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-cf-6.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 7: l3_fault_inject is INERT without the L3_TESTMODE env
+    # sentinel (R5a/P2-1, codex round-4) — a production run supplying
+    # l3_fault_inject as an extra_var (the ONLY channel it could ever
+    # reach a real AWX dispatch through) must never trigger anything.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(7) fault injector inert without L3_TESTMODE — start fresh stubs"
+      block:
+        - name: "(7) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-cf-7.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(7) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-cf-7.json]
+          register: _cf7_start
+          changed_when: false
+
+        - name: "(7) parse stub URLs"
+          ansible.builtin.set_fact:
+            _cf7_k8s_url: "{{ _cf7_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _cf7_netbox_url: "{{ _cf7_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(7) run the fault_boundary fixture with l3_fault_inject=post-lock but WITHOUT setting L3_TESTMODE in the subprocess env"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ l3_harness_dir }}/fixtures/fault_boundary.yml"
+              - -e
+              - "l3_k8s_stub_url={{ _cf7_k8s_url }}"
+              - -e
+              - "l3_netbox_stub_url={{ _cf7_netbox_url }}"
+              - -e
+              - "l3_request_id=7777777777777777777777777777777a"
+              - -e
+              - "l3_fault_inject=post-lock"
+              - -e
+              - "l3_harness_bin_dir={{ l3_harness_bin_dir }}"
+            chdir: "{{ playbook_dir }}/.."
+          register: _cf7_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(7) ASSERT: the fixture SUCCEEDED (rc=0) — l3_fault_inject alone, without L3_TESTMODE, must be a complete no-op"
+          ansible.builtin.assert:
+            that:
+              - _cf7_run.rc == 0
+              - "'DMF_L3_OUTCOME' not in _cf7_run.stdout"
+            fail_msg: >-
+              (7) FAIL — l3_fault_inject=post-lock fired despite
+              L3_TESTMODE not being set in the subprocess environment;
+              this extra_var must be completely inert on any run that
+              isn't explicitly in test mode (codex round-4's exact
+              concern: a real AWX dispatch could otherwise set this and
+              deliberately sabotage a live run). rc={{ _cf7_run.rc }}
+              stdout={{ _cf7_run.stdout }}
+      always:
+        - name: "(7) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-cf-7.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 8: holder-replacement (lock-lost) at a terminal-patch
+    # checkpoint boundary — the OLD (fenced-out) attempt must NOT patch
+    # the snapshot; the run_complete write must never land (R5a/P1-4).
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(8) holder-replacement at a terminal checkpoint — start fresh stubs"
+      block:
+        - name: "(8) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-cf-8.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(8) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-cf-8.json]
+          register: _cf8_start
+          changed_when: false
+
+        - name: "(8) parse stub URLs"
+          ansible.builtin.set_fact:
+            _cf8_k8s_url: "{{ _cf8_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _cf8_netbox_url: "{{ _cf8_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(8) run the fault_boundary fixture — genuinely acquire the lock, then SWAP its holder right after the first mutation (simulating a real new owner's reclaim), before launch_success.yml's own checkpoint runs"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ l3_harness_dir }}/fixtures/fault_boundary.yml"
+              - -e
+              - "l3_k8s_stub_url={{ _cf8_k8s_url }}"
+              - -e
+              - "l3_netbox_stub_url={{ _cf8_netbox_url }}"
+              - -e
+              - "l3_request_id=8888888888888888888888888888888a"
+              - -e
+              - "l3_fault_inject=post-first-mutation"
+              - -e
+              - "l3_fault_inject_action=swap_holder"
+              - -e
+              - "l3_harness_bin_dir={{ l3_harness_bin_dir }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+          register: _cf8_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(8) ASSERT: the fixture FAILED (the fenced-out checkpoint inside launch_success.yml must refuse, never silently succeed)"
+          ansible.builtin.assert:
+            that:
+              - _cf8_run.rc != 0
+            fail_msg: "(8) FAIL — the fixture succeeded (rc=0) despite being fenced out before its own terminal patch; lock-lost must always refuse. stdout={{ _cf8_run.stdout }}"
+
+        - name: "(8) ASSERT: exactly ONE DMF_L3_OUTCOME marker, token post-mutation-failed detail=lock-lost"
+          ansible.builtin.set_fact:
+            _cf8_markers: "{{ (_cf8_run.stdout_lines | select('match', '.*DMF_L3_OUTCOME:.*') | list) }}"
+
+        - ansible.builtin.assert:
+            that:
+              - _cf8_markers | length == 1
+              - "'post-mutation-failed' in _cf8_markers[0]"
+              - "'lock-lost' in _cf8_markers[0]"
+            fail_msg: "(8) FAIL — expected exactly one post-mutation-failed/lock-lost marker, got: {{ _cf8_markers }}"
+
+        - name: "(8) ASSERT (via real HTTP against the stub): the snapshot CM was NEVER patched to run_complete — the fenced-out attempt's own terminal write never landed"
+          ansible.builtin.uri:
+            url: "{{ _cf8_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-run-8888888888888888888888888888888a"
+            method: GET
+            validate_certs: false
+            return_content: true
+          register: _cf8_snapshot_readback
+
+        - ansible.builtin.assert:
+            that:
+              - _cf8_snapshot_readback.json.data.status != 'run_complete'
+            fail_msg: >-
+              (8) FAIL — the fenced-out (lock-lost) attempt's own
+              run_complete patch landed anyway
+              (status={{ _cf8_snapshot_readback.json.data.status }}) —
+              a fenced attempt must NEVER overwrite the new owner's
+              snapshot lifecycle state.
+
+        - name: "(8) ASSERT (via real HTTP against the stub): the lock still shows the NEW owner as holder — the fenced-out attempt never touched it"
+          ansible.builtin.uri:
+            url: "{{ _cf8_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            validate_certs: false
+            return_content: true
+          register: _cf8_lock_readback
+
+        - ansible.builtin.assert:
+            that:
+              - _cf8_lock_readback.json.data.holder_attempt_id == 'test-injected-new-owner'
+            fail_msg: >-
+              (8) FAIL — the lock's holder changed away from the
+              simulated new owner
+              ({{ _cf8_lock_readback.json.data.holder_attempt_id }}) —
+              a fenced-out attempt must never mutate a lock it does not
+              genuinely hold.
+      always:
+        - name: "(8) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-cf-8.json]
+          changed_when: false
+          failed_when: false
+
+    - name: ALL L3 CONTROL-FLOW EXECUTION TESTS PASSED
+      ansible.builtin.debug:
+        msg: >-
+          umbrella #202 WP3 R4a/P2-5 + R5a: bounded lock retry
+          (loop-then-succeed AND loop-then-refuse, no recursion crash),
+          reserved-var + launch-l3_run_id rejection at entry,
+          fault-injection at post-lock/post-first-mutation boundaries
+          (lock released, correct snapshot terminal, exactly one correct
+          marker each), supersede never touching an older baseline on a
+          pre-mutation refusal, rollback's no-snapshot staying the single
+          final marker, a forged _l3_lock_create=201 register never
+          fooling the cluster-truth readback (P1-1), the fault injector
+          being completely inert without the L3_TESTMODE env sentinel
+          (P2-1), and a genuine holder-replacement mid-flow being detected
+          at the very next terminal-patch checkpoint — never overwriting
+          the new owner's snapshot lifecycle (P1-4) — all proven via REAL
+          execution of the unmodified role task files against the test
+          harness stubs, not pure-function simulation.

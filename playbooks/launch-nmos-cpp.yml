@@ -7,94 +7,217 @@
   connection: local
   gather_facts: false
   vars:
-    nmos_namespace: nmos
-    nmos_cpp_chart_repo: "oci://zot.zot.svc.cluster.local:5000/dmf/charts"
-    nmos_cpp_chart_name: nmos-cpp
-    nmos_cpp_chart_version: "0.1.1"
+    # umbrella #202 WP3 R6a (codex round-5 P1-1/P1-2, replacing R5a-2's
+    # broken post-hoc consistency assert): TRUE single source. ONE play-
+    # scope definition per identity/render value below — no separate
+    # nmos_cpp_* alias exists anywhere in this playbook anymore. The gate
+    # (l3_run_guard's capacity.yml render + snapshot.yml, included
+    # dynamically below with no vars: forwarding) sees these exact names
+    # via ordinary play-var scope, and this playbook's own install step
+    # further down reads the SAME names directly — there is no second,
+    # independently-forgeable name either side could diverge onto, so a
+    # forged extra_var overriding any one of these affects both consumers
+    # identically, by construction. (R5a-2's assert tried to DETECT
+    # divergence after the fact by comparing two names post-include — but
+    # the include_role's own vars: went out of scope the moment that task
+    # finished, so the assert read undefined variables on every real run;
+    # this replaces detection with structural impossibility instead.)
+    l3_release: nmos-cpp
+    l3_target_namespace: nmos
+    l3_catalog_key: nmos-cpp
+    l3_chart_ref: "oci://zot.zot.svc.cluster.local:5000/dmf/charts"
+    l3_chart_name: nmos-cpp
+    l3_chart_version: "0.1.1"
+    l3_chart_local: ""
+    l3_release_values:
+      createNamespace: false
+    l3_chart_set_values: "{{ l3_release_values | l3_flatten_set_values }}"
+    # roles/nmos-cpp/defaults/main.yml's netbox_service_monitoring_custom_fields
+    # stamps cluster_namespace from a variable named exactly nmos_namespace
+    # (ADR-0038 §in-cluster probe — load-bearing for dmf-promsd probe
+    # wiring, not cosmetic) — aliased here to l3_target_namespace for the
+    # same reason and with the same R6a scope-boundary caveat as
+    # launch-mxl-fabrics-demo.yml's mxl_release/mxl_namespace aliases.
+    # nmos-cpp's netbox_service_name (cluster_service equivalent) is a
+    # hardcoded literal in that same role file, no indirection, no
+    # equivalent alias needed.
+    nmos_namespace: "{{ l3_target_namespace }}"
   tasks:
-    - name: Include nmos-cpp role (provision stage - NetBox catalog entry)
-      ansible.builtin.include_role:
-        name: nmos-cpp
-      vars:
-        nmos_stage: provision
-
-    - name: Deploy NMOS Helm chart from Zot
+    - name: "L3 gate through terminal — ONE outer block/rescue/always (R4a
+        Backbone, codex round-3 P1-3/P1-11: main.yml's own stages
+        (identity->preflight->lock->snapshot->capacity) used to run
+        OUTSIDE any block — an exception there had nothing to catch it
+        and leaked the lock to TTL. The gate include is now INSIDE this
+        SAME outer block as the caller's own mutation, so gate_rescue.yml
+        (rescue:) sees every failure in this whole span, and release.yml
+        (always:) is the unconditional lock-release backstop regardless
+        of where in the span something threw)"
       block:
-        - name: Create temporary NMOS chart directory
-          ansible.builtin.tempfile:
-            state: directory
-            suffix: nmos-cpp-chart
-          register: _nmos_chart_tmp
-          changed_when: false
+        - name: "Include l3_run_guard role (umbrella #202 WP3-A authoritative
+            gate — identity/preflight/lock/snapshot/capacity). R6a: no
+            vars: forwarding — l3_release/l3_target_namespace/
+            l3_catalog_key/l3_chart_*/l3_chart_set_values are already
+            play-scoped above and stay in scope for the rest of THIS play,
+            including the install step below, which is exactly what makes
+            this single-source (the old vars: forwarding here is what
+            previously scoped those names to just this one task)."
+          ansible.builtin.include_role:
+            name: l3_run_guard
 
-        - name: Pull NMOS Helm chart from plain-HTTP Zot
-          ansible.builtin.command:
-            argv:
-              - helm
-              - pull
-              - "{{ nmos_cpp_chart_repo }}/{{ nmos_cpp_chart_name }}"
-              - --version
-              - "{{ nmos_cpp_chart_version }}"
-              - --untar
-              - --untardir
-              - "{{ _nmos_chart_tmp.path }}"
-              - --plain-http
-          changed_when: false
+        - name: "L3: mark mutation as STARTED (everything from here on is a
+            real mutating action; gate_rescue.yml reads this to decide
+            superseded[pre-mutation] vs failed_rollback_required
+            [post-mutation])"
+          ansible.builtin.set_fact:
+            l3_mutation_started: true
 
-        - name: Install or upgrade NMOS Helm release
-          # release_values pins createNamespace: false because the launcher
-          # sets create_namespace: false on the helm action and the chart
-          # would otherwise re-create the templated namespace resource.
-          # Image-repo overrides removed as of chart 0.1.1 — chart defaults
-          # now point at cluster-internal Zot service DNS directly.
-          #
-          # wait: false is intentional. kubernetes.core.helm's --wait
-          # predicate returns a false-negative "Deployment status: Unknown"
-          # for these workloads even when the cluster reports
-          # Available=True. We replace the helm-side wait with an explicit
-          # k8s_info readiness gate below — same effective behaviour, no
-          # false negatives.
-          kubernetes.core.helm:
+        - name: "L3: test-only fault injection boundary (R4a/P2-5 — no-op on every real run)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: fault_inject
+          vars:
+            l3_fault_inject_boundary: post-mutation-start
+
+        - name: "L3 lock checkpoint before provision (R4a/P1-4 — the FIRST real mutation; no checkpoint existed here before this round)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: lock_checkpoint
+
+        - name: Include nmos-cpp role (provision stage - NetBox catalog entry)
+          ansible.builtin.include_role:
             name: nmos-cpp
-            chart_ref: "{{ _nmos_chart_tmp.path }}/{{ nmos_cpp_chart_name }}"
-            release_namespace: "{{ nmos_namespace }}"
-            create_namespace: false
-            release_values:
-              createNamespace: false
-            wait: false
+          vars:
+            nmos_stage: provision
 
-        - name: Wait for NMOS workloads to be Ready
-          # Explicit readiness gate replacing the broken helm --wait
-          # predicate. 30 × 10s = 5min hard cap, matching the old timeout.
-          # Loop covers all chart-managed workload objects (1 StatefulSet
-          # + N Deployments where N = chart's node.count, currently 2).
-          kubernetes.core.k8s_info:
-            api_version: "{{ item.api }}"
-            kind: "{{ item.kind }}"
-            name: "{{ item.name }}"
-            namespace: "{{ nmos_namespace }}"
-          register: _nmos_workload
-          until:
-            - _nmos_workload.resources | length > 0
-            - _nmos_workload.resources[0].status.readyReplicas | default(0) == (_nmos_workload.resources[0].spec.replicas | default(1))
-          retries: 30
-          delay: 10
-          loop:
-            - { api: apps/v1, kind: StatefulSet, name: nmos-cpp-registry }
-            - { api: apps/v1, kind: Deployment, name: nmos-cpp-node-1 }
-            - { api: apps/v1, kind: Deployment, name: nmos-cpp-node-2 }
-          loop_control:
-            label: "{{ item.kind }}/{{ item.name }}"
+        - name: "L3: test-only fault injection boundary (R4a/P2-5 — after the first real mutation)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: fault_inject
+          vars:
+            l3_fault_inject_boundary: post-first-mutation
+
+        - name: "L3 lock checkpoint before helm install (R3a-3b)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: lock_checkpoint
+
+        - name: Deploy NMOS Helm chart from Zot
+          block:
+            - name: Create temporary NMOS chart directory
+              ansible.builtin.tempfile:
+                state: directory
+                suffix: nmos-cpp-chart
+              register: _nmos_chart_tmp
+              changed_when: false
+
+            - name: Pull NMOS Helm chart from plain-HTTP Zot
+              ansible.builtin.command:
+                argv:
+                  - helm
+                  - pull
+                  - "{{ l3_chart_ref }}/{{ l3_chart_name }}"
+                  - --version
+                  - "{{ l3_chart_version }}"
+                  - --untar
+                  - --untardir
+                  - "{{ _nmos_chart_tmp.path }}"
+                  - --plain-http
+              changed_when: false
+
+            # R6a-1 (codex round-5): set_values is built from l3_chart_set_values
+            # via l3_set_values_dicts — the SAME flat list capacity.yml's
+            # render already flattened l3_release_values into, and turned
+            # into --set argv via l3_set_flag_argv. Retiring release_values:
+            # (the nested-dict shape) here closes the exact gap codex named:
+            # before R6a, l3_chart_set_values was consumed ONLY by the
+            # gate's render, while this install task read
+            # nmos_cpp_release_values directly — two different names/shapes
+            # that happened to agree by construction, not by single source.
+            #
+            # create_namespace: false because the launcher owns namespace
+            # creation elsewhere and the chart would otherwise re-create the
+            # templated namespace resource. Image-repo overrides removed as
+            # of chart 0.1.1 — chart defaults now point at cluster-internal
+            # Zot service DNS directly.
+            #
+            # wait: false is intentional. kubernetes.core.helm's --wait
+            # predicate returns a false-negative "Deployment status: Unknown"
+            # for these workloads even when the cluster reports
+            # Available=True. We replace the helm-side wait with an explicit
+            # k8s_info readiness gate below — same effective behaviour, no
+            # false negatives.
+            - name: Install or upgrade NMOS Helm release
+              kubernetes.core.helm:
+                name: "{{ l3_release }}"
+                chart_ref: "{{ _nmos_chart_tmp.path }}/{{ l3_chart_name }}"
+                release_namespace: "{{ l3_target_namespace }}"
+                create_namespace: false
+                set_values: "{{ l3_chart_set_values | l3_set_values_dicts }}"
+                wait: false
+
+            - name: Wait for NMOS workloads to be Ready
+              # Explicit readiness gate replacing the broken helm --wait
+              # predicate. 30 × 10s = 5min hard cap, matching the old timeout.
+              # Loop covers all chart-managed workload objects (1 StatefulSet
+              # + N Deployments where N = chart's node.count, currently 2).
+              kubernetes.core.k8s_info:
+                api_version: "{{ item.api }}"
+                kind: "{{ item.kind }}"
+                name: "{{ item.name }}"
+                namespace: "{{ l3_target_namespace }}"
+              register: _nmos_workload
+              until:
+                - _nmos_workload.resources | length > 0
+                - _nmos_workload.resources[0].status.readyReplicas | default(0) == (_nmos_workload.resources[0].spec.replicas | default(1))
+              retries: 30
+              delay: 10
+              loop:
+                - { api: apps/v1, kind: StatefulSet, name: nmos-cpp-registry }
+                - { api: apps/v1, kind: Deployment, name: nmos-cpp-node-1 }
+                - { api: apps/v1, kind: Deployment, name: nmos-cpp-node-2 }
+              loop_control:
+                label: "{{ item.kind }}/{{ item.name }}"
+          always:
+            - name: Remove temporary NMOS chart directory
+              ansible.builtin.file:
+                path: "{{ _nmos_chart_tmp.path | default('') }}"
+                state: absent
+              changed_when: false
+              when: _nmos_chart_tmp.path is defined
+
+        - name: "L3 lock checkpoint before NetBox configure (R3a-3b)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: lock_checkpoint
+
+        - name: Include nmos-cpp role (configure stage - flip NetBox tag to active)
+          ansible.builtin.include_role:
+            name: nmos-cpp
+          vars:
+            nmos_stage: configure
+
+        - name: L3 launch success — terminalize snapshot + release lock
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: launch_success
+      rescue:
+        - name: "L3 gate rescue — shared launch/teardown cleanup (R4a Backbone: mutation-state-aware
+            snapshot terminalization + marker, unless a hand-written refusal already emitted its own)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: gate_rescue
+
+        - name: Re-raise (gate_rescue.yml only does cleanup, never terminates the play itself)
+          ansible.builtin.fail:
+            msg: >-
+              NMOS-CPP launch failed for run_id={{ l3_run_id | default('<unknown>') }}.
+              See the task error above for the root cause; the L3 gate's
+              own cleanup (snapshot terminalized, facility lock released)
+              has already run.
       always:
-        - name: Remove temporary NMOS chart directory
-          ansible.builtin.file:
-            path: "{{ _nmos_chart_tmp.path | default('') }}"
-            state: absent
-          changed_when: false
-          when: _nmos_chart_tmp.path is defined
-
-    - name: Include nmos-cpp role (configure stage - flip NetBox tag to active)
-      ansible.builtin.include_role:
-        name: nmos-cpp
-      vars:
-        nmos_stage: configure
+        - name: "L3 release — idempotent lock-release backstop (R4a Backbone:
+            catches anything gate_rescue.yml itself failed to release, or a
+            case where rescue never even ran)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: release

@@ -1,0 +1,31 @@
+---
+# umbrella #202 WP3 R4a/P2-5 — control-flow execution fixture: a single,
+# isolated invocation of `l3_run_guard`'s `identity` tasks_from, against
+# the test harness stubs. Run as a nested `ansible-playbook` subprocess
+# (see fixtures/lock_retry.yml's own header for why — fact isolation
+# between scenarios) by tests/l3-control-flow.yml.
+#
+# Required extra_vars: l3_k8s_stub_url, l3_netbox_stub_url
+# Optional extra_vars (the whole point — these are what each scenario
+# varies): l3_attempt_id (reserved-var probe), l3_run_id (launch-path
+# reserved-var probe), l3_request_id (normal identity input)
+
+- name: "L3 control-flow fixture: identity reserved-var check"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    l3_kube_api_url: "{{ l3_k8s_stub_url }}"
+    l3_kube_api_token: fake-fixture-token
+    l3_kube_api_validate_certs: false
+    netbox_api_url: "{{ l3_netbox_stub_url }}"
+    netbox_api_token: fake-fixture-netbox-token
+  tasks:
+    - name: Include l3_run_guard role (identity flow only)
+      ansible.builtin.include_role:
+        name: l3_run_guard
+        tasks_from: identity
+
+    - name: Report outcome (grepped by the controlling test — only reached if identity.yml did NOT refuse)
+      ansible.builtin.debug:
+        msg: "IDENTITY_OK run_id={{ l3_run_id | default('<none>') }}"

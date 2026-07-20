@@ -1,0 +1,84 @@
+---
+# umbrella #202 WP3-B stage — terminal: aggregate outcome, update the
+# snapshot CM's status, emit the marker, release the lock (§4.5/§4.6
+# partial-failure posture — never false-green), revised by codex round-1
+# R2a-7.
+#
+# R2a-7 (§4.6-honest, final disposition): monitoring drain is
+# STRUCTURALLY UNVERIFIABLE from this launcher EE (no live PromSD read
+# exists anywhere in this tier) — so `monitoring` is now ALWAYS a dirty
+# surface, on EVERY rollback, and the verdict is ALWAYS
+# `rollback_incomplete`. `rollback_complete` is STRUCTURALLY UNREACHABLE
+# in WP3 — grep this repo for "rollback_complete" as a value ever WRITTEN
+# by this role: it doesn't happen. WP4's console-side monitoring-drain
+# verification is the only tier that can ever upgrade a run's status past
+# this — the umbrella #202 acceptance gate for a truly clean rollback
+# closes only with WP4, not this WP. This is why the play below
+# UNCONDITIONALLY fails at the end — an AWX job status of "failed" here is
+# not a bug, it correctly mirrors the marker: this rollback is not (and,
+# in WP3, can never be) fully verified clean.
+
+- name: "L3 rollback: aggregate outcome (pure — l3_rollback_outcome; R2a-7 — always rollback_incomplete in WP3)"
+  ansible.builtin.set_fact:
+    _l3_rollback_outcome: "{{ _l3_helm_dirty | l3_rollback_outcome(_l3_netbox_dirty) }}"
+
+- name: "L3 rollback: lock checkpoint before the terminal ConfigMap mutation (R4a/P1-4)"
+  ansible.builtin.include_tasks: lock_checkpoint.yml
+
+- name: "L3 rollback: update the snapshot ConfigMap's terminal status"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ l3_run_configmap_prefix }}{{ l3_run_id }}"
+        namespace: "{{ l3_lock_namespace }}"
+      data:
+        status: "{{ _l3_rollback_outcome.verdict }}"
+        rollback_reason: "{{ l3_rollback_reason }}"
+        rollback_completed_at: "{{ lookup('pipe', 'date +%s') }}"
+        rollback_surfaces_dirty: "{{ _l3_rollback_outcome.surfaces | join(',') }}"
+
+- name: "L3 rollback: report terminal outcome"
+  ansible.builtin.debug:
+    msg: >-
+      L3 rollback {{ _l3_rollback_outcome.verdict }} for run_id={{ l3_run_id }}.
+      Surfaces: {{ _l3_rollback_outcome.surfaces | join(', ') }}. monitoring
+      is ALWAYS reported here (R2a-7 §4.6-honest — unverifiable from this
+      EE); helm/netbox are readback-verified. rollback_complete is
+      structurally unreachable in WP3 — WP4's console-side drain
+      verification is the only tier that can ever close this out fully.
+
+- name: "L3 rollback: emit outcome marker (R2a-2 — via the named task, not stdout)"
+  ansible.builtin.include_tasks: _emit_outcome.yml
+  vars:
+    l3_outcome_token: "{{ _l3_rollback_outcome.verdict }}"
+    l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id }} surfaces={{ _l3_rollback_outcome.surfaces | join(',') }}"
+
+# ── Lock release: TERMINAL for lock purposes regardless of verdict — even
+#    a dirty/incomplete rollback (R2a-7: every WP3 rollback) reached a
+#    stop; an indefinitely-held lock blocking the whole facility until TTL
+#    expiry would be worse than releasing it. R2a-3b: a retry re-acquires
+#    via a plain create (TTL-expired reclaim if it somehow raced) — NOT
+#    via same-run-residue reclaim, which no longer exists. ────────────────
+- name: "L3 rollback: release the facility lock"
+  ansible.builtin.include_tasks: lock_release.yml
+
+- name: "L3 rollback: mark terminal cleanup as DONE (R3a-4 sentinel — the
+    outer block/rescue in rollback.yml checks this to distinguish 'terminal
+    ran its own full cleanup, just re-raise' from 'an UNEXPECTED failure
+    hit before terminal ever ran, do generic cleanup')"
+  ansible.builtin.set_fact:
+    l3_rollback_terminal_reached: true
+
+- name: "L3 rollback: fail the play (R2a-7 — UNCONDITIONAL in WP3: rollback_complete never happens)"
+  ansible.builtin.fail:
+    msg: >-
+      L3 rollback INCOMPLETE for run_id={{ l3_run_id }} — dirty surfaces:
+      {{ _l3_rollback_outcome.surfaces | join(', ') }} (monitoring is
+      ALWAYS included here in WP3 — §4.6-honest, R2a-7: drain is
+      unverifiable from this EE; WP4 owns closing that out). See the
+      report above for per-surface detail. The facility lock has been
+      released; a retry of this same rollback will re-acquire it via a
+      plain create (or a TTL-expired reclaim).

@@ -14,7 +14,11 @@ netbox_api_url: "http://netbox.netbox.svc.cluster.local"
 # monitoring metadata frozen in ADR-0038. That still fits the existing
 # service-scoped grant: ipam.service change plus extras.tag view. No writer
 # permission extension is needed for this repo.
-netbox_api_token: "{{ vault_netbox_catalog_token | default(vault_netbox_api_token | default(''), true) }}"
+# umbrella #202 WP3 R3a-9 (codex round-2 P1-9): NO fallback to
+# vault_netbox_api_token (the admin token) — a missing scoped
+# catalog-writer token must FAIL (via the ensuing NetBox 401/403 on any
+# call using it), never silently upgrade to the admin token (ADR-0032).
+netbox_api_token: "{{ vault_netbox_catalog_token | default('') }}"
 netbox_service_name: "nmos-cpp"
 netbox_service_tags:
   - name: "dmf-catalog"

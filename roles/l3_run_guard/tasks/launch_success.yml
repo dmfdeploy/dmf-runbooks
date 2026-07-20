@@ -1,0 +1,34 @@
+---
+# umbrella #202 WP3 R2a-3e/R2a-8 — invoked by the CALLING launch-*.yml
+# playbook (`include_role: name: l3_run_guard, tasks_from: launch_success`)
+# from its OWN block, immediately after its provision/install/configure
+# stage completes successfully. Terminalizes the snapshot
+# (status=run_complete) and releases the facility lock — the two things
+# that must ALWAYS happen together on the clean-success path, so the lock
+# is never left held once a run reaches a real terminal state.
+
+- name: "L3 launch success: lock checkpoint before the run_complete patch (R5a/P1-4 — no checkpoint existed here before this round; this fires after the caller's FULL provision/install/configure stage, easily the longest span in the whole flow)"
+  ansible.builtin.include_tasks: lock_checkpoint.yml
+
+- name: "L3 launch success: terminalize snapshot (status=run_complete)"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ l3_run_configmap_prefix }}{{ l3_run_id }}"
+        namespace: "{{ l3_lock_namespace }}"
+      data:
+        status: run_complete
+        completed_at: "{{ lookup('pipe', 'date +%s') }}"
+  when: l3_snapshot_created | default(false)
+
+- name: "L3 launch success: release the facility lock"
+  ansible.builtin.include_tasks: lock_release.yml
+
+- name: "L3 launch success: report"
+  ansible.builtin.debug:
+    msg: >-
+      L3 launch SUCCESS for run_id={{ l3_run_id }} — snapshot terminalized
+      (run_complete), facility lock released.

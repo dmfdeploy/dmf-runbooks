@@ -1,0 +1,1314 @@
+---
+# umbrella #202 WP3-A — L3 launcher capacity/lock/snapshot logic, offline
+# gates (the plan's own gate list). Exercises roles/l3_run_guard's filter
+# plugin functions directly with synthetic fixtures — no live cluster
+# required, mirroring tests/tag-preservation.yml's pattern.
+#
+# Run:  ansible-playbook tests/l3-budget-logic.yml
+
+- name: "umbrella #202 WP3-A — L3 launcher offline gates"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    _node_1cpu_2gi:
+      metadata:
+        name: node-1
+      status:
+        allocatable:
+          cpu: "1000m"
+          memory: "2Gi"
+
+    # A single-container pod shaped like the launcher's own AWX EE pod —
+    # bound to node-1, Running.
+    _ee_pod_250m_512mi:
+      spec:
+        nodeName: node-1
+        containers:
+          - resources:
+              requests:
+                cpu: "250m"
+                memory: "512Mi"
+      status:
+        phase: Running
+
+  tasks:
+    - name: Load l3_run_guard role (filter plugins + defaults only — see
+        tasks/filters_only.yml; this role's bare tasks/main.yml is the
+        REAL launch-playbook entry point and must never run from a test)
+      ansible.builtin.include_role:
+        name: l3_run_guard
+        tasks_from: filters_only
+
+    # ── Gate (a): NO-DOUBLE-COUNT ────────────────────────────────────────
+    # existing-demand fixture INCLUDES a running EE pod; ee_reserve is
+    # always {cpu_m:0, mem_b:0} (the plan §3.2 table — the EE's own
+    # footprint is already counted via the live pod scan, never ALSO
+    # subtracted separately). A demand that exactly fills the remaining
+    # headroom after the EE pod's own 250m/512Mi must still be FIT — a
+    # double-counting implementation (one that ALSO subtracts a nonzero
+    # ee_reserve, or subtracts the EE pod's footprint twice) would refuse.
+    - name: "(a) NO-DOUBLE-COUNT — compute existing demand incl. EE pod"
+      ansible.builtin.set_fact:
+        _gate_a_existing: "{{ [_ee_pod_250m_512mi] | l3_existing_demand('node-1') }}"
+
+    - name: "(a) NO-DOUBLE-COUNT — assertions on existing demand itself"
+      ansible.builtin.assert:
+        that:
+          - _gate_a_existing.cpu_m == 250
+          - _gate_a_existing.mem_b == (512 * 1024 * 1024)
+        fail_msg: "(a) existing demand miscounted the EE pod: {{ _gate_a_existing }}"
+
+    - name: "(a) NO-DOUBLE-COUNT — run demand that exactly fills remaining headroom"
+      ansible.builtin.set_fact:
+        # allocatable 1000m/2Gi - existing 250m/512Mi = 750m/1536Mi headroom.
+        _gate_a_run_demand:
+          cpu_m: 750
+          mem_b: "{{ (1536 * 1024 * 1024) | int }}"
+
+    - name: "(a) NO-DOUBLE-COUNT — evaluate fit (ee_reserve MUST be zero)"
+      ansible.builtin.set_fact:
+        _gate_a_fit: >-
+          {{
+            {'ok': true, 'name': 'node-1', 'cpu_m': 1000, 'mem_b': (2*1024*1024*1024)}
+            | l3_evaluate_fit(_gate_a_existing, {'cpu_m': 0, 'mem_b': 0}, _gate_a_run_demand)
+          }}
+
+    - name: "(a) NO-DOUBLE-COUNT — assert FIT (a double-count impl would refuse here)"
+      ansible.builtin.assert:
+        that:
+          - _gate_a_fit.verdict == 'fit'
+          - _gate_a_fit.headroom_cpu_m == 750
+          - _gate_a_fit.headroom_mem_b == (1536 * 1024 * 1024)
+        fail_msg: >-
+          (a) NO-DOUBLE-COUNT FAIL: expected FIT for a demand exactly filling
+          remaining headroom after the EE pod's own footprint — got
+          {{ _gate_a_fit.verdict }}. This is the exact shape a double-counting
+          implementation (subtracting the EE pod's footprint AND a nonzero
+          ee_reserve) would wrongly refuse. Got: {{ _gate_a_fit }}
+
+    # ── Gate (b): STATE-DRIFT SIM ────────────────────────────────────────
+    # A console-FIT-shaped fixture (the console's WP1 preflight said FIT
+    # based on its own Prometheus-derived supply snapshot) where a NEW pod
+    # has since appeared on the node — the launcher's live-spec recompute
+    # must catch it and refuse NO-FIT, with a legible shortfall line in
+    # the report (not just a bare verdict).
+    - name: "(b) STATE-DRIFT — a second pod appeared since the console's own preflight"
+      ansible.builtin.set_fact:
+        _gate_b_pods:
+          - "{{ _ee_pod_250m_512mi }}"
+          - spec:
+              nodeName: node-1
+              containers:
+                - resources:
+                    requests:
+                      cpu: "600m"
+                      memory: "1200Mi"
+            status:
+              phase: Running
+
+    - name: "(b) STATE-DRIFT — recompute existing demand (now includes the drifted pod)"
+      ansible.builtin.set_fact:
+        _gate_b_existing: "{{ _gate_b_pods | l3_existing_demand('node-1') }}"
+
+    - name: "(b) STATE-DRIFT — the SAME run demand the console thought would fit"
+      ansible.builtin.set_fact:
+        _gate_b_run_demand:
+          cpu_m: 750
+          mem_b: "{{ (1536 * 1024 * 1024) | int }}"
+
+    - name: "(b) STATE-DRIFT — evaluate fit against the drifted live state"
+      ansible.builtin.set_fact:
+        _gate_b_fit: >-
+          {{
+            {'ok': true, 'name': 'node-1', 'cpu_m': 1000, 'mem_b': (2*1024*1024*1024)}
+            | l3_evaluate_fit(_gate_b_existing, {'cpu_m': 0, 'mem_b': 0}, _gate_b_run_demand)
+          }}
+
+    - name: "(b) STATE-DRIFT — assert NO-FIT with a legible shortfall line"
+      ansible.builtin.assert:
+        that:
+          - _gate_b_fit.verdict == 'no-fit'
+          - "'shortfall:' in _gate_b_fit.report"
+          - "'cpu=' in _gate_b_fit.report"
+          - "'mem=' in _gate_b_fit.report"
+        fail_msg: >-
+          (b) STATE-DRIFT FAIL: expected NO-FIT with a shortfall line once a
+          new pod appeared since the console's own (now-stale) FIT verdict —
+          got {{ _gate_b_fit.verdict }}. Report: {{ _gate_b_fit.report }}
+
+    # ── Gate (c): REAL cumulative-prefix algorithm (R2a-6b, codex round-1
+    #    P1-6b — replaces the WP3-A draft's "sequential-max vs
+    #    concurrent-sum" approximation, which silently UNDER-counted
+    #    whenever a sequential init container followed a restartable
+    #    sidecar). ORDER-SENSITIVE by construction: only restartable inits
+    #    BEFORE a given index contribute to that index's running prefix —
+    #    codex's exact repro, fixtured in BOTH declaration orders. ────────
+    #
+    # Order A: sidecar (200m) THEN sequential (900m), app 100m.
+    #   InitContainerUse(0, sidecar)     = 0          + 200 = 200
+    #   InitContainerUse(1, sequential)  = 200(before) + 900 = 1100  <- max
+    #   reqs = app(100) + total_restartable(200) = 300
+    #   pod_demand = max(300, 1100) = 1100m  (the WP3-A draft returned 900m
+    #   here — it never added the sidecar's concurrent cost to the LATER
+    #   sequential init's own peak at all).
+    - name: "(c) cumulative-prefix — Order A: sidecar THEN sequential"
+      ansible.builtin.set_fact:
+        _gate_c_order_a_pod:
+          spec:
+            containers:
+              - resources:
+                  requests: {cpu: "100m", memory: "100Mi"}
+            initContainers:
+              - restartPolicy: Always
+                resources:
+                  requests: {cpu: "200m", memory: "200Mi"}
+              - resources:
+                  requests: {cpu: "900m", memory: "900Mi"}
+                # no restartPolicy key -> regular sequential init container
+
+    - name: "(c) cumulative-prefix — Order A: compute + assert"
+      ansible.builtin.set_fact:
+        _gate_c_order_a_demand: "{{ _gate_c_order_a_pod | l3_pod_demand }}"
+
+    - name: "(c) cumulative-prefix — Order A assertions"
+      ansible.builtin.assert:
+        that:
+          - _gate_c_order_a_demand.cpu_m == 1100
+          - _gate_c_order_a_demand.mem_b == (1100 * 1024 * 1024)
+          - _gate_c_order_a_demand.all_containers_budgeted
+          # Discriminate against the WP3-A draft's approximation, which
+          # returned 900m for this EXACT fixture (codex's own repro).
+          - _gate_c_order_a_demand.cpu_m != 900
+        fail_msg: >-
+          (c) cumulative-prefix Order A FAIL: expected cpu_m=1100
+          (InitContainerUse(sequential) = 200 restartable-before-it + 900
+          own = 1100, beats app+restartable-total=300) — got
+          {{ _gate_c_order_a_demand }}. 900m is the WP3-A draft's known-bad
+          answer for this exact fixture (codex's repro).
+
+    # Order B: sequential (900m) THEN sidecar (200m), app 100m — the SAME
+    # request values, reversed declaration order, must give a DIFFERENT
+    # total (900m, not 1100m) — proving the algorithm is genuinely
+    # order-sensitive, not just "sum everything" in disguise.
+    #   InitContainerUse(0, sequential) = 0        + 900 = 900   <- max
+    #   InitContainerUse(1, sidecar)    = 0(before) + 200 = 200
+    #   reqs = app(100) + total_restartable(200) = 300
+    #   pod_demand = max(300, 900) = 900m
+    - name: "(c) cumulative-prefix — Order B: sequential THEN sidecar (reversed)"
+      ansible.builtin.set_fact:
+        _gate_c_order_b_pod:
+          spec:
+            containers:
+              - resources:
+                  requests: {cpu: "100m", memory: "100Mi"}
+            initContainers:
+              - resources:
+                  requests: {cpu: "900m", memory: "900Mi"}
+              - restartPolicy: Always
+                resources:
+                  requests: {cpu: "200m", memory: "200Mi"}
+
+    - name: "(c) cumulative-prefix — Order B: compute + assert"
+      ansible.builtin.set_fact:
+        _gate_c_order_b_demand: "{{ _gate_c_order_b_pod | l3_pod_demand }}"
+
+    - name: "(c) cumulative-prefix — Order B assertions (order-sensitivity proof)"
+      ansible.builtin.assert:
+        that:
+          - _gate_c_order_b_demand.cpu_m == 900
+          - _gate_c_order_b_demand.mem_b == (900 * 1024 * 1024)
+          - _gate_c_order_b_demand.all_containers_budgeted
+          # The defining proof: identical request values, reversed order,
+          # DIFFERENT totals (1100 vs 900) — the algorithm is genuinely
+          # order-sensitive, not a reorder-invariant sum.
+          - _gate_c_order_a_demand.cpu_m != _gate_c_order_b_demand.cpu_m
+        fail_msg: >-
+          (c) cumulative-prefix Order B FAIL: expected cpu_m=900 (the
+          sidecar, declared AFTER the sequential init, contributes nothing
+          to the sequential one's own peak) — got
+          {{ _gate_c_order_b_demand }}. Order A and B must differ
+          (1100 vs 900) to prove order-sensitivity; got A={{ _gate_c_order_a_demand.cpu_m }}
+          B={{ _gate_c_order_b_demand.cpu_m }}.
+
+    # ── Gate (d): missing-budget ─────────────────────────────────────────
+    - name: "(d) missing-budget — a rendered chart with no resource requests at all"
+      ansible.builtin.set_fact:
+        _gate_d_manifests:
+          - apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: no-budget-app
+            spec:
+              replicas: 1
+              template:
+                spec:
+                  containers:
+                    - name: app
+                      image: example/no-budget:latest
+                      # no resources block at all
+
+    - name: "(d) missing-budget — compute render demand"
+      ansible.builtin.set_fact:
+        _gate_d_demand: "{{ _gate_d_manifests | l3_render_demand }}"
+
+    - name: "(d) missing-budget — assert has_requests is False"
+      ansible.builtin.assert:
+        that:
+          - not _gate_d_demand.has_requests
+          - _gate_d_demand.cpu_m == 0
+          - _gate_d_demand.mem_b == 0
+        fail_msg: "(d) missing-budget FAIL: expected has_requests=False, got {{ _gate_d_demand }}"
+
+    - name: "(d) missing-budget — a chart WITH requests must NOT trip this gate"
+      ansible.builtin.set_fact:
+        _gate_d_ok_manifests:
+          - apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: has-budget-app
+            spec:
+              replicas: 2
+              template:
+                spec:
+                  containers:
+                    - name: app
+                      resources:
+                        requests:
+                          cpu: "100m"
+                          memory: "128Mi"
+
+    - name: "(d) missing-budget — assert has_requests True + replica multiplication"
+      ansible.builtin.assert:
+        that:
+          - (_gate_d_ok_manifests | l3_render_demand).has_requests
+          - (_gate_d_ok_manifests | l3_render_demand).cpu_m == 200
+          - (_gate_d_ok_manifests | l3_render_demand).mem_b == (256 * 1024 * 1024)
+        fail_msg: >-
+          (d) missing-budget FAIL (positive case): expected 2 replicas ×
+          100m/128Mi = 200m/256Mi, got {{ _gate_d_ok_manifests | l3_render_demand }}
+
+    # ── R2a-6a: FAIL-CLOSED per-container — codex's exact repro: one fully
+    #    budgeted container next to one bare container in the SAME pod
+    #    template must still refuse missing-budget. The WP3-A draft's rule
+    #    ("has_requests = any nonzero total across the whole manifest") was
+    #    blind to this — the budgeted container's nonzero sum masked the
+    #    bare one entirely. ──────────────────────────────────────────────
+    - name: "(d) R2a-6a fail-closed — one budgeted + one bare container (codex's exact repro)"
+      ansible.builtin.set_fact:
+        _gate_d_partial_manifests:
+          - apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: partially-budgeted-app
+            spec:
+              replicas: 1
+              template:
+                spec:
+                  containers:
+                    - name: budgeted
+                      resources:
+                        requests: {cpu: "100m", memory: "100Mi"}
+                    - name: bare
+                      # no resources block at all — this ALONE must trip
+                      # missing-budget even though the sibling container
+                      # above is fully budgeted.
+
+    - name: "(d) R2a-6a fail-closed — assert has_requests is False (never masked by the sibling)"
+      ansible.builtin.assert:
+        that:
+          - not (_gate_d_partial_manifests | l3_render_demand).has_requests
+        fail_msg: >-
+          (d) R2a-6a fail-closed FAIL: a bare container next to a fully
+          budgeted one must still refuse missing-budget — got
+          {{ _gate_d_partial_manifests | l3_render_demand }}. This is the
+          exact shape the WP3-A draft's "any nonzero total" rule missed
+          entirely (codex's repro).
+
+    - name: "(d) R2a-6a fail-closed — a container with ONLY cpu (no memory) also trips it"
+      ansible.builtin.set_fact:
+        _gate_d_cpu_only_manifests:
+          - apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: cpu-only-app
+            spec:
+              replicas: 1
+              template:
+                spec:
+                  containers:
+                    - name: cpu-only
+                      resources:
+                        requests: {cpu: "100m"}
+                        # memory request entirely absent
+
+    - name: "(d) R2a-6a fail-closed — assert cpu-only-but-no-memory also refuses (BOTH required)"
+      ansible.builtin.assert:
+        that:
+          - not (_gate_d_cpu_only_manifests | l3_render_demand).has_requests
+        fail_msg: >-
+          (d) R2a-6a fail-closed FAIL: a container with cpu but no memory
+          request must still refuse missing-budget (BOTH required, not
+          either/or) — got {{ _gate_d_cpu_only_manifests | l3_render_demand }}
+
+    - name: "(d) R2a-6a fail-closed — an EXPLICIT zero request still counts as present (fail-closed cares about presence, not magnitude)"
+      ansible.builtin.set_fact:
+        _gate_d_explicit_zero_manifests:
+          - apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: explicit-zero-app
+            spec:
+              replicas: 1
+              template:
+                spec:
+                  containers:
+                    - name: explicit-zero
+                      resources:
+                        requests: {cpu: "0", memory: "0"}
+
+    - name: "(d) R2a-6a fail-closed — assert explicit-zero passes (has_requests True, demand 0)"
+      ansible.builtin.assert:
+        that:
+          - (_gate_d_explicit_zero_manifests | l3_render_demand).has_requests
+          - (_gate_d_explicit_zero_manifests | l3_render_demand).cpu_m == 0
+        fail_msg: >-
+          (d) R2a-6a fail-closed FAIL: an explicit "0" request IS present
+          (parseable) and must NOT trip missing-budget — got
+          {{ _gate_d_explicit_zero_manifests | l3_render_demand }}
+
+    # ── Gate (d2): R4a/P2-1 — replica/parallelism accounting ─────────────
+    - name: "(d2) zero-replica — codex's exact repro: a zero-scaled Deployment must charge ZERO, never floored to 1x"
+      ansible.builtin.set_fact:
+        _gate_d2_zero_replica_manifests:
+          - apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: zero-scaled-app
+            spec:
+              replicas: 0
+              template:
+                spec:
+                  containers:
+                    - name: app
+                      resources:
+                        requests: {cpu: "100m", memory: "64Mi"}
+
+    - name: "(d2) zero-replica — assertion"
+      ansible.builtin.assert:
+        that:
+          - (_gate_d2_zero_replica_manifests | l3_render_demand).has_requests
+          - (_gate_d2_zero_replica_manifests | l3_render_demand).cpu_m == 0
+          - (_gate_d2_zero_replica_manifests | l3_render_demand).mem_b == 0
+        fail_msg: >-
+          (d2) zero-replica FAIL — codex's exact repro: a direct probe
+          charged 100m/64Mi to a zero-scaled Deployment (max(1,·) flooring
+          bug) — got {{ _gate_d2_zero_replica_manifests | l3_render_demand }}
+
+    - name: "(d2) Job parallelism — a parallelism:3 Job must charge 3x, never hardcoded to 1 pod"
+      ansible.builtin.set_fact:
+        _gate_d2_parallel_job_manifests:
+          - apiVersion: batch/v1
+            kind: Job
+            metadata:
+              name: parallel-job
+            spec:
+              parallelism: 3
+              template:
+                spec:
+                  containers:
+                    - name: worker
+                      resources:
+                        requests: {cpu: "100m", memory: "64Mi"}
+
+    - name: "(d2) Job parallelism — assertion (3 * 100m = 300m, 3 * 64Mi)"
+      ansible.builtin.assert:
+        that:
+          - (_gate_d2_parallel_job_manifests | l3_render_demand).cpu_m == 300
+          - (_gate_d2_parallel_job_manifests | l3_render_demand).mem_b == (3 * 64 * 1024 * 1024)
+        fail_msg: >-
+          (d2) Job parallelism FAIL — a Job's spec.parallelism must be
+          respected, not hardcoded to 1 pod — got
+          {{ _gate_d2_parallel_job_manifests | l3_render_demand }}
+
+    - name: "(d2) CronJob parallelism — read from spec.jobTemplate.spec.parallelism, defaulting to 1"
+      ansible.builtin.set_fact:
+        _gate_d2_cronjob_manifests:
+          - apiVersion: batch/v1
+            kind: CronJob
+            metadata:
+              name: scheduled-job
+            spec:
+              schedule: "*/5 * * * *"
+              jobTemplate:
+                spec:
+                  parallelism: 2
+                  template:
+                    spec:
+                      containers:
+                        - name: worker
+                          resources:
+                            requests: {cpu: "100m", memory: "64Mi"}
+
+    - name: "(d2) CronJob parallelism — assertion (2 * 100m = 200m)"
+      ansible.builtin.assert:
+        that:
+          - (_gate_d2_cronjob_manifests | l3_render_demand).cpu_m == 200
+        fail_msg: >-
+          (d2) CronJob parallelism FAIL — got
+          {{ _gate_d2_cronjob_manifests | l3_render_demand }}
+
+    - name: "(d2) unsupported shape — a negative replicas value must fail closed (missing-budget), never silently coerced"
+      ansible.builtin.set_fact:
+        _gate_d2_negative_replicas_manifests:
+          - apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: bad-replicas-app
+            spec:
+              replicas: -1
+              template:
+                spec:
+                  containers:
+                    - name: app
+                      resources:
+                        requests: {cpu: "100m", memory: "64Mi"}
+
+    - name: "(d2) unsupported shape — assertion (has_requests False -> capacity.yml's own missing-budget refusal fires)"
+      ansible.builtin.assert:
+        that:
+          - not (_gate_d2_negative_replicas_manifests | l3_render_demand).has_requests
+        fail_msg: >-
+          (d2) unsupported shape FAIL — a negative replicas value must
+          fail closed (missing-budget), never be silently accepted — got
+          {{ _gate_d2_negative_replicas_manifests | l3_render_demand }}
+
+    # ── Gate (e): lock logic (pure part) ─────────────────────────────────
+    - name: "(e) lock — no existing lock -> create"
+      ansible.builtin.set_fact:
+        _gate_e_create_none: "{{ None | l3_lock_decision(1000, 3600) }}"
+        _gate_e_create_empty: "{{ {} | l3_lock_decision(1000, 3600) }}"
+
+    - name: "(e) lock — assert absent/empty lock decides 'create'"
+      ansible.builtin.assert:
+        that:
+          - _gate_e_create_none.action == 'create'
+          - _gate_e_create_empty.action == 'create'
+        fail_msg: >-
+          (e) lock FAIL: absent/empty lock must decide 'create'. Got:
+          none={{ _gate_e_create_none }} empty={{ _gate_e_create_empty }}
+
+    - name: "(e) lock — held, within TTL -> refuse"
+      ansible.builtin.set_fact:
+        _gate_e_refuse: >-
+          {{
+            {'created_at': '1000', 'holder': 'job-42', 'run_id': 'a'*32}
+            | l3_lock_decision(1000 + 100, 3600)
+          }}
+
+    - name: "(e) lock — assert refuse with holder/run_id/age surfaced"
+      ansible.builtin.assert:
+        that:
+          - _gate_e_refuse.action == 'refuse'
+          - _gate_e_refuse.holder == 'job-42'
+          - _gate_e_refuse.run_id == 'a' * 32
+          - _gate_e_refuse.age_seconds == 100
+        fail_msg: "(e) lock FAIL (held/refuse): {{ _gate_e_refuse }}"
+
+    - name: "(e) lock — held, TTL exceeded -> reclaim"
+      ansible.builtin.set_fact:
+        _gate_e_reclaim: >-
+          {{
+            {'created_at': '1000', 'holder': 'job-13', 'run_id': 'b'*32}
+            | l3_lock_decision(1000 + 3601, 3600)
+          }}
+
+    - name: "(e) lock — assert reclaim with stale holder/age surfaced"
+      ansible.builtin.assert:
+        that:
+          - _gate_e_reclaim.action == 'reclaim'
+          - _gate_e_reclaim.stale_holder == 'job-13'
+          - _gate_e_reclaim.age_seconds == 3601
+        fail_msg: "(e) lock FAIL (TTL reclaim): {{ _gate_e_reclaim }}"
+
+    - name: "(e) lock — TTL boundary is exclusive (exactly at TTL is still held, not reclaimed)"
+      ansible.builtin.set_fact:
+        _gate_e_boundary: >-
+          {{
+            {'created_at': '1000', 'holder': 'x', 'run_id': 'y'}
+            | l3_lock_decision(1000 + 3600, 3600)
+          }}
+
+    - name: "(e) lock — assert boundary decision"
+      ansible.builtin.assert:
+        that:
+          - _gate_e_boundary.action == 'refuse'
+        fail_msg: >-
+          (e) lock FAIL: age == ttl_seconds exactly must still be 'refuse',
+          not 'reclaim' (strictly greater-than). Got: {{ _gate_e_boundary }}
+
+    # ── Gate (f): snapshot diff shape ────────────────────────────────────
+    - name: "(f) snapshot classification — fixture: current run + a dead in-progress run + a clean completed run"
+      ansible.builtin.set_fact:
+        _gate_f_run_id: "{{ 'c' * 32 }}"
+        _gate_f_cms:
+          - metadata:
+              name: "dmf-run-{{ 'c' * 32 }}"
+              labels:
+                dmf.io/run-id: "{{ 'c' * 32 }}"
+            data:
+              status: in-progress
+          - metadata:
+              name: "dmf-run-{{ 'd' * 32 }}"
+              labels:
+                dmf.io/run-id: "{{ 'd' * 32 }}"
+            data:
+              status: in-progress
+          - metadata:
+              name: "dmf-run-{{ 'e' * 32 }}"
+              labels:
+                dmf.io/run-id: "{{ 'e' * 32 }}"
+            data:
+              status: superseded
+          - metadata:
+              name: "dmf-run-{{ 'f' * 32 }}"
+              labels:
+                dmf.io/run-id: "{{ 'f' * 32 }}"
+            data:
+              status: failed_rollback_required
+          - metadata:
+              name: "dmf-run-{{ 'g' * 32 }}"
+              labels:
+                dmf.io/run-id: "{{ 'g' * 32 }}"
+            data:
+              status: rollback_incomplete
+          - metadata:
+              name: "dmf-run-{{ 'h' * 32 }}"
+              labels:
+                dmf.io/run-id: "{{ 'h' * 32 }}"
+            data:
+              status: run_complete
+
+    - name: "(f) snapshot classification — classify"
+      ansible.builtin.set_fact:
+        _gate_f_result: "{{ _gate_f_cms | l3_classify_run_records(_gate_f_run_id) }}"
+
+    - name: "(f) snapshot classification — assertions (R3a-5: widened to ALL rollback-eligible statuses)"
+      ansible.builtin.assert:
+        that:
+          - _gate_f_result.current.metadata.name == ('dmf-run-' ~ ('c' * 32))
+          - _gate_f_result.supersede_candidates | length == 3
+          - (_gate_f_result.supersede_candidates | map(attribute='metadata.name') | list) == [
+              'dmf-run-' ~ ('d' * 32), 'dmf-run-' ~ ('f' * 32), 'dmf-run-' ~ ('g' * 32)
+            ]
+        fail_msg: >-
+          (f) snapshot classification FAIL: expected current=the run itself,
+          supersede_candidates=[in-progress, failed_rollback_required,
+          rollback_incomplete records — R3a-5 widened set] — the
+          already-superseded AND run_complete ones must NOT be
+          re-classified (superseded is already terminal; run_complete has
+          nothing to supersede FOR). Got: {{ _gate_f_result }}
+
+    # ═════════════════════════════════════════════════════════════════════
+    # umbrella #202 WP3-B — rollback-run offline gates
+    # ═════════════════════════════════════════════════════════════════════
+
+    # ── Gate (g): snapshot-refusal classification table ─────────────────
+    - name: "(g) snapshot refusal — full classification table"
+      ansible.builtin.assert:
+        that:
+          - (None | l3_snapshot_refusal) == 'no-snapshot'
+          - ('run_complete' | l3_snapshot_refusal) == 'stale-snapshot'
+          - ('rollback_complete' | l3_snapshot_refusal) == 'stale-snapshot'
+          - ('superseded' | l3_snapshot_refusal) == 'stale-snapshot'
+          - ('in-progress' | l3_snapshot_refusal) is none
+          - ('failed_rollback_required' | l3_snapshot_refusal) is none
+          - ('rollback_incomplete' | l3_snapshot_refusal) is none
+          # An unrecognized status must fail closed, never silently proceed.
+          - ('some-future-status-this-role-does-not-know' | l3_snapshot_refusal) == 'stale-snapshot'
+        fail_msg: "(g) snapshot refusal classification table FAIL"
+
+    # ── Gate (h): release-set diff (§4.4) ────────────────────────────────
+    - name: "(h) release diff — run-created release identified, pre-existing excluded"
+      ansible.builtin.set_fact:
+        _gate_h_pre:
+          mxl: [{name: mxl-videotestsrc}]
+          nmos: []
+        _gate_h_current:
+          mxl: [{name: mxl-videotestsrc}, {name: mxl-videotest-view}]
+          nmos: [{name: nmos-cpp}]
+
+    - name: "(h) release diff — compute"
+      ansible.builtin.set_fact:
+        _gate_h_diff: "{{ _gate_h_pre | l3_releases_to_remove(_gate_h_current) }}"
+        _gate_h_flat: "{{ (_gate_h_pre | l3_releases_to_remove(_gate_h_current)) | l3_flatten_releases_to_remove }}"
+
+    - name: "(h) release diff — expected flat-list membership facts"
+      ansible.builtin.set_fact:
+        _gate_h_expected_mxl: "{{ {'namespace': 'mxl', 'release': 'mxl-videotest-view'} }}"
+        _gate_h_expected_nmos: "{{ {'namespace': 'nmos', 'release': 'nmos-cpp'} }}"
+
+    - name: "(h) release diff — assertions"
+      ansible.builtin.assert:
+        that:
+          - _gate_h_diff.mxl | map(attribute='name') | list == ['mxl-videotest-view']
+          - _gate_h_diff.nmos | map(attribute='name') | list == ['nmos-cpp']
+          - _gate_h_flat | length == 2
+          - _gate_h_expected_mxl in _gate_h_flat
+          - _gate_h_expected_nmos in _gate_h_flat
+          # The pre-existing mxl-videotestsrc must NEVER appear as removable.
+          - "'mxl-videotestsrc' not in (_gate_h_flat | map(attribute='release') | list)"
+        fail_msg: "(h) release diff FAIL: {{ _gate_h_diff }}"
+
+    # ── Gate (i): R2a-7 §4.6-honest — monitoring ALWAYS dirty,
+    #    rollback_complete STRUCTURALLY UNREACHABLE in WP3 ─────────────────
+    - name: "(i) rollback outcome — helm+netbox both CLEAN — monitoring still makes it incomplete (R2a-7)"
+      ansible.builtin.set_fact:
+        _gate_i_both_clean: "{{ false | l3_rollback_outcome(false) }}"
+
+    - name: "(i) rollback outcome — helm dirty only"
+      ansible.builtin.set_fact:
+        _gate_i_helm_dirty: "{{ true | l3_rollback_outcome(false) }}"
+
+    - name: "(i) rollback outcome — netbox dirty only"
+      ansible.builtin.set_fact:
+        _gate_i_netbox_dirty: "{{ false | l3_rollback_outcome(true) }}"
+
+    - name: "(i) rollback outcome — both dirty"
+      ansible.builtin.set_fact:
+        _gate_i_both_dirty: "{{ true | l3_rollback_outcome(true) }}"
+
+    - name: "(i) rollback outcome — assertions (R2a-7: rollback_complete is UNREACHABLE, monitoring always present)"
+      ansible.builtin.assert:
+        that:
+          # The defining R2a-7 proof: even when BOTH readback-verified
+          # surfaces are clean, the verdict is STILL rollback_incomplete —
+          # monitoring is unverifiable from this EE and is ALWAYS reported.
+          - _gate_i_both_clean.verdict == 'rollback_incomplete'
+          - _gate_i_both_clean.surfaces == ['monitoring']
+          - _gate_i_helm_dirty.verdict == 'rollback_incomplete'
+          - _gate_i_helm_dirty.surfaces == ['helm', 'monitoring']
+          - _gate_i_netbox_dirty.verdict == 'rollback_incomplete'
+          - _gate_i_netbox_dirty.surfaces == ['netbox', 'monitoring']
+          - _gate_i_both_dirty.verdict == 'rollback_incomplete'
+          - _gate_i_both_dirty.surfaces == ['helm', 'netbox', 'monitoring']
+          # rollback_complete must NEVER appear as a verdict, on ANY input —
+          # grep-provable structural unreachability (R2a-7's own framing).
+          - _gate_i_both_clean.verdict != 'rollback_complete'
+          - _gate_i_helm_dirty.verdict != 'rollback_complete'
+          - _gate_i_netbox_dirty.verdict != 'rollback_complete'
+          - _gate_i_both_dirty.verdict != 'rollback_complete'
+        fail_msg: >-
+          (i) rollback outcome FAIL: both_clean={{ _gate_i_both_clean }}
+          helm_dirty={{ _gate_i_helm_dirty }} netbox_dirty={{ _gate_i_netbox_dirty }}
+          both_dirty={{ _gate_i_both_dirty }}. R2a-7 requires monitoring
+          ALWAYS present and rollback_complete NEVER reachable.
+
+    # ── Gate (j): lock decision — TTL-ONLY (R2a-3b: same-run-residue
+    #    reclaim REMOVED entirely — l3_lock_decision no longer takes a
+    #    current_run_id parameter at all; a 4-arg call now raises a
+    #    TypeError, which is itself the strongest possible proof the
+    #    carve-out is gone, not just behaviorally disabled). ───────────────
+    - name: "(j) lock — held by ANY run_id (including a hypothetical 'same' one) within TTL ALWAYS refuses now"
+      ansible.builtin.set_fact:
+        _gate_j_within_ttl: >-
+          {{
+            {'created_at': '1000', 'holder': 'job-old', 'holder_attempt_id': 'attempt-1', 'run_id': 'f' * 32}
+            | l3_lock_decision(1000 + 5, 3600)
+          }}
+
+    - name: "(j) lock — within-TTL assertion (refuse, no reclaim branch exists anymore)"
+      ansible.builtin.assert:
+        that:
+          - _gate_j_within_ttl.action == 'refuse'
+          - _gate_j_within_ttl.holder == 'job-old'
+          - _gate_j_within_ttl.run_id == 'f' * 32
+        fail_msg: >-
+          (j) lock FAIL: R2a-3b removed same-run-residue reclaim entirely —
+          EVERY within-TTL hold must refuse now, regardless of who holds
+          it. Got: {{ _gate_j_within_ttl }}
+
+    - name: "(j) lock — TTL-expired reclaim now carries stale_attempt_id (R2a-3a/c)"
+      ansible.builtin.set_fact:
+        _gate_j_ttl_expired: >-
+          {{
+            {'created_at': '1000', 'holder': 'job-13', 'holder_attempt_id': 'attempt-stale', 'run_id': 'b' * 32}
+            | l3_lock_decision(1000 + 3601, 3600)
+          }}
+
+    - name: "(j) lock — TTL-expired reclaim assertions"
+      ansible.builtin.assert:
+        that:
+          - _gate_j_ttl_expired.action == 'reclaim'
+          - _gate_j_ttl_expired.reason == 'ttl-expired'
+          - _gate_j_ttl_expired.stale_holder == 'job-13'
+          - _gate_j_ttl_expired.stale_attempt_id == 'attempt-stale'
+          - _gate_j_ttl_expired.age_seconds == 3601
+        fail_msg: "(j) lock TTL-expired-reclaim FAIL: {{ _gate_j_ttl_expired }}"
+
+    # ── Gate (k): R2a-1 — every label value this role writes is a legal
+    #    K8s label value; the ORIGINAL bug (combined "<key>/<release>")
+    #    must fail this validator (the regression proof). ─────────────────
+    - name: "(k) label validation — every value this role actually writes (post-fix) passes"
+      ansible.builtin.assert:
+        that:
+          - "'nmos-cpp' | l3_valid_label_value"
+          - "'mxl-videotestsrc' | l3_valid_label_value"
+          - "('f' * 32) | l3_valid_label_value"
+          - "'node-1' | l3_valid_label_value"
+          - "'12345' | l3_valid_label_value"
+          - "'direct' | l3_valid_label_value"
+          - "'' | l3_valid_label_value"
+        fail_msg: "(k) label validation FAIL — a legal value was rejected"
+
+    - name: "(k) label validation — REGRESSION: the ORIGINAL illegal combined value must fail (R2a-1's own bug)"
+      ansible.builtin.assert:
+        that:
+          - not ('nmos-cpp/nmos-cpp' | l3_valid_label_value)
+          - not ('mxl-videotestsrc/mxl-videotestsrc' | l3_valid_label_value)
+        fail_msg: >-
+          (k) label validation REGRESSION FAIL: a slash-containing combined
+          "<key>/<release>" value (the ORIGINAL P1-1 bug) must be rejected
+          by this validator — if it passes, the validator itself is
+          useless as a regression guard.
+
+    - name: "(k) label validation — other illegal shapes (leading/trailing dash, embedded space, too long)"
+      ansible.builtin.assert:
+        that:
+          - not ('-leading-dash' | l3_valid_label_value)
+          - not ('trailing-dash-' | l3_valid_label_value)
+          - not ('has space' | l3_valid_label_value)
+          - not (('x' * 64) | l3_valid_label_value)
+          - (('x' * 63) | l3_valid_label_value)
+        fail_msg: "(k) label validation FAIL — an illegal shape was accepted, or a legal boundary case was rejected"
+
+    # ── Gate (l): R2a-5 — by-ID classification, and the upstream
+    #    name-vs-tag snapshot-query regression (codex's own counterexample:
+    #    a pre-existing record missing app:<key> at snapshot time must
+    #    NEVER be classified run-created). ──────────────────────────────
+    - name: "(l) by-id classification — delete-then-recreate under the SAME name must be classified run-created, not restore"
+      ansible.builtin.set_fact:
+        _gate_l_pre_snapshot: [{id: 5, name: "mxl-videotestsrc", tags: [], custom_fields: {}}]
+        _gate_l_current_same_id: [{id: 5, name: "mxl-videotestsrc", tags: ["app:mxl-videotestsrc"], custom_fields: {}}]
+        _gate_l_current_new_id: [{id: 99, name: "mxl-videotestsrc", tags: ["app:mxl-videotestsrc"], custom_fields: {}}]
+
+    - name: "(l) by-id classification — same id -> restore; different id (same name) -> delete"
+      ansible.builtin.set_fact:
+        _gate_l_result_same_id: "{{ _gate_l_pre_snapshot | l3_netbox_records_to_restore_or_delete(_gate_l_current_same_id) }}"
+        _gate_l_result_new_id: "{{ _gate_l_pre_snapshot | l3_netbox_records_to_restore_or_delete(_gate_l_current_new_id) }}"
+
+    - name: "(l) by-id classification — assertions"
+      ansible.builtin.assert:
+        that:
+          - _gate_l_result_same_id.restore | length == 1
+          - _gate_l_result_same_id.delete | length == 0
+          - _gate_l_result_new_id.restore | length == 0
+          - _gate_l_result_new_id.delete | length == 1
+        fail_msg: >-
+          (l) by-id classification FAIL: same_id={{ _gate_l_result_same_id }}
+          new_id={{ _gate_l_result_new_id }}. A delete-then-recreate under
+          the SAME name (id changed) must be classified run-created
+          (delete), never restore — name-only comparison would get this
+          wrong.
+
+    - name: "(l) name-vs-tag snapshot-query REGRESSION — a pre-existing record present in the snapshot (by name-based capture) even though it carries NO app:<key> tag yet must restore, not delete"
+      ansible.builtin.set_fact:
+        # Simulates snapshot.yml's R2a-5 fix: captured by EXACT NAME
+        # (l3_catalog_key), so this record IS in the snapshot even though
+        # it hadn't been tagged app:<key> yet at snapshot time.
+        _gate_l_untagged_pre_snapshot: [{id: 7, name: "nmos-cpp", tags: [], custom_fields: {}}]
+        # By rollback time the tag has since been applied (a later stage
+        # stamped it) — same id, now tagged.
+        _gate_l_untagged_current: [{id: 7, name: "nmos-cpp", tags: ["app:nmos-cpp"], custom_fields: {}}]
+
+    - name: "(l) name-vs-tag regression — classify"
+      ansible.builtin.set_fact:
+        _gate_l_untagged_result: "{{ _gate_l_untagged_pre_snapshot | l3_netbox_records_to_restore_or_delete(_gate_l_untagged_current) }}"
+
+    - name: "(l) name-vs-tag regression — assertion (must restore, NEVER delete a pre-existing record)"
+      ansible.builtin.assert:
+        that:
+          - _gate_l_untagged_result.restore | length == 1
+          - _gate_l_untagged_result.delete | length == 0
+        fail_msg: >-
+          (l) name-vs-tag REGRESSION FAIL: {{ _gate_l_untagged_result }}. A
+          record present in a NAME-based snapshot capture (R2a-5) must
+          restore correctly even though it wasn't yet tagged app:<key> at
+          snapshot time — this is exactly the shape a TAG-based snapshot
+          query would have missed entirely (excluding it from the
+          snapshot, and thus wrongly classifying it run-created/deleted on
+          rollback). Contrast: had the OLD tag-based query been used, this
+          record would never have reached pre_run_netbox_surface at all —
+          see snapshot.yml's own header comment for the upstream half of
+          this fix (this gate only proves the downstream classification is
+          correct GIVEN a correct snapshot input).
+
+    # ── Gate (m): R2a-7 readback-authoritative dirty determination — the
+    #    helm-readback and netbox-restore-readback portions of this gate
+    #    were SUPERSEDED by R3a-7's gate (s) (exact owned-tag-set equality,
+    #    new 5-arg l3_netbox_restore_dirty signature) and R3a-8's gate (t)
+    #    (content-identity, new l3_helm_readback_dirty signature) — only
+    #    the still-signature-unchanged netbox-delete-readback check
+    #    remains here. ─────────────────────────────────────────────────────
+    - name: "(m) netbox delete readback — a DELETE call reported 204 but a fresh GET still returns 200 (not actually gone)"
+      ansible.builtin.assert:
+        that:
+          - not (404 | l3_netbox_delete_dirty(false))
+          - (200 | l3_netbox_delete_dirty(false))
+          # A failed read is ALWAYS dirty.
+          - (404 | l3_netbox_delete_dirty(true))
+        fail_msg: "(m) netbox delete readback FAIL — only an actual fresh 404 proves the record is gone"
+
+    # ── Gate (n): R2a-10iii — l3_request_id, when supplied, must fullmatch
+    #    hex-32 (the SAME regex identity.yml/rollback_identity.yml assert
+    #    against — proven here as a pure pattern-match table, since the
+    #    live task files can't run in this offline suite). ────────────────
+    - name: "(n) request_id hex32 — pattern table"
+      ansible.builtin.assert:
+        that:
+          - (('f' * 32) is match('^[0-9a-f]{32}$'))
+          - not (('F' * 32) is match('^[0-9a-f]{32}$'))
+          - not ((('f' * 31)) is match('^[0-9a-f]{32}$'))
+          - not ((('f' * 33)) is match('^[0-9a-f]{32}$'))
+          - not ('not-hex-at-all' is match('^[0-9a-f]{32}$'))
+          - not (('f' * 32 ~ '-extra') is match('^[0-9a-f]{32}$'))
+        fail_msg: "(n) request_id hex32 pattern table FAIL"
+
+    # ── Gate (o): R2a-3c preconditioned lock-release decision table ──────
+    - name: "(o) lock-release decision — no lock present (nothing to release)"
+      ansible.builtin.assert:
+        that:
+          - not (None | l3_lock_release_decision('attempt-1')).permitted
+          - (None | l3_lock_release_decision('attempt-1')).reason == 'no-lock-present'
+        fail_msg: "(o) lock-release decision FAIL (no lock present)"
+
+    - name: "(o) lock-release decision — fixtures"
+      ansible.builtin.set_fact:
+        _gate_o_owned_by_me: {holder_attempt_id: "attempt-1"}
+        _gate_o_owned_by_other: {holder_attempt_id: "attempt-2"}
+
+    - name: "(o) lock-release decision — owned by THIS attempt (permitted)"
+      ansible.builtin.assert:
+        that:
+          - (_gate_o_owned_by_me | l3_lock_release_decision('attempt-1')).permitted
+          - (_gate_o_owned_by_me | l3_lock_release_decision('attempt-1')).reason == 'owned-by-this-attempt'
+        fail_msg: "(o) lock-release decision FAIL (owned-by-this-attempt)"
+
+    - name: "(o) lock-release decision — owned by a DIFFERENT attempt (never delete someone else's lock)"
+      ansible.builtin.assert:
+        that:
+          - not (_gate_o_owned_by_other | l3_lock_release_decision('attempt-1')).permitted
+          - (_gate_o_owned_by_other | l3_lock_release_decision('attempt-1')).reason == 'owned-by-a-different-attempt'
+        fail_msg: "(o) lock-release decision FAIL (owned-by-a-different-attempt) — must never permit deleting a lock this attempt doesn't own"
+
+    # ── Gate (p): R3a-2 type coercion — codex's exact repro: an AWX-
+    #    injected INTEGER job id must render as a STRING in the manifest.
+    #    Simulated with a genuine Jinja-native int (not a string literal
+    #    that merely LOOKS like a number) to reproduce the whole-template
+    #    native-type substitution AWX's own awx_job_id triggers. ──────────
+    - name: "(p) type coercion — fixture: a genuine INTEGER (not a numeric string)"
+      ansible.builtin.set_fact:
+        _gate_p_int_job_id: 42
+
+    - name: "(p) type coercion — sanity: the fixture really is an int, not a string"
+      ansible.builtin.assert:
+        that:
+          - _gate_p_int_job_id | type_debug == 'int'
+        fail_msg: "(p) type coercion FAIL — the fixture itself isn't a genuine int, this gate proves nothing"
+
+    - name: "(p) type coercion — render a manifest data value the SAME way lock.yml/snapshot.yml now do"
+      ansible.builtin.set_fact:
+        _gate_p_manifest:
+          data:
+            holder: "{{ _gate_p_int_job_id | string }}"
+            uncoerced_would_be: "{{ _gate_p_int_job_id }}"
+
+    - name: "(p) type coercion — assertions (coerced == string '42'; uncoerced stays an int — proving the coercion is load-bearing)"
+      ansible.builtin.assert:
+        that:
+          - _gate_p_manifest.data.holder == '42'
+          - _gate_p_manifest.data.holder | type_debug == 'str'
+          - _gate_p_manifest.data.uncoerced_would_be | type_debug == 'int'
+        fail_msg: >-
+          (p) type coercion FAIL: expected the |string-coerced field to be
+          the STRING '42' — got {{ _gate_p_manifest.data.holder }}
+          ({{ _gate_p_manifest.data.holder | type_debug }}). The
+          uncoerced sibling field staying an int proves this fixture
+          genuinely exercises Ansible's native-type substitution (the
+          exact AWX awx_job_id bug), not a string that merely looked
+          numeric already.
+
+    - name: "(p) type gate — l3_valid_label_value accepts the coerced string form"
+      ansible.builtin.assert:
+        that:
+          - "'42' | l3_valid_label_value"
+        fail_msg: "(p) type gate FAIL — a coerced numeric string must still be a legal label value"
+
+    # ── Gate (q): REMOVED (R4a/P1-6) — l3_snapshot_collision_resumable and
+    #    its "resumable retry" classification are gone entirely. Every
+    #    snapshot-CREATE 409 is now a fail-closed collision, full stop; see
+    #    snapshot.yml's own header comment and _snapshot_create_one_attempt.yml
+    #    for the control-flow-level replacement (a task-file execution test,
+    #    not a pure-filter one — codex round-3's own point that a pure-filter
+    #    gate proves nothing about task-file behavior).
+
+    # ── Gate (q2): R4a/P1-10 — l3_filter_owned_custom_fields keeps only
+    #    L3-owned monitoring keys, preserving non-owned fields as-current
+    #    by simply never including them in the PATCH payload at all ──────
+    - name: "(q2) owned custom_fields — codex's exact repro: a non-owned field must NEVER be in the filtered/PATCHed subset"
+      ansible.builtin.set_fact:
+        _gate_q2_snapshot_cf:
+          probe_module: blackbox
+          probe_path: /probe
+          cluster_service: nmos-cpp
+          cluster_namespace: nmos
+          cluster_port: 8080
+          some_other_operator_owned_field: keep-me-current
+
+    - name: "(q2) owned custom_fields — filtered result excludes the non-owned field, keeps every owned one"
+      ansible.builtin.set_fact:
+        _gate_q2_expected:
+          probe_module: blackbox
+          probe_path: /probe
+          cluster_service: nmos-cpp
+          cluster_namespace: nmos
+          cluster_port: 8080
+
+    - name: "(q2) owned custom_fields — assertion"
+      ansible.builtin.assert:
+        that:
+          - (_gate_q2_snapshot_cf | l3_filter_owned_custom_fields(['probe_module', 'probe_path', 'cluster_service', 'cluster_namespace', 'cluster_port'])) == _gate_q2_expected
+        fail_msg: >-
+          (q2) owned custom_fields FAIL — a non-owned field must never
+          survive the filter (it would otherwise overwrite current state
+          with a stale snapshot value); every L3-owned monitoring key
+          present in the snapshot must survive it.
+
+    - name: "(q2) owned custom_fields — sparse fixture: a snapshot with only ONE owned key present"
+      ansible.builtin.set_fact:
+        _gate_q2_sparse: {probe_module: blackbox}
+
+    - name: "(q2) owned custom_fields — sparse assertion (never invents a null for an owned key the input didn't have)"
+      ansible.builtin.assert:
+        that:
+          - (_gate_q2_sparse | l3_filter_owned_custom_fields(['probe_module', 'probe_path', 'cluster_service', 'cluster_namespace', 'cluster_port'])) == _gate_q2_sparse
+        fail_msg: "(q2) owned custom_fields FAIL — filtering must never add keys the input didn't have"
+
+    # ── Gate (r): R3a-7 NetBox — snapshot-id-absent -> dirty (missing list),
+    #    and same-name-different-id (both missing AND delete fire) ────────
+    - name: "(r) netbox missing — codex's exact repro: snapshot=[{id:1,name:x}], current=[] -> restore=[], delete=[], missing=[the snapshot record]"
+      ansible.builtin.set_fact:
+        _gate_r_snapshot_only: [{id: 1, name: "x", tags: [], custom_fields: {}}]
+        _gate_r_current_empty: []
+
+    - name: "(r) netbox missing — classify"
+      ansible.builtin.set_fact:
+        _gate_r_result: "{{ _gate_r_snapshot_only | l3_netbox_records_to_restore_or_delete(_gate_r_current_empty) }}"
+
+    - name: "(r) netbox missing — assertions"
+      ansible.builtin.assert:
+        that:
+          - _gate_r_result.restore | length == 0
+          - _gate_r_result.delete | length == 0
+          - _gate_r_result.missing | length == 1
+          - _gate_r_result.missing[0].id == 1
+        fail_msg: >-
+          (r) netbox missing FAIL: {{ _gate_r_result }}. codex's exact
+          repro — an empty current list against a non-empty snapshot must
+          surface the snapshot record as UNRESTORABLE (missing), not
+          silently report clean.
+
+    - name: "(r) netbox missing — same-name-different-id: OLD id missing (dirty) EVEN AS the NEW id is deleted"
+      ansible.builtin.set_fact:
+        _gate_r_same_name_snapshot: [{id: 1, name: "x", tags: [], custom_fields: {}}]
+        _gate_r_same_name_current: [{id: 2, name: "x", tags: [], custom_fields: {}}]
+
+    - name: "(r) netbox missing — same-name-different-id classify"
+      ansible.builtin.set_fact:
+        _gate_r_same_name_result: "{{ _gate_r_same_name_snapshot | l3_netbox_records_to_restore_or_delete(_gate_r_same_name_current) }}"
+
+    - name: "(r) netbox missing — same-name-different-id assertions"
+      ansible.builtin.assert:
+        that:
+          - _gate_r_same_name_result.restore | length == 0
+          - _gate_r_same_name_result.missing | length == 1
+          - _gate_r_same_name_result.missing[0].id == 1
+          - _gate_r_same_name_result.delete | length == 1
+          - _gate_r_same_name_result.delete[0].id == 2
+        fail_msg: >-
+          (r) netbox same-name-different-id FAIL: {{ _gate_r_same_name_result }}.
+          The OLD id's absence must be dirty (missing) EVEN AS the NEW id
+          (never in the snapshot) gets finalised+deleted — both from the
+          same by-id comparison, never conflated by name.
+
+    # ── Gate (s): R3a-7 EXACT owned-tag-set equality — codex's exact repro:
+    #    desired={lifecycle:bootstrapped}, readback carries a STALE extra
+    #    owned tag (monitoring:probe) -> dirty (the old subset-only check
+    #    said clean). ─────────────────────────────────────────────────────
+    - name: "(s) netbox restore exact-set — fixtures"
+      ansible.builtin.set_fact:
+        _gate_s_owned_namespace: ["dmf-catalog", "app:", "exposure:", "lifecycle:", "monitoring:"]
+        _gate_s_desired: [{name: "lifecycle:bootstrapped"}]
+        _gate_s_readback_clean: {tags: [{name: "lifecycle:bootstrapped"}], custom_fields: {}}
+        _gate_s_readback_stale_extra: {tags: [{name: "lifecycle:bootstrapped"}, {name: "monitoring:probe"}], custom_fields: {}}
+        _gate_s_readback_missing: {tags: [], custom_fields: {}}
+
+    - name: "(s) netbox restore exact-set — assertions"
+      ansible.builtin.assert:
+        that:
+          - not (_gate_s_desired | l3_netbox_restore_dirty({}, _gate_s_readback_clean, false, _gate_s_owned_namespace))
+          - (_gate_s_desired | l3_netbox_restore_dirty({}, _gate_s_readback_stale_extra, false, _gate_s_owned_namespace))
+          - (_gate_s_desired | l3_netbox_restore_dirty({}, _gate_s_readback_missing, false, _gate_s_owned_namespace))
+        fail_msg: >-
+          (s) netbox restore exact-set FAIL — codex's exact repro: a
+          readback carrying a STALE owned tag (monitoring:probe) beyond
+          the desired set must be dirty, not just "all desired tags
+          present" (subset-only). Non-owned tags must never be examined
+          by this check at all (not fixtured here since they'd never even
+          be extracted).
+
+    # ── Gate (t): R3a-8 helm content-identity match/mismatch ─────────────
+    - name: "(t) helm content-identity — attach values_hash to a surface"
+      ansible.builtin.set_fact:
+        _gate_t_base_surface:
+          mxl: [{name: mxl-videotestsrc, revision: 2, chart: "mxl-fabrics-demo-0.2.1", app_version: "1.0.3"}]
+          nmos: []
+        _gate_t_values_results:
+          - item: {name: mxl-videotestsrc, namespace: mxl}
+            stdout: '{"role": "source"}'
+            failed: false
+
+    - name: "(t) helm content-identity — compute"
+      ansible.builtin.set_fact:
+        _gate_t_enriched: "{{ _gate_t_base_surface | l3_helm_content_identity(_gate_t_values_results) }}"
+
+    - name: "(t) helm content-identity — expected hash fixture"
+      ansible.builtin.set_fact:
+        _gate_t_expected_hash: "{{ _gate_t_values_results[0].stdout | hash('sha256') }}"
+
+    - name: "(t) helm content-identity — assertions (deterministic sha256, not None, values_fetch_failed False)"
+      ansible.builtin.assert:
+        that:
+          - _gate_t_enriched.mxl[0].values_hash is not none
+          - _gate_t_enriched.mxl[0].values_hash == _gate_t_expected_hash
+          - _gate_t_enriched.mxl[0].values_fetch_failed == false
+        fail_msg: "(t) helm content-identity FAIL: {{ _gate_t_enriched }}"
+
+    - name: "(t) helm content-identity — failed-fetch fixture"
+      ansible.builtin.set_fact:
+        _gate_t_failed_results:
+          - item: {name: mxl-videotestsrc, namespace: mxl}
+            stdout: ''
+            failed: true
+
+    - name: "(t) helm content-identity — a failed/empty values fetch yields None, never fabricated"
+      ansible.builtin.set_fact:
+        _gate_t_enriched_failed: "{{ _gate_t_base_surface | l3_helm_content_identity(_gate_t_failed_results) }}"
+
+    - name: "(t) helm content-identity — failed-fetch assertion (R4a/P1-8: values_fetch_failed True, distinct from values_hash None)"
+      ansible.builtin.assert:
+        that:
+          - _gate_t_enriched_failed.mxl[0].values_hash is none
+          - _gate_t_enriched_failed.mxl[0].values_fetch_failed == true
+        fail_msg: "(t) helm content-identity FAIL (failed fetch should yield None + values_fetch_failed=true): {{ _gate_t_enriched_failed }}"
+
+    - name: "(t) helm content-restores — codex's exact concern: revision NUMBER changing alone must NOT be what's compared (content identity is)"
+      ansible.builtin.set_fact:
+        _gate_t_pre_helm:
+          mxl: [{name: mxl-videotestsrc, revision: 2, chart: "mxl-fabrics-demo-0.2.1", app_version: "1.0.3", values_hash: "hashA"}]
+          nmos: []
+        _gate_t_current_content_changed:
+          mxl: [{name: mxl-videotestsrc, revision: 3, chart: "mxl-fabrics-demo-0.2.1", app_version: "1.0.3", values_hash: "hashB"}]
+          nmos: []
+        _gate_t_current_content_unchanged_but_new_revision:
+          # same content identity as pre, but a DIFFERENT revision number
+          # (e.g. a no-op reapply) — must NOT be flagged as needing restore.
+          mxl: [{name: mxl-videotestsrc, revision: 5, chart: "mxl-fabrics-demo-0.2.1", app_version: "1.0.3", values_hash: "hashA"}]
+          nmos: []
+
+    - name: "(t) helm content-restores — compute"
+      ansible.builtin.set_fact:
+        _gate_t_restores_needed: "{{ _gate_t_pre_helm | l3_helm_content_restores(_gate_t_current_content_changed) }}"
+        _gate_t_restores_not_needed: "{{ _gate_t_pre_helm | l3_helm_content_restores(_gate_t_current_content_unchanged_but_new_revision) }}"
+
+    - name: "(t) helm content-restores — assertions"
+      ansible.builtin.assert:
+        that:
+          - _gate_t_restores_needed | length == 1
+          - _gate_t_restores_needed[0].snapshot_revision == 2
+          - _gate_t_restores_needed[0].snapshot_values_hash == 'hashA'
+          # The SAME content identity but a DIFFERENT revision number must
+          # NOT trigger a restore — revision-number-only comparison (the
+          # R2a-10i draft) would have wrongly flagged this.
+          - _gate_t_restores_not_needed | length == 0
+        fail_msg: >-
+          (t) helm content-restores FAIL: needed={{ _gate_t_restores_needed }}
+          not_needed={{ _gate_t_restores_not_needed }}. Content identity
+          (chart/app_version/values_hash), NEVER revision number, must
+          drive this decision — helm rollback always mints a new revision
+          number by design.
+
+    - name: "(t) helm readback dirty — a pre-existing release NEVER targeted for removal, but silently vanished, must be dirty (R3a-8's second finding)"
+      ansible.builtin.set_fact:
+        _gate_t_pre_two_releases:
+          mxl: [{name: mxl-videotestsrc, revision: 2, chart: "c-1", app_version: "1.0", values_hash: "h1"}]
+          nmos: [{name: nmos-cpp, revision: 1, chart: "c-2", app_version: "2.0", values_hash: "h2"}]
+        _gate_t_readback_one_vanished:
+          mxl: [{name: mxl-videotestsrc, revision: 2, chart: "c-1", app_version: "1.0", values_hash: "h1"}]
+          nmos: []  # nmos-cpp vanished — never targeted for removal, never a content-restore target either
+
+    - name: "(t) helm readback dirty — assertions (silent vanish -> dirty, even though it was never a removal OR restore target)"
+      ansible.builtin.assert:
+        that:
+          - (_gate_t_pre_two_releases | l3_helm_readback_dirty([], _gate_t_readback_one_vanished, false))
+          - not (_gate_t_pre_two_releases | l3_helm_readback_dirty([], _gate_t_pre_two_releases, false))
+        fail_msg: >-
+          (t) helm readback dirty FAIL — a pre-existing release that
+          silently disappeared (never in the removal list, never a
+          content-restore target) must still be caught as dirty; the old
+          readback check only ever looked at targets it already knew
+          about.
+
+    - name: "(t2) helm readback dirty — R4a/P1-8 codex repro #1: BOTH
+        snapshot and readback values fetch failed for the same release —
+        None==None must NOT read as clean"
+      ansible.builtin.set_fact:
+        _gate_t2_pre_both_failed:
+          mxl: [{name: mxl-videotestsrc, revision: 2, chart: "c-1", app_version: "1.0", values_hash: null, values_fetch_failed: true}]
+          nmos: []
+        _gate_t2_readback_both_failed:
+          mxl: [{name: mxl-videotestsrc, revision: 2, chart: "c-1", app_version: "1.0", values_hash: null, values_fetch_failed: true}]
+          nmos: []
+
+    - name: "(t2) helm readback dirty — both-failed assertion (must be dirty, NOT the old false-clean)"
+      ansible.builtin.assert:
+        that:
+          - (_gate_t2_pre_both_failed | l3_helm_readback_dirty([], _gate_t2_readback_both_failed, false))
+        fail_msg: >-
+          (t2) helm readback dirty FAIL — codex's exact repro: a values
+          fetch failure on BOTH sides must never compare None==None and
+          report clean. Unknown content identity is never clean.
+
+    - name: "(t2) helm readback dirty — R4a/P1-8 codex repro #2: an
+        UNTARGETED pre-existing release's values hash silently drifted
+        (aaa -> bbb), never flagged as a content-restore target"
+      ansible.builtin.set_fact:
+        _gate_t2_pre_untargeted:
+          mxl: [{name: mxl-videotestsrc, revision: 2, chart: "c-1", app_version: "1.0", values_hash: "aaa"}]
+          nmos: []
+        _gate_t2_readback_untargeted_drifted:
+          mxl: [{name: mxl-videotestsrc, revision: 2, chart: "c-1", app_version: "1.0", values_hash: "bbb"}]
+          nmos: []
+
+    - name: "(t2) helm readback dirty — untargeted-drift assertion (must be dirty; the old check only compared content_restores-scoped entries)"
+      ansible.builtin.assert:
+        that:
+          - (_gate_t2_pre_untargeted | l3_helm_readback_dirty([], _gate_t2_readback_untargeted_drifted, false))
+        fail_msg: >-
+          (t2) helm readback dirty FAIL — codex's exact repro: a
+          pre-existing release never targeted for removal or restore
+          whose content silently drifted must still be caught; this
+          function now compares EVERY pre-existing release directly
+          against the snapshot, not just a content_restores-scoped subset.
+
+    # ── Gate (u): reserved-var logic pattern (the "is defined" combination
+    #    l3_budget.py's own _assert_reserved_vars.yml consumes — since
+    #    Ansible's `is defined` test isn't a pure function to unit-test
+    #    directly, this proves the SAME boolean-OR combination pattern
+    #    against a simulated defined-ness map, and the live wiring itself
+    #    was smoke-tested ad hoc, see the round's report). ────────────────
+    - name: "(u) reserved-var pattern — fixtures"
+      ansible.builtin.set_fact:
+        _gate_u_reserved_names:
+          - l3_attempt_id
+          - l3_outcome_token
+          - l3_outcome_kv
+          - l3_snapshot_created
+          - l3_lock_acquired
+          - l3_entry_path
+          - l3_lock_attempt_number
+          - l3_now_epoch
+          - l3_override_active
+          - l3_mutation_started
+          - l3_rollback_terminal_reached
+        _gate_u_none_supplied_keys: []
+        _gate_u_one_supplied_keys: ["l3_attempt_id"]
+
+    - name: "(u) reserved-var pattern — assertions (simulated 'is defined' via key-list intersection over the SAME 11 reserved names)"
+      ansible.builtin.assert:
+        that:
+          - (_gate_u_reserved_names | intersect(_gate_u_none_supplied_keys)) | length == 0
+          - (_gate_u_reserved_names | intersect(_gate_u_one_supplied_keys)) | length > 0
+        fail_msg: "(u) reserved-var pattern FAIL — the 11-name violation-detection pattern itself is broken"
+
+    # ── Gate (v): R6a-1 (codex round-5) — l3_set_flag_argv/l3_flatten_set_values/
+    #    l3_set_values_dicts are the three pure transforms the launch
+    #    playbooks' single-source l3_chart_set_values now feeds BOTH
+    #    capacity.yml's helm-template render (via l3_set_flag_argv) AND the
+    #    install step (via l3_set_values_dicts for nmos-cpp/nmos-crosspoint's
+    #    kubernetes.core.helm module, or l3_set_flag_argv directly for mxl's
+    #    raw helm CLI) — neither had offline pure-filter coverage before
+    #    this round; adding it now since R6a made them load-bearing for the
+    #    single-source property itself, not just cosmetic helpers. ────────
+    - name: "(v) set-values transforms — fixtures"
+      ansible.builtin.set_fact:
+        _gate_v_flat_values:
+          - "createNamespace=false"
+          - "role=source"
+        _gate_v_nested_values:
+          createNamespace: false
+          registry:
+            ip: "192.0.2.1"
+            port: 80
+          auth:
+            adminPasswordSha256: "deadbeef"
+
+    - name: "(v) set-values transforms — assertions"
+      ansible.builtin.assert:
+        that:
+          # l3_set_flag_argv: flat list -> repeated --set argv pairs, order-preserving.
+          - "(_gate_v_flat_values | l3_set_flag_argv) == ['--set', 'createNamespace=false', '--set', 'role=source']"
+          # l3_set_values_dicts: flat list -> kubernetes.core.helm's own
+          # set_values shape, value_type 'raw' (matches plain --set semantics).
+          - "(_gate_v_flat_values | l3_set_values_dicts) == [{'value': 'createNamespace=false', 'value_type': 'raw'}, {'value': 'role=source', 'value_type': 'raw'}]"
+          # l3_flatten_set_values: nested dict -> dotted-path flat strings,
+          # booleans lowercased — the SAME shape l3_set_flag_argv/
+          # l3_set_values_dicts both consume, closing the loop from a
+          # nested l3_release_values source to either install shape.
+          - "(_gate_v_nested_values | l3_flatten_set_values | sort) == ['auth.adminPasswordSha256=deadbeef', 'createNamespace=false', 'registry.ip=192.0.2.1', 'registry.port=80']"
+          # end-to-end: flatten-then-set_values_dicts and flatten-then-set_flag_argv
+          # agree on the SAME underlying key=value pairs (order aside) —
+          # the concrete property R6a-2c's forged-render-input probe checks
+          # live against a real playbook run.
+          - "((_gate_v_nested_values | l3_flatten_set_values | l3_set_values_dicts) | map(attribute='value') | sort | list) == ((_gate_v_nested_values | l3_flatten_set_values | l3_set_flag_argv) | select('ne', '--set') | sort | list)"
+        fail_msg: "(v) set-values transforms FAIL — l3_set_flag_argv/l3_set_values_dicts/l3_flatten_set_values disagree on shape or content"
+
+    - name: ALL L3 LAUNCHER OFFLINE GATES PASSED
+      ansible.builtin.debug:
+        msg: >-
+          umbrella #202 WP3 (R2a revision): no-double-count, state-drift-
+          sim, REAL cumulative-prefix budget accounting (order-sensitive,
+          both directions, R2a-6b), fail-closed per-container missing-
+          budget (R2a-6a), lock TTL-only logic (create/refuse/reclaim/
+          boundary, R2a-3b — same-run-residue reclaim removed), and
+          snapshot current-vs-supersede classification all passed.
+          WP3-B: snapshot-refusal classification table, release-set diff,
+          R2a-7 honest-readback rollback outcome (monitoring always
+          dirty, rollback_complete unreachable), R2a-1 label validation
+          (incl. the original bug as a regression fixture), R2a-5 by-id
+          NetBox classification (incl. the name-vs-tag snapshot-query
+          upstream regression), R2a-10i helm revision restore, and
+          R2a-10iii request_id hex32 validation all passed.
+          Round 2 (R3a): type coercion (int-42 -> string, codex repro),
+          widened supersede (all rollback-eligible statuses), snapshot
+          409-collision resumable-vs-collision table, NetBox missing-
+          record dirty classification (incl. same-name-different-id),
+          EXACT owned-tag-set equality (stale-tag repro), helm
+          content-identity restore verification (revision-number-blind,
+          incl. silent-vanish detection), and the reserved-var
+          violation-detection pattern all passed.
+          Round 5 (R6a): the set-values transform trio
+          (l3_set_flag_argv/l3_set_values_dicts/l3_flatten_set_values)
+          agree on shape and content, closing the loop the single-source
+          launch playbooks now depend on.

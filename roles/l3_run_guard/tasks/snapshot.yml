@@ -1,0 +1,279 @@
+---
+# umbrella #202 WP3 stage — pre-run snapshot (§4.1, post-lock — R2a-8: this
+# now runs BEFORE capacity.yml, as early after lock acquisition as
+# possible, so the pre-mutation baseline exists before ANY refusal that
+# could still fire post-lock; see capacity.yml's own header comment for
+# what that means for its missing-budget/no-fit refusals).
+#
+# Three attribution surfaces, captured BEFORE this run touches anything:
+#   1. NetBox — the catalog entry's existing service record, if any. R2a-5:
+#      queried by EXACT NAME (the SAME identity the provision stage's own
+#      lookup uses — every provision.yml in this repo does
+#      `?name={{ netbox_service_name }}` — and l3_catalog_key is provably
+#      equal to each catalog entry's own netbox_service_name value in
+#      every current launch-*.yml playbook, see this role's README-style
+#      comment in defaults/main.yml), NOT by tag. A tag-based query would
+#      MISS a pre-existing record that hadn't yet been tagged
+#      app:<key> at snapshot time, silently excluding it from the
+#      baseline — rollback would then misclassify it as run-created and
+#      destroy it (codex round-1's exact counterexample). Captured WITH
+#      id (l3_netbox_surface_with_id) — R2a-5's rollback classification
+#      compares by id, never by name alone (a delete-then-recreate under
+#      the same name must not be mistaken for "unchanged").
+#   2. Helm — every release currently installed in the two catalog
+#      namespaces (mxl, nmos), so a rollback (WP3-B) has a "what else was
+#      here" baseline independent of this run's own release. R3a-8:
+#      enriched with a per-release CONTENT-IDENTITY fingerprint
+#      (values_hash, alongside the already-present chart/app_version
+#      fields) — see l3_budget.py's l3_helm_content_identity docstring.
+#   3. Monitoring — sourced from the NetBox record's own fields (custom
+#      fields + monitoring:probe tag presence), NOT a live PromSD read: the
+#      EE cannot assume off-cluster PromSD reachability. Drain
+#      VERIFICATION (did the probe actually go away) is WP4's console-side
+#      job; this snapshot only needs the pre-run attribution set to exist.
+#
+# R2a-1: dmf.io/topology's combined "<key>/<release>" was an ILLEGAL K8s
+# label VALUE (a slash) — split into dmf.io/catalog-key + dmf.io/release,
+# each independently a legal value.
+#
+# R2a-8/R3a-6/R4a-P1-6: CREATE-ONLY via the SAME raw-REST-POST-with-409
+# pattern as the facility lock (lock.yml), now via a bounded native loop
+# over _snapshot_create_one_attempt.yml (P1-1/P2-4 pattern). On a 409
+# collision, EVERY case now FAILS CLOSED as a snapshot-collision — R3a-6's
+# narrowly-defined "resumable retry" classification is REMOVED (R4a
+# P1-6): it could never reach an honest terminal (a successful resumed
+# retry left the snapshot in-progress forever; a failed one could never
+# be marked failed_rollback_required — codex round-3's exact finding). If
+# a run_id is genuinely intended to be retried, roll it back first, then
+# relaunch. l3_snapshot_created is set ONLY on the fresh-201 path — see
+# _snapshot_create_one_attempt.yml for why.
+#
+# R3a-2: every manifest data/label value is coerced |string — AWX injects
+# awx_job_id/tower_job_id as a native INTEGER, and Ansible's whole-template
+# native-type substitution preserves that through l3_awx_job_id's own
+# default; an unstringified int here becomes a JSON number in the POST
+# body, which the K8s API server rejects for both a ConfigMap's
+# map[string]string data field and a label value.
+#
+# R4a (codex round-3 P1-9): the lockless direct-path override is REMOVED
+# entirely (see lock.yml's own header) — lock.yml now refuses
+# lock-unavailable, never override-able, before this file could ever be
+# reached with _l3_api_available false. The `when: _l3_api_available`
+# below is kept as a structural backstop, not a real branch: if it is
+# EVER false here, that is a bug upstream of this file, not a legitimate
+# skip-with-warning path — see the backstop assert at the bottom of this
+# file.
+#
+# R4a (codex round-3 P1-6 + P2-4): snapshot CREATE-ONLY now uses the same
+# bounded-native-loop, non-recursive pattern as the facility lock's own
+# P1-1 fix — see _snapshot_create_one_attempt.yml for the full rationale.
+# Every 409 collision is now an UNCONDITIONAL fail-closed refusal (P1-6:
+# resume is removed entirely); a 409-then-empty-read race is retried up
+# to l3_snapshot_create_max_attempts before refusing (P2-4: no unsafe
+# resources[0] index is ever taken on an empty read).
+
+- name: "L3 snapshot: capture + write"
+  when: _l3_api_available
+  block:
+    - name: "L3 snapshot: look up NetBox service by EXACT NAME (same identity the provision stage uses — R2a-5)"
+      ansible.builtin.uri:
+        url: "{{ netbox_api_url }}/api/ipam/services/?name={{ l3_catalog_key | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Token {{ netbox_api_token }}"
+        validate_certs: false
+        return_content: true
+      no_log: true
+      register: _l3_netbox_lookup
+
+    - name: "L3 snapshot: assert at most one record for this exact name (structural — NetBox name uniqueness)"
+      ansible.builtin.assert:
+        that:
+          - (_l3_netbox_lookup.json.results | default([])) | length <= 1
+        fail_msg: >-
+          L3 snapshot: NetBox returned
+          {{ (_l3_netbox_lookup.json.results | default([])) | length }} records
+          for the exact name '{{ l3_catalog_key }}' — service names must be
+          unique; this is a structural NetBox data-integrity problem, not a
+          per-run decision.
+
+    - name: "L3 snapshot: extract NetBox surface WITH id (pure — l3_netbox_surface_with_id, R2a-5)"
+      ansible.builtin.set_fact:
+        _l3_netbox_surface: "{{ _l3_netbox_lookup.json.results | default([]) | l3_netbox_surface_with_id }}"
+      no_log: true
+
+    - name: "L3 snapshot: helm list (mxl namespace)"
+      ansible.builtin.command:
+        argv: [helm, list, -n, mxl, -o, json]
+      register: _l3_helm_list_mxl
+      changed_when: false
+
+    - name: "L3 snapshot: helm list (nmos namespace)"
+      ansible.builtin.command:
+        argv: [helm, list, -n, nmos, -o, json]
+      register: _l3_helm_list_nmos
+      changed_when: false
+
+    - name: "L3 snapshot: build base helm surface (list only)"
+      ansible.builtin.set_fact:
+        _l3_helm_surface_base:
+          mxl: "{{ _l3_helm_list_mxl.stdout | from_json }}"
+          nmos: "{{ _l3_helm_list_nmos.stdout | from_json }}"
+
+    - name: "L3 snapshot: flatten for per-release values fetch (R3a-8 content identity)"
+      ansible.builtin.set_fact:
+        _l3_helm_surface_flat: >-
+          {{
+            (_l3_helm_surface_base.mxl | map('combine', {'namespace': 'mxl'}) | list)
+            + (_l3_helm_surface_base.nmos | map('combine', {'namespace': 'nmos'}) | list)
+          }}
+
+    - name: "L3 snapshot: fetch per-release values (R3a-8 — chart/app_version
+        are already in the list output; only the values hash needs an
+        extra per-release call)"
+      ansible.builtin.command:
+        argv: [helm, get, values, "{{ item.name }}", -n, "{{ item.namespace }}", -o, json]
+      register: _l3_helm_values_results
+      changed_when: false
+      failed_when: false
+      loop: "{{ _l3_helm_surface_flat }}"
+      loop_control:
+        label: "{{ item.namespace }}/{{ item.name }}"
+
+    - name: "L3 snapshot: attach content-identity to the helm surface (pure — l3_helm_content_identity, R3a-8)"
+      ansible.builtin.set_fact:
+        _l3_helm_surface: "{{ _l3_helm_surface_base | l3_helm_content_identity(_l3_helm_values_results.results) }}"
+
+    - name: "L3 snapshot: fail closed if ANY release's values fetch failed
+        (R4a/P1-8 — 'Snapshot values failures must fail closed': silently
+        persisting a values_hash=None into the baseline ConfigMap here
+        would let a LATER independently-failed readback fetch compare
+        None==None and report false-clean — codex round-3's exact
+        repro. An untrustworthy baseline must never be captured at all;
+        this run refuses before the create-only POST, not after. block/
+        rescue, not when:, routes a failed assert to the marker-emitting
+        cleanup — same non-shadowable shape as _assert_reserved_vars.yml.)"
+      block:
+        - name: "L3 snapshot: assert no release's values fetch failed"
+          ansible.builtin.assert:
+            that:
+              - (_l3_helm_surface.mxl + _l3_helm_surface.nmos) | selectattr('values_fetch_failed') | list | length == 0
+            fail_msg: >-
+              L3 snapshot refused: preflight-error (helm-values-fetch-failed).
+              `helm get values` failed for one or more releases during
+              snapshot capture for run_id={{ l3_run_id }}:
+              {{ (_l3_helm_surface.mxl + _l3_helm_surface.nmos) | selectattr('values_fetch_failed') | map(attribute='name') | list }}.
+              Cannot establish a trustworthy pre-mutation baseline.
+      rescue:
+        - name: "L3 snapshot helm-values-fetch-failed refusal cleanup (never override-able)"
+          ansible.builtin.include_tasks: _refuse_pre_mutation.yml
+          vars:
+            l3_outcome_token: preflight-error
+            l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }} detail=helm-values-fetch-failed"
+            l3_refusal_fail_msg: >-
+              L3 snapshot refused: preflight-error (helm-values-fetch-failed)
+              for run_id={{ l3_run_id }} — cannot establish a trustworthy
+              pre-mutation baseline. Structural precondition — cannot be
+              overridden.
+
+    - name: "L3 snapshot: build monitoring surface (pure — l3_monitoring_surface)"
+      ansible.builtin.set_fact:
+        _l3_monitoring_surface: "{{ _l3_netbox_surface | l3_monitoring_surface }}"
+
+    - name: "L3 snapshot: resolve owner (R2a-10iv, coerced |string — R3a-2)"
+      ansible.builtin.set_fact:
+        _l3_owner: "{{ (l3_owner if (l3_owner | default('') | trim) != '' else l3_awx_job_id) | string }}"
+
+    - name: "L3 snapshot: render candidate ConfigMap manifest (dmf-run-<run_id>, ns nmos; R3a-2 — every value coerced |string)"
+      ansible.builtin.set_fact:
+        _l3_snapshot_manifest:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ l3_run_configmap_prefix }}{{ l3_run_id }}"
+            namespace: "{{ l3_lock_namespace }}"
+            labels:
+              dmf.io/run-id: "{{ l3_run_id | string }}"
+              dmf.io/facility: "{{ (_l3_allocatable.name | default('unknown')) | string }}"
+              dmf.io/catalog-key: "{{ l3_catalog_key | string }}"
+              dmf.io/release: "{{ l3_release | string }}"
+              dmf.io/owner: "{{ _l3_owner | string }}"
+          data:
+            created_at: "{{ l3_now_epoch | string }}"
+            status: in-progress
+            netbox_surface: "{{ _l3_netbox_surface | to_json }}"
+            helm_surface: "{{ _l3_helm_surface | to_json }}"
+            monitoring_surface: "{{ _l3_monitoring_surface | to_json }}"
+
+    - name: "L3 snapshot: assert every label value is a legal K8s label value (R2a-1)"
+      ansible.builtin.assert:
+        that:
+          - (_l3_snapshot_manifest.metadata.labels.values() | list | map('l3_valid_label_value') | list | unique) == [true]
+        fail_msg: >-
+          L3 snapshot: one or more label values are not legal Kubernetes label
+          values: {{ _l3_snapshot_manifest.metadata.labels }}
+
+    - name: "L3 snapshot: type gate — assert every data value is a string (R3a-2)"
+      ansible.builtin.assert:
+        that:
+          - (_l3_snapshot_manifest.data.values() | list | map('type_debug') | select('ne', 'str') | list | length) == 0
+        fail_msg: >-
+          L3 snapshot: one or more ConfigMap data values are not strings
+          after coercion: {{ _l3_snapshot_manifest.data }}
+
+    - name: "L3 snapshot: create (bounded NATIVE loop over attempts, P1-1/P2-4 pattern — see
+        _snapshot_create_one_attempt.yml's own header). Each iteration is
+        guarded on l3_snapshot_created still being undefined, so a
+        SUCCESSFUL earlier iteration (create, or a refusal that already
+        failed the whole play) short-circuits every later one — only the
+        create-then-read-EMPTY race actually consumes more than one
+        iteration."
+      ansible.builtin.include_tasks: _snapshot_create_one_attempt.yml
+      loop: "{{ range(1, (l3_snapshot_create_max_attempts | int) + 1) | list }}"
+      loop_control:
+        loop_var: l3_snapshot_attempt_number
+      when: l3_snapshot_created is not defined
+
+    - name: "L3 snapshot: create-then-read race EXHAUSTED — refuse
+        preflight-error (snapshot-race, never override-able) — only
+        reached if the loop above ran its full bound without ever
+        setting l3_snapshot_created (every OTHER exit path either sets
+        it or already failed the whole play via _refuse_pre_mutation.yml)"
+      when: l3_snapshot_created is not defined
+      block:
+        - name: Report the exhausted create-read race
+          ansible.builtin.debug:
+            msg: >-
+              L3 launcher refused: preflight-error (snapshot-race).
+              {{ l3_snapshot_create_max_attempts }} consecutive
+              create->read attempts all raced (POST 409, then an
+              immediate read found nothing) for run_id={{ l3_run_id }}.
+
+        - name: "L3 snapshot-race refusal cleanup (never override-able)"
+          ansible.builtin.include_tasks: _refuse_pre_mutation.yml
+          vars:
+            l3_outcome_token: preflight-error
+            l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }} detail=snapshot-race"
+            l3_refusal_fail_msg: >-
+              L3 launcher refused: preflight-error (snapshot-race) — the
+              create/read race repeated {{ l3_snapshot_create_max_attempts }}
+              times without resolving. This refusal is NOT override-able.
+              Retry this launch.
+
+    - name: "L3 snapshot: structural backstop — l3_snapshot_created MUST be
+        set by now (every path through the create loop + exhaustion-
+        refusal above either sets it or fails the play; if this ever
+        trips, a new code path was added without preserving that
+        invariant)"
+      ansible.builtin.assert:
+        that:
+          - l3_snapshot_created is defined
+        fail_msg: >-
+          L3 snapshot: l3_snapshot_created was never set after the create
+          attempt sequence completed for run_id={{ l3_run_id }} — this
+          must be structurally impossible.
+
+    - name: "L3 snapshot: test-only fault injection boundary (R4a/P2-5 — no-op on every real run)"
+      ansible.builtin.include_tasks: fault_inject.yml
+      vars:
+        l3_fault_inject_boundary: post-snapshot

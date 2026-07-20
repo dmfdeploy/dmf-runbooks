@@ -1,0 +1,59 @@
+---
+# umbrella #202 WP3 R5a-6 (codex round-4 P2-3) — static structural
+# meta-test. Thin ansible-playbook wrapper around
+# tests/scripts/check_playbook_structure.py (kept as a standalone Python
+# script, not embedded Ansible/Jinja, for the same reason
+# tests/l3-reserved-var-meta-test.yml gives for check_reserved_vars.py:
+# the actual work is walking a real YAML parse tree — awkward and
+# unreadable to do in Jinja, straightforward in Python with PyYAML) so it
+# fits this repo's existing `ansible-playbook tests/l3-*.yml` invocation
+# convention for operators/CI.
+#
+# Run:  ansible-playbook tests/l3-playbook-structure.yml
+#
+# FAILS if any of the 7 real entry playbooks under playbooks/ does not
+# wrap its whole post-identity lifecycle in ONE outer block/rescue/always
+# as the sole/first top-level task — see the script's own module
+# docstring for the full P2-3 rationale and the exact bug class (R5a-3's
+# crosspoint credential-check-before-the-block bug) this guards against.
+#
+# NOTE: invokes `{{ ansible_playbook_python }}`, NOT a bare `python3` (the
+# pattern tests/l3-reserved-var-meta-test.yml uses for its own,
+# stdlib-only script) — check_playbook_structure.py needs PyYAML for a
+# real parse tree, and a bare `python3` on an operator's PATH is not
+# guaranteed to have it (ansible-core's OWN dependency on PyYAML lives in
+# ansible-core's own interpreter, which `ansible_playbook_python` always
+# points at — see the script's own docstring for how this was found).
+
+- name: "Umbrella #202 WP3 R5a-6 — L3 real-playbook structural meta-test"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run the playbook-structure check
+      # Invokes ansible_playbook_python DIRECTLY (the exact interpreter
+      # ansible-playbook itself is running under, guaranteed PyYAML —
+      # ansible-core depends on it) rather than a bare `python3` argv[0]
+      # + PATH shim — see this file's own header note for why a bare
+      # `python3` is not safe here.
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", "{{ playbook_dir }}/scripts/check_playbook_structure.py"]
+      register: _structure_check
+      changed_when: false
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "{{ _structure_check.stdout }}"
+
+    - name: ALL PLAYBOOK STRUCTURE CHECKS PASSED
+      ansible.builtin.debug:
+        msg: >-
+          umbrella #202 WP3 R5a-6 (codex round-4 P2-3): every real entry
+          playbook under playbooks/ wraps its entire post-identity
+          lifecycle in ONE outer block as the sole/first top-level task,
+          with the rescue:/always: keys its flow requires, and (launch
+          playbooks) the l3_run_guard gate include sits inside that block
+          as its first task — the exact shape that would have caught the
+          crosspoint credential-check-before-the-block bug (R5a-3) and the
+          missing-lock-checkpoint bugs (R5a-4) structurally, not just by
+          code review.

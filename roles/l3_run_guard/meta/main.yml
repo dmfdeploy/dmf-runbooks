@@ -1,0 +1,19 @@
+---
+galaxy_info:
+  role_name: l3_run_guard
+  author: dmfdeploy
+  description: >-
+    umbrella #202 WP3 (revised by codex round-1 R2a) — launcher-tier
+    authoritative L3 gate: structural preflight, facility lock, pre-run
+    snapshot, and capacity recompute (launch flow, tasks_from: main);
+    authoritative rollback (tasks_from: rollback); teardown lock-only guard
+    (tasks_from: lock_only). Launch flow is included as the first play-level
+    actions of every launch-*.yml playbook, before the provision stage
+    include; launch_success/launch_rescue are invoked by that same playbook's
+    own block/rescue around its provision/install/configure stage.
+  license: Apache-2.0
+  min_ansible_version: "2.14"
+  platforms:
+    - name: GenericLinux
+      versions: [all]
+dependencies: []

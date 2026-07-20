@@ -72,6 +72,14 @@
       ansible.builtin.include_role:
         name: netbox_catalog_common
 
+    # umbrella #202 WP3-B: also load l3_run_guard (filters only, no
+    # live-cluster tasks — see roles/l3_run_guard/tasks/filters_only.yml)
+    # for the rollback-restore scenario's l3_filter_owned_tags filter.
+    - name: Load l3_run_guard role (filter plugins only)
+      ansible.builtin.include_role:
+        name: l3_run_guard
+        tasks_from: filters_only
+
     # ── mxl-videotestsrc ──────────────────────────────────────────────────
     - name: "Test mxl-videotestsrc — provision→configure→finalise"
       ansible.builtin.include_tasks: _tag-preservation-scenario.yml
@@ -88,10 +96,16 @@
     - name: "Test #239 workload-tag single-workload-wins + no-op-when-unset"
       ansible.builtin.include_tasks: _workload-tag-scenario.yml
 
+    # ── umbrella #202 WP3-B — rollback path tag-restore ─────────────────────
+    - name: "Test WP3-B rollback restore — drifted workload:* survives, owned subset restored to snapshot"
+      ansible.builtin.include_tasks: _rollback-restore-scenario.yml
+
     - name: ALL TAG-PRESERVATION TESTS PASSED
       ansible.builtin.debug:
         msg: >-
           workload:videotest survived provision→configure→finalise for both
-          mxl-videotestsrc and mxl-videotest-view (ADR-0046 decision 4), and
-          the #239 workload-tag single-workload-wins + no-op-when-unset
-          scenarios passed.
+          mxl-videotestsrc and mxl-videotest-view (ADR-0046 decision 4), the
+          #239 workload-tag single-workload-wins + no-op-when-unset
+          scenarios passed, and umbrella #202 WP3-B's rollback restore
+          scenario (drift-safe workload:* + snapshot-accurate owned subset)
+          passed.

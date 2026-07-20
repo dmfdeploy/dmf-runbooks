@@ -1,0 +1,139 @@
+---
+# umbrella #202 WP3 R4a Backbone (codex round-3 P1-3/P1-11) — the SHARED
+# rescue: entry for BOTH launch AND teardown playbooks (rollback keeps
+# its own bespoke rescue inline in rollback.yml — see that file's header
+# for why: rollback's failure model is genuinely different, always
+# rollback_incomplete rather than this two-token pre/post-mutation
+# model, and it already carries its own P1-7 fix).
+#
+# Generalizes the former launch_rescue.yml (now folded into this file;
+# teardown never had an equivalent rescue at all — finding 11's "the
+# gate-wide rescue must emit an honest pre-mutation outcome for all
+# failures before l3_mutation_started, not only hand-written refusal
+# branches" applies to BOTH flows identically, so one shared file).
+#
+# R4a Backbone (P1-3): finding 3 established that main.yml's own stages
+# (identity through capacity/supersede) used to run OUTSIDE any block of
+# the CALLING playbook — an exception there (a raw K8s API hiccup, not a
+# deliberate refusal) had nothing to catch it and leaked the lock to TTL.
+# Every launch-*.yml / teardown-*.yml playbook now wraps its ENTIRE
+# post-identity lifecycle (gate include through the caller's own
+# provision/install/finalise through the success include) in ONE outer
+# block, with THIS file as its rescue: and release.yml as its always:.
+#
+# Three-way branch, checked in this exact order:
+#
+#   A) l3_pre_mutation_marker_emitted is true — a HAND-WRITTEN refusal
+#      somewhere in this role (_refuse_pre_mutation.yml — facility-busy,
+#      lock-unavailable, preflight-error, missing-budget, no-fit,
+#      snapshot-collision/-race, helm-values-fetch-failed, reserved-var;
+#      or lock_checkpoint.yml's own fenced-out post-mutation-failed) has
+#      ALREADY emitted its own honest marker. Just re-raise — emitting a
+#      SECOND marker here would be exactly finding 7's class of bug
+#      (dmf-cms selects the LAST event; a second marker hides the real
+#      one) generalized beyond just rollback's no-snapshot/stale-snapshot
+#      case.
+#
+#   B) l3_mutation_started is true (and no hand-written marker fired) —
+#      a REAL post-mutation failure: the caller's own provision/install/
+#      finalise stage (or something after it) threw. Snapshot ->
+#      failed_rollback_required (only when this attempt owns it,
+#      l3_snapshot_created), marker token post-mutation-failed.
+#
+#   C) neither sentinel set — an UNEXPECTED failure BEFORE l3_mutation_
+#      started was ever set and before any hand-written refusal branch
+#      ran (finding 11's exact gap: e.g. a raw K8s/NetBox API exception
+#      inside preflight.yml/snapshot.yml/capacity.yml that ISN'T one of
+#      their own deliberate asserts). Snapshot -> superseded (moot,
+#      nothing was mutated — only when this attempt owns it), marker
+#      token preflight-error — an honest pre-mutation outcome instead of
+#      dmf-cms falling through to its own FAILED_ROLLBACK_REQUIRED
+#      default for a started-but-tokenless failure.
+#
+# Either way: release the lock (idempotent — release.yml's own outer
+# always: backstop covers this too, but releasing here as early as
+# possible is still correct and matches every other path in this role).
+#
+# The calling playbook's rescue: (this file itself) does NOT re-raise —
+# each playbook's own rescue: step includes THIS file, then its OWN
+# separate ansible.builtin.fail re-raises afterward (see each
+# launch-*.yml/teardown-*.yml playbook) — this file only does cleanup,
+# it never itself terminates the play, so a caller that forgot to
+# re-raise would silently report the AWX job as successful (the exact
+# false-green failure mode this whole gate exists to prevent).
+
+- name: "L3 gate rescue: branch A — a hand-written refusal already emitted its own marker, nothing further to do here"
+  ansible.builtin.debug:
+    msg: >-
+      L3 gate rescue: a hand-written refusal already emitted its own
+      honest marker + cleanup for run_id={{ l3_run_id | default('<unknown>') }}
+      — see the refusal report above. Re-raising without emitting a
+      second marker.
+  when: l3_pre_mutation_marker_emitted | default(false)
+
+- name: "L3 gate rescue: fenced-check (R5a/P1-4 — read-only, before either
+    terminal patch below; see _lock_fenced_check.yml's own header for why
+    this is the LIGHTWEIGHT check, not the marker-emitting
+    lock_checkpoint.yml)"
+  ansible.builtin.include_tasks: _lock_fenced_check.yml
+  when: not (l3_pre_mutation_marker_emitted | default(false))
+
+- name: "L3 gate rescue: branch B — POST-mutation failure (mutation-state-aware, only when this attempt owns the snapshot AND still holds the lock)"
+  when:
+    - not (l3_pre_mutation_marker_emitted | default(false))
+    - l3_snapshot_created | default(false)
+    - l3_mutation_started | default(false)
+    - not (_l3_fenced_out | default(false))
+  block:
+    - name: "L3 gate rescue: POST-mutation — failed_rollback_required"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ l3_run_configmap_prefix }}{{ l3_run_id }}"
+            namespace: "{{ l3_lock_namespace }}"
+          data:
+            status: failed_rollback_required
+            failed_at: "{{ lookup('pipe', 'date +%s') }}"
+
+- name: "L3 gate rescue: branch C — UNEXPECTED pre-mutation failure (only when this attempt owns the snapshot AND still holds the lock)"
+  when:
+    - not (l3_pre_mutation_marker_emitted | default(false))
+    - l3_snapshot_created | default(false)
+    - not (l3_mutation_started | default(false))
+    - not (_l3_fenced_out | default(false))
+  block:
+    - name: "L3 gate rescue: PRE-mutation — superseded (moot, nothing was mutated)"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ l3_run_configmap_prefix }}{{ l3_run_id }}"
+            namespace: "{{ l3_lock_namespace }}"
+          data:
+            status: superseded
+
+- name: "L3 gate rescue: emit outcome marker (branches B/C only — mutation-state-aware token; branch A already emitted its own)"
+  ansible.builtin.include_tasks: _emit_outcome.yml
+  vars:
+    l3_outcome_token: "{{ 'post-mutation-failed' if (l3_mutation_started | default(false)) else 'preflight-error' }}"
+    l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }}"
+  when: not (l3_pre_mutation_marker_emitted | default(false))
+
+- name: "L3 gate rescue: release the facility lock (idempotent — release.yml's own outer always: is the backstop, this is belt-and-suspenders)"
+  ansible.builtin.include_tasks: lock_release.yml
+
+- name: "L3 gate rescue: report"
+  ansible.builtin.debug:
+    msg: >-
+      L3 gate FAILED
+      ({{ 'refusal-already-marked' if (l3_pre_mutation_marker_emitted | default(false))
+          else ('post-mutation' if (l3_mutation_started | default(false)) else 'pre-mutation') }})
+      for run_id={{ l3_run_id | default('<unknown>') }} — facility lock released.
+      {{ ('Snapshot marked failed_rollback_required; run a rollback (playbooks/rollback-run.yml, l3_run_id=' ~ l3_run_id ~ ') to clean up.')
+         if (not (l3_pre_mutation_marker_emitted | default(false)) and (l3_mutation_started | default(false)))
+         else ('See the refusal/report above for the honest outcome.') }}

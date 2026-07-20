@@ -1,0 +1,37 @@
+---
+# umbrella #202 WP3 R4a/P2-5 — control-flow execution fixture: a single,
+# isolated invocation of `l3_run_guard`'s `lock` tasks_from, against the
+# test harness stubs. Run as a nested `ansible-playbook` subprocess by
+# tests/l3-control-flow.yml (NOT included directly) — Ansible facts set
+# via `set_fact` inside a role (l3_lock_acquired, in particular) persist
+# for the REST of a single ansible-playbook run's host scope; running
+# each retry scenario as its own fresh subprocess is what actually
+# isolates them from each other (an earlier bug in this very suite: two
+# scenarios sharing one playbook run left l3_lock_acquired=true bleeding
+# from the first into the second, making the second scenario's genuine
+# exhaustion-refusal path never even run).
+#
+# Required extra_vars: l3_k8s_stub_url, l3_run_id, l3_lock_acquire_max_attempts
+
+- name: "L3 control-flow fixture: lock retry"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    l3_kube_api_url: "{{ l3_k8s_stub_url }}"
+    l3_kube_api_token: fake-fixture-token
+    l3_kube_api_validate_certs: false
+  module_defaults:
+    group/kubernetes.core.k8s:
+      host: "{{ l3_k8s_stub_url }}"
+      api_key: fake-fixture-token
+      validate_certs: false
+  tasks:
+    - name: Include l3_run_guard role (lock flow only)
+      ansible.builtin.include_role:
+        name: l3_run_guard
+        tasks_from: lock
+
+    - name: Report outcome (grepped by the controlling test)
+      ansible.builtin.debug:
+        msg: "LOCK_ACQUIRED={{ l3_lock_acquired | default(false) }}"

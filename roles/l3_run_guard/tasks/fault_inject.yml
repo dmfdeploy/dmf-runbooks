@@ -1,0 +1,106 @@
+---
+# umbrella #202 WP3 R4a Backbone (codex round-3 P2-5), hardened R5a (codex
+# round-4 P2-1) — TEST-ONLY fault injection point. Included at each stage
+# boundary listed below with `vars: l3_fault_inject_boundary: <name>`.
+#
+# R5a/P2-1: codex round-4 found that `l3_fault_inject` (a plain extra_var,
+# deliberately NOT reserved — see below) shipped LIVE on every production
+# launch/teardown path: every catalog job template accepts launch
+# extra_vars, so `-e l3_fault_inject=post-first-mutation` on a REAL AWX
+# dispatch could deliberately leave a live run dirty and trigger an
+# unwanted rollback — a test hook must never be a production wire
+# contract, even inside the trusted-AWX-caller boundary. Fixed: BOTH
+# actions below (raise, swap_holder) now ALSO require
+# `lookup('env', 'L3_TESTMODE')` to be truthy. `L3_TESTMODE` is a
+# CONTROLLER-PROCESS ENVIRONMENT VARIABLE, not an Ansible variable —
+# extra_vars, role vars, and set_fact all operate purely within Ansible's
+# own variable namespace and CANNOT set or influence the ansible-playbook
+# process's own OS environment. The test harness's own nested
+# `ansible-playbook` subprocess invocations (tests/harness/fixtures/*.yml,
+# tests/l3-control-flow.yml) set `L3_TESTMODE=1` in that subprocess's own
+# environment; the production catalog EE / AWX job environment never does
+# (and cannot be made to, via any extra_var a caller controls). So
+# `l3_fault_inject` alone is now INERT on any real production run,
+# regardless of what extra_vars are supplied — the env sentinel is the
+# actual gate; the extra_var is just WHICH boundary/action to take once
+# that gate is already open.
+#
+# Deliberately NOT a reserved var (see _assert_reserved_vars.yml) — a
+# control-flow execution test MUST be able to set it via extra_vars from
+# the outside; that's the entire point of this mechanism. The env-gate
+# above is what makes that safe now — reservation was never the right
+# defense for a var whose whole purpose is caller-settable test control.
+#
+# Current boundary names (used by the P2-5/R5a execution-test suite —
+# tests/harness/ — to drive "what happens if THIS stage throws/loses the
+# lock" without needing to actually break a real K8s/Helm/NetBox call):
+#   post-lock            — immediately after lock acquisition succeeds
+#   post-snapshot         — immediately after snapshot capture succeeds (launch only)
+#   post-capacity         — immediately after capacity/fit evaluation succeeds (launch only)
+#   pre-mutation-start     — immediately before l3_mutation_started is set (launch/teardown)
+#   post-mutation-start    — immediately after l3_mutation_started is set, before the
+#                           caller's own first real mutation (launch/teardown)
+#   post-first-mutation     — immediately after the caller's first real mutation
+#                           completes (launch: provision; teardown: helm removal;
+#                           rollback: first surface mutation)
+#
+# Two actions, both gated by `l3_fault_inject == <boundary>` AND the
+# L3_TESTMODE env sentinel:
+#   l3_fault_inject_action: raise (DEFAULT) — the original behavior: fails
+#     the play with a distinctive, easily-greppable message.
+#   l3_fault_inject_action: swap_holder — R5a/P1-4's own holder-replacement
+#     probe: overwrites the CURRENT facility lock's holder_attempt_id (via
+#     a raw, unauthenticated-by-this-role uri PUT — this task itself does
+#     NOT go through this role's own precondition-checked lock_release.yml/
+#     lock_checkpoint.yml machinery, it deliberately bypasses it to
+#     simulate what a GENUINELY DIFFERENT owner's own reclaim would have
+#     produced) to a fake different attempt_id, WITHOUT raising — the play
+#     continues normally to its NEXT checkpoint, which must then detect
+#     the fencing for real.
+
+- name: "L3 fault inject: {{ l3_fault_inject_boundary }} (test-only, raise — no-op unless L3_TESTMODE env is set AND l3_fault_inject matches)"
+  ansible.builtin.fail:
+    msg: >-
+      L3_FAULT_INJECT: deliberately raised at boundary
+      '{{ l3_fault_inject_boundary }}' for run_id={{ l3_run_id | default('<unknown>') }}
+      — this is a TEST-ONLY injected failure (l3_fault_inject extra_var +
+      L3_TESTMODE env), not a real error.
+  when:
+    - (lookup('env', 'L3_TESTMODE') | default('') | bool)
+    - (l3_fault_inject | default('')) == l3_fault_inject_boundary
+    - (l3_fault_inject_action | default('raise')) == 'raise'
+
+- name: "L3 fault inject: {{ l3_fault_inject_boundary }} (test-only, swap_holder — no-op unless L3_TESTMODE env is set AND l3_fault_inject matches)"
+  when:
+    - (lookup('env', 'L3_TESTMODE') | default('') | bool)
+    - (l3_fault_inject | default('')) == l3_fault_inject_boundary
+    - (l3_fault_inject_action | default('raise')) == 'swap_holder'
+    - l3_lock_acquired | default(false)
+  block:
+    - name: "L3 fault inject: swap_holder — read the current lock (for its resourceVersion)"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: ConfigMap
+        name: "{{ l3_lock_configmap_name }}"
+        namespace: "{{ l3_lock_namespace }}"
+      register: _l3_fault_inject_swap_read
+
+    - name: "L3 fault inject: swap_holder — overwrite holder_attempt_id to simulate a genuine new owner (bypasses this role's own machinery on purpose)"
+      ansible.builtin.uri:
+        url: "{{ _l3_api_url }}/api/v1/namespaces/{{ l3_lock_namespace }}/configmaps/{{ l3_lock_configmap_name }}"
+        method: PUT
+        headers:
+          Authorization: "Bearer {{ _l3_api_token }}"
+          Content-Type: application/json
+        body_format: json
+        body: >-
+          {{
+            (_l3_fault_inject_swap_read.resources | first)
+            | combine({'data': (_l3_fault_inject_swap_read.resources | first).data
+                                | combine({'holder_attempt_id': 'test-injected-new-owner'})},
+                       recursive=true)
+          }}
+        ca_path: "{{ _l3_api_ca_path if (_l3_api_ca_path | default('')) != '' else omit }}"
+        validate_certs: "{{ _l3_api_validate_certs }}"
+        status_code: [200, 409]
+      when: (_l3_fault_inject_swap_read.resources | default([])) | length > 0
