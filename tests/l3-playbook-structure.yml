@@ -56,4 +56,11 @@
           as its first task — the exact shape that would have caught the
           crosspoint credential-check-before-the-block bug (R5a-3) and the
           missing-lock-checkpoint bugs (R5a-4) structurally, not just by
-          code review.
+          code review. Also umbrella #272: no task file under
+          roles/l3_run_guard/tasks/ or playbooks/ re-introduces the
+          version-portability None-sentinel anti-pattern (`else None`
+          template + `is [not] none` gate) that let the L3 gate refuse
+          healthy environments on the AWX EE's older ansible-core while
+          passing clean on this dev harness's own core — a static check,
+          since this harness's own core cannot reproduce that rendering
+          difference to catch it at execution time.

@@ -68,6 +68,12 @@
     - _l3_all_pods.failed | default(false)
     - "'forbidden' not in (_l3_all_pods.msg | default('') | lower)"
 
+# umbrella #272: an empty-string sentinel, not None — a Jinja template
+# whose only content is `{{ ... else None }}` renders the Python None
+# object on ansible-core 2.20 (dev harness) but the STRING "" on the AWX
+# EE's older core, so an `is not none` gate refuses a HEALTHY environment
+# there (verified live, job 122). '' | length > 0 is rendering-stable
+# across both cores because it never depends on None surviving as a type.
 - name: "L3 preflight: structural failure classification"
   ansible.builtin.set_fact:
     _l3_preflight_failure: >-
@@ -78,11 +84,11 @@
         if (_l3_target_ns.resources | default([]) | length) == 0
         else ('cluster-wide pod-list RBAC missing (dmf-l3-preflight-reader ClusterRole, umbrella #202 WP3-C): ' ~ (_l3_all_pods.msg | default('')))
         if (_l3_all_pods.failed | default(false))
-        else None
+        else ''
       }}
 
 - name: "L3 preflight: structural precondition failure (frozen 'preflight-error' marker, never override-able)"
-  when: _l3_preflight_failure is not none
+  when: (_l3_preflight_failure | default('')) | length > 0
   block:
     - name: Report preflight failure
       ansible.builtin.debug:

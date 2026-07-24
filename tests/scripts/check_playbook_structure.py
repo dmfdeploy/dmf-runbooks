@@ -43,8 +43,17 @@ is real list/dict tree-walking, not text-matching. PyYAML gives us the
 actual tree; a regex sweep over indentation would be a hand-rolled, buggy
 YAML parser in disguise.
 
+Also since umbrella #272: a second, independent static check,
+_check_none_sentinel_antipattern(), scans every task file under
+roles/l3_run_guard/tasks/ and playbooks/*.yml for the version-portability
+None-sentinel anti-pattern (a `{{ ... else None }}` template gated by `is
+[not] none`) that let the L3 gate refuse healthy environments on the AWX
+EE's older ansible-core while passing clean on this repo's own dev
+harness — see that function's own docstring for the full story.
+
 Usage:  python3 tests/scripts/check_playbook_structure.py
-Exit 0 = every playbook checked below has the expected outer-block shape.
+Exit 0 = every playbook checked below has the expected outer-block shape,
+and no task file re-introduces the umbrella #272 None-sentinel anti-pattern.
 Exit 1 = something is missing — printed, with the exact playbook + reason.
 
 NOTE ON INTERPRETER: this script needs PyYAML, which is NOT guaranteed to
@@ -62,6 +71,7 @@ the ImportError below explains the fix rather than crashing raw.
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -102,6 +112,17 @@ _TEARDOWN_PLAYBOOKS = [
 _ROLLBACK_PLAYBOOK = "rollback-run.yml"
 
 _GATE_ROLE = "l3_run_guard"
+
+# umbrella #272 (regression guard, added same round as the fix) — scan
+# scope for the None-sentinel anti-pattern below: this role's own task
+# files plus the real entry playbooks. filter_plugins/*.py is Python, not
+# Jinja/YAML, and is deliberately NOT scanned (see
+# _check_none_sentinel_antipattern's own docstring for why the class of
+# bug this bans is a YAML/Jinja-templating-only concern).
+_ROLE_TASKS_DIR = _REPO_ROOT / "roles" / "l3_run_guard" / "tasks"
+
+_NONE_SENTINEL_RE = re.compile(r"else\s+None\b")
+_IS_NONE_GATE_RE = re.compile(r"\bis\s+not\s+none\b|\bis\s+none\b")
 
 
 def _include_role_spec(task: dict) -> dict | None:
@@ -155,6 +176,95 @@ def _load_single_play(path: Path) -> tuple[dict | None, list[str]]:
         )
         return None, errors
     return docs[0], errors
+
+
+def _walk_string_leaves(node: object, key_path: list[str]) -> list[tuple[list[str], str]]:
+    """Recursively yield (key_path, value) for every string leaf in a
+    parsed YAML tree. PyYAML's parse tree never contains comment text, so
+    this can never false-positive on a comment merely DISCUSSING the
+    banned pattern (this file's own header comments, or preflight.yml/
+    rollback_snapshot_read.yml's umbrella #272 explainer comments, do —
+    on purpose)."""
+    hits: list[tuple[list[str], str]] = []
+    if isinstance(node, dict):
+        for k, v in node.items():
+            hits.extend(_walk_string_leaves(v, key_path + [str(k)]))
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            hits.extend(_walk_string_leaves(v, key_path + [str(i)]))
+    elif isinstance(node, str):
+        hits.append((key_path, node))
+    return hits
+
+
+def _check_none_sentinel_antipattern() -> list[str]:
+    """umbrella #272 — regression guard for the version-portability bug
+    that motivated this check: a Jinja template classifying "no
+    structural failure" via a bare `{{ ... else None }}` chained
+    conditional, gated by `when: X is not none`. On ansible-core 2.20
+    (this repo's dev harness) that template preserves the real Python
+    None object, so the gate correctly stays closed. On the AWX EE's
+    OLDER ansible-core the exact same template renders to the STRING ""
+    instead — a defined, non-None value — so `is not none` misfires and
+    refuses a HEALTHY environment (verified live: EE job 122 stored
+    `_l3_preflight_failure: ""`). The harness's own dev-core interpreter
+    cannot reproduce the EE's rendering (that's the whole portability
+    bug), so no execution-level test run on this harness can catch a
+    regression of this class — only a STATIC scan of the task files
+    themselves can. Hence: both halves of the old pattern are banned
+    outright, anywhere in this role's task files or the real entry
+    playbooks — not just the two instances umbrella #272 actually found
+    and fixed (roles/l3_run_guard/tasks/preflight.yml,
+    rollback_snapshot_read.yml):
+
+      1. a literal `else None` inside a Jinja template value (`set_fact:`,
+         `vars:`, or any other templated field).
+      2. an `is none` / `is not none` comparison anywhere in one of these
+         files (`when:` gates are the observed case, but the ban is not
+         limited to `when:` — the same rendering hazard applies to any
+         comparison against a template-produced value).
+
+    The fix for both: an empty-string sentinel (`else ''`) plus a
+    `| length > 0` (or `| default('') | length > 0`) gate — identical
+    semantics on every ansible-core version, because it never depends on
+    None surviving as a distinct type through templating.
+
+    filter_plugins/*.py is untouched and NOT scanned here: `else None` in
+    real Python (no templating involved) is fine — see
+    roles/l3_run_guard/filter_plugins/l3_budget.py's own l3_snapshot_refusal
+    docstring for why ITS return contract still had to change (its result
+    flows back into a Jinja template one hop downstream, so the class of
+    bug reappears there even though the function itself is pure Python).
+    """
+    errors: list[str] = []
+    files = sorted(_ROLE_TASKS_DIR.rglob("*.yml")) + sorted(_PLAYBOOKS_DIR.rglob("*.yml"))
+    for path in files:
+        rel = path.relative_to(_REPO_ROOT)
+        try:
+            docs = list(yaml.safe_load_all(path.read_text()))
+        except yaml.YAMLError as exc:
+            errors.append(f"{rel}: YAML parse error while scanning for the umbrella #272 None-sentinel anti-pattern: {exc}")
+            continue
+        for doc in docs:
+            for key_path, value in _walk_string_leaves(doc, []):
+                where = f"{rel} ({'.'.join(key_path)})" if key_path else str(rel)
+                if _NONE_SENTINEL_RE.search(value):
+                    errors.append(
+                        f"{where}: banned `else None` Jinja sentinel "
+                        "(umbrella #272 version-portability class — see "
+                        "_check_none_sentinel_antipattern's docstring). Use "
+                        "an empty-string sentinel (`else ''`) instead."
+                    )
+                if _IS_NONE_GATE_RE.search(value):
+                    errors.append(
+                        f"{where}: banned `is none`/`is not none` comparison "
+                        "(umbrella #272 version-portability class — a "
+                        "template-produced None can render as a defined "
+                        "empty STRING on some ansible-core versions, so "
+                        "this comparison silently never matches there). Use "
+                        "`(var | default('')) | length > 0` instead."
+                    )
+    return errors
 
 
 def _check_playbook(filename: str, flow: str) -> list[str]:
@@ -326,10 +436,13 @@ def main() -> int:
 
     total = len(_LAUNCH_PLAYBOOKS) + len(_TEARDOWN_PLAYBOOKS) + 1
 
+    none_sentinel_errors = _check_none_sentinel_antipattern()
+    all_errors.extend(none_sentinel_errors)
+
     if all_errors:
         print(
             f"FAIL: {len(all_errors)} structural issue(s) found across the "
-            f"{total} real entry playbooks:",
+            f"{total} real entry playbooks and this role's task files:",
             file=sys.stderr,
         )
         for e in all_errors:
@@ -344,7 +457,10 @@ def main() -> int:
         "release.yml only for rollback, by design — see this script's own "
         "rollback-branch comment), and (launch playbooks) the l3_run_guard "
         "gate include sits as the first task inside that block, not "
-        "before it."
+        "before it. umbrella #272: no task file under roles/l3_run_guard/"
+        "tasks/ or playbooks/ contains the banned None-sentinel "
+        "rendering-portability anti-pattern (`else None` template + `is "
+        "[not] none` gate) either."
     )
     return 0
 
