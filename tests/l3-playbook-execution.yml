@@ -1171,11 +1171,11 @@
               - "'preflight-error' in _pe9_markers[0]"
             fail_msg: "(9) FAIL — expected exactly one preflight-error marker, got: {{ _pe9_markers }}"
 
-        - name: "(9) ASSERT: the empty-password fail_msg text is present (proves THIS assert fired, not some unrelated failure)"
+        - name: "(9) ASSERT: the crosspoint admin-password preflight assert's TASK header is present (proves THIS specific assert ran, not some unrelated failure) — no_log-safe: a task's name/header is never censored by no_log, only its result content is, and ansible-core 2.15 vs 2.20 differ in how much of that leaks (2.20's [ERROR] diagnostic echoes fail_msg text even under no_log; 2.15 fully censors it), so the fail_msg/secret text itself is never asserted on here"
           ansible.builtin.assert:
             that:
-              - "'vault_nmos_crosspoint_admin_password is empty' in _pe9_run.stdout"
-            fail_msg: "(9) FAIL — expected fail_msg not found in stdout={{ _pe9_run.stdout }}"
+              - "'TASK [Assert crosspoint admin password was provided (fail closed)' in _pe9_run.stdout"
+            fail_msg: "(9) FAIL — expected the crosspoint admin-password assert's TASK header in stdout; not found. stdout={{ _pe9_run.stdout }}"
 
         - name: "(9) ASSERT (via real HTTP against the stub): the facility lock was released"
           ansible.builtin.uri:
