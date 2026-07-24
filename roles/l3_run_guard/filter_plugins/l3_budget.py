@@ -354,6 +354,72 @@ def l3_render_demand(manifests: list) -> dict:
     return {"cpu_m": total_cpu, "mem_b": total_mem, "has_requests": any_workload and all_budgeted}
 
 
+class L3BudgetInputError(ValueError):
+    """Raised by _coerce_capacity_int (umbrella #275) when an arithmetic/
+    comparison filter's numeric input is not a value this module will
+    trust. A filter must never assume the templating engine handed it a
+    genuine int just because THIS dev harness's ansible-core does — on
+    the AWX EE's older core, a value re-templated through an extra Jinja
+    hop past its ORIGINAL producing filter/expression can arrive as a
+    plain digit string instead of an int (live: job 147,
+    `'>=' not supported between instances of 'int' and 'str'`, traced to
+    capacity.yml's `_l3_run_demand` fact — see that task's own umbrella
+    #275 comment). Raising here, rather than letting a raw TypeError
+    crash the comparison with a cryptic message, is NOT a new refusal
+    mechanism: every launch/teardown playbook's outer block already
+    catches ANY pre-mutation exception via gate_rescue.yml's branch C and
+    converts it into a clean, honest preflight-error refusal + lock
+    release (confirmed live: job 147 held fail-closed on this exact
+    crash). This exception's only job is to make that failure legible —
+    which input, what was wrong — not to invent a new path.
+    """
+
+
+def _coerce_capacity_int(value, *, label: str) -> int:
+    """Boundary-coerce one numeric leaf for a capacity/lock arithmetic
+    filter (umbrella #275). Accepts a genuine ``int``, OR a string of
+    decimal digits (optionally a leading ``-``) — the exact shape an
+    already-computed int can degrade to when re-templated through an
+    extra Jinja hop on the AWX EE's older ansible-core. Explicitly
+    rejects:
+
+      * ``bool`` — a bare ``isinstance(x, int)`` check would silently
+        accept ``True``/``False`` as 1/0, never a legitimate capacity or
+        timestamp value here.
+      * ``float`` — a fractional millicore/byte/epoch-second value is
+        never legitimate in this module's domain; silently truncating one
+        would hide a genuine upstream data problem.
+      * ``None``, empty strings, non-digit strings, and any other type.
+      * negative values, however they arrived — capacity/timestamp
+        domains here are never negative (a negative reserve/demand/
+        allocatable manufactures FAKE headroom; see
+        _assert_authority.yml's own ``l3_ee_reserve.cpu_m=-1000``
+        "returned FIT" finding for why silently accepting one is
+        dangerous, not just wrong).
+
+    Never silently coerces garbage into a default — every rejection
+    raises L3BudgetInputError (see its own docstring for why that's
+    still fail-closed, not a crash).
+    """
+    if isinstance(value, bool):
+        raise L3BudgetInputError(f"{label}: expected a non-negative integer, got a bool ({value!r})")
+    if isinstance(value, int):
+        n = value
+    elif isinstance(value, str):
+        s = value.strip()
+        if not re.fullmatch(r"-?[0-9]+", s):
+            raise L3BudgetInputError(f"{label}: expected a non-negative integer or a digit string, got {value!r}")
+        n = int(s)
+    else:
+        raise L3BudgetInputError(
+            f"{label}: expected a non-negative integer or a digit string, "
+            f"got {type(value).__name__} ({value!r})"
+        )
+    if n < 0:
+        raise L3BudgetInputError(f"{label}: expected a non-negative integer, got a negative value ({n})")
+    return n
+
+
 def l3_evaluate_fit(allocatable: dict, existing_demand: dict, ee_reserve: dict, run_demand: dict) -> dict:
     """FIT/NO-FIT verdict + a §3.4-style human-legible report (node name
     only — no IPs, per the plan's public-safety posture).
@@ -362,27 +428,40 @@ def l3_evaluate_fit(allocatable: dict, existing_demand: dict, ee_reserve: dict, 
     real caller — see the module docstring's no-double-count note; kept as
     an explicit parameter (not hardcoded) so the offline gate can prove
     the zero-value flows through untouched rather than assuming it.
+
+    umbrella #275: every numeric leaf below is boundary-coerced via
+    _coerce_capacity_int on entry — this filter never trusts that its
+    caller's templating handed it a genuine int, regardless of which of
+    the four inputs is presently safe (see _coerce_capacity_int's own
+    docstring for why: the caller side of this boundary can change).
     """
-    ee_cpu = (ee_reserve or {}).get("cpu_m", 0)
-    ee_mem = (ee_reserve or {}).get("mem_b", 0)
-    headroom_cpu = allocatable["cpu_m"] - existing_demand["cpu_m"] - ee_cpu
-    headroom_mem = allocatable["mem_b"] - existing_demand["mem_b"] - ee_mem
-    fit = headroom_cpu >= run_demand["cpu_m"] and headroom_mem >= run_demand["mem_b"]
+    alloc_cpu = _coerce_capacity_int(allocatable["cpu_m"], label="allocatable.cpu_m")
+    alloc_mem = _coerce_capacity_int(allocatable["mem_b"], label="allocatable.mem_b")
+    existing_cpu = _coerce_capacity_int(existing_demand["cpu_m"], label="existing_demand.cpu_m")
+    existing_mem = _coerce_capacity_int(existing_demand["mem_b"], label="existing_demand.mem_b")
+    ee_cpu = _coerce_capacity_int((ee_reserve or {}).get("cpu_m", 0), label="ee_reserve.cpu_m")
+    ee_mem = _coerce_capacity_int((ee_reserve or {}).get("mem_b", 0), label="ee_reserve.mem_b")
+    run_cpu = _coerce_capacity_int(run_demand["cpu_m"], label="run_demand.cpu_m")
+    run_mem = _coerce_capacity_int(run_demand["mem_b"], label="run_demand.mem_b")
+
+    headroom_cpu = alloc_cpu - existing_cpu - ee_cpu
+    headroom_mem = alloc_mem - existing_mem - ee_mem
+    fit = headroom_cpu >= run_cpu and headroom_mem >= run_mem
     verdict = "fit" if fit else "no-fit"
 
     lines = [
         "L3 launcher capacity preflight (§3.2, scheduler-accurate, single node)",
         f"node={allocatable.get('name', '?')} verdict={verdict}",
-        f"cpu(m): demand={run_demand['cpu_m']} headroom={headroom_cpu} "
-        f"(allocatable={allocatable['cpu_m']} existing={existing_demand['cpu_m']} ee_reserve={ee_cpu})",
-        f"mem(B): demand={run_demand['mem_b']} headroom={headroom_mem} "
-        f"(allocatable={allocatable['mem_b']} existing={existing_demand['mem_b']} ee_reserve={ee_mem})",
+        f"cpu(m): demand={run_cpu} headroom={headroom_cpu} "
+        f"(allocatable={alloc_cpu} existing={existing_cpu} ee_reserve={ee_cpu})",
+        f"mem(B): demand={run_mem} headroom={headroom_mem} "
+        f"(allocatable={alloc_mem} existing={existing_mem} ee_reserve={ee_mem})",
     ]
     if verdict == "no-fit":
         lines.append(
             "shortfall: cpu={0}m mem={1}B".format(
-                max(0, run_demand["cpu_m"] - headroom_cpu),
-                max(0, run_demand["mem_b"] - headroom_mem),
+                max(0, run_cpu - headroom_cpu),
+                max(0, run_mem - headroom_mem),
             )
         )
 
@@ -418,16 +497,25 @@ def l3_lock_decision(existing_lock, now_epoch, ttl_seconds) -> dict:
       * ``{"action": "refuse", "holder", "run_id", "age_seconds"}`` — held
         by ANYONE, within TTL — genuine facility-busy refusal (R2a-3d: NOT
         override-able).
+
+    umbrella #275: ``now_epoch``/``ttl_seconds``/the read-back lock's own
+    ``created_at`` are all boundary-coerced via _coerce_capacity_int — a
+    malformed (non-digit, negative, wrong-type) value now fails closed
+    (raises) instead of the previous bare ``try/except -> silently
+    default to 0``, which could mask a genuinely corrupt lock record
+    behind a fabricated "created at the epoch" age. A genuinely ABSENT
+    ``created_at`` key still defaults to 0 (an existing, deliberate
+    business-logic default for a foreign/malformed ConfigMap missing the
+    field entirely) — only a PRESENT-but-garbage value now raises.
     """
     if not existing_lock:
         return {"action": "create"}
-    try:
-        created_at = int(existing_lock.get("created_at", 0))
-    except (TypeError, ValueError):
-        created_at = 0
-    age = int(now_epoch) - created_at
+    created_at = _coerce_capacity_int(existing_lock.get("created_at", 0), label="existing_lock.created_at")
+    now = _coerce_capacity_int(now_epoch, label="now_epoch")
+    ttl = _coerce_capacity_int(ttl_seconds, label="ttl_seconds")
+    age = now - created_at
 
-    if age > int(ttl_seconds):
+    if age > ttl:
         return {
             "action": "reclaim",
             "stale_holder": existing_lock.get("holder"),

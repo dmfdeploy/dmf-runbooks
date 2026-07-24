@@ -146,11 +146,28 @@
   ansible.builtin.set_fact:
     _l3_run_demand_result: "{{ _l3_rendered_manifests | l3_render_demand }}"
 
+# umbrella #275: THIS is the fact identified as the live str-ifying site
+# (job 147, `'>=' not supported between instances of 'int' and 'str'` in
+# l3_evaluate_fit). _l3_run_demand_result above is a SINGLE Jinja
+# expression (the whole set_fact value is one `{{ ... | filter }}` call,
+# same safe shape as _l3_allocatable/_l3_existing_demand) whose cpu_m/
+# mem_b are already genuine Python ints from l3_render_demand. The OLD
+# version of this task rebuilt a NEW dict with each field independently
+# re-templated (`cpu_m: "{{ _l3_run_demand_result.cpu_m }}"`) — an EXTRA
+# Jinja hop past an already-typed value, the exact shape #272's
+# _l3_snapshot_refusal_token and #273's type_debug comparisons were also
+# built on. The error trace confirms it: subtraction using allocatable/
+# existing_demand/ee_reserve succeeded (headroom computed as an int) and
+# ONLY the subsequent `>=` comparison against run_demand's fields raised —
+# meaning allocatable/existing_demand/ee_reserve were fine, and
+# run_demand's cpu_m/mem_b were the string-typed values. Fixed by
+# collapsing the rebuild into ONE single expression (no per-field
+# re-hop) — l3_evaluate_fit ALSO now boundary-coerces this input
+# defensively regardless (see l3_budget.py's _coerce_capacity_int), so
+# this is defense-in-depth, not the only fix.
 - name: "L3 capacity: run demand (cpu_m/mem_b pair for l3_evaluate_fit)"
   ansible.builtin.set_fact:
-    _l3_run_demand:
-      cpu_m: "{{ _l3_run_demand_result.cpu_m }}"
-      mem_b: "{{ _l3_run_demand_result.mem_b }}"
+    _l3_run_demand: "{{ {'cpu_m': _l3_run_demand_result.cpu_m, 'mem_b': _l3_run_demand_result.mem_b} }}"
 
 # ── missing-budget refusal ──────────────────────────────────────────────────
 - name: "L3 capacity: missing-budget refusal (unless overridden)"
