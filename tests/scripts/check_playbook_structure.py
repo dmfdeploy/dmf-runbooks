@@ -43,17 +43,20 @@ is real list/dict tree-walking, not text-matching. PyYAML gives us the
 actual tree; a regex sweep over indentation would be a hand-rolled, buggy
 YAML parser in disguise.
 
-Also since umbrella #272: a second, independent static check,
-_check_none_sentinel_antipattern(), scans every task file under
-roles/l3_run_guard/tasks/ and playbooks/*.yml for the version-portability
-None-sentinel anti-pattern (a `{{ ... else None }}` template gated by `is
-[not] none`) that let the L3 gate refuse healthy environments on the AWX
-EE's older ansible-core while passing clean on this repo's own dev
-harness — see that function's own docstring for the full story.
+Also since umbrella #272/#273: two further independent static checks,
+_check_none_sentinel_antipattern() and _check_type_debug_antipattern(),
+scan every task file under roles/l3_run_guard/tasks/ and playbooks/*.yml
+(via the shared _iter_production_yaml_string_leaves() parse, so production
+YAML is only parsed once) for two version-portability anti-patterns that
+each let the L3 gate refuse healthy environments on the AWX EE's older
+ansible-core while passing clean on this repo's own dev harness — a
+None-sentinel Jinja template gated by `is [not] none`, and a `type_debug`
+result compared against a quoted type-name literal. See each function's
+own docstring for its full story.
 
 Usage:  python3 tests/scripts/check_playbook_structure.py
 Exit 0 = every playbook checked below has the expected outer-block shape,
-and no task file re-introduces the umbrella #272 None-sentinel anti-pattern.
+and no task file re-introduces the umbrella #272 or #273 anti-pattern.
 Exit 1 = something is missing — printed, with the exact playbook + reason.
 
 NOTE ON INTERPRETER: this script needs PyYAML, which is NOT guaranteed to
@@ -123,6 +126,16 @@ _ROLE_TASKS_DIR = _REPO_ROOT / "roles" / "l3_run_guard" / "tasks"
 
 _NONE_SENTINEL_RE = re.compile(r"else\s+None\b")
 _IS_NONE_GATE_RE = re.compile(r"\bis\s+not\s+none\b|\bis\s+none\b")
+
+# umbrella #273 — the second version-portability class: `type_debug`
+# reports a str SUBCLASS's own name (e.g. AnsibleUnsafeText) on older
+# ansible-core rather than 'str', so any comparison of type_debug's
+# output against a quoted primitive type-name literal is rendering-
+# unstable across ansible-core versions. See
+# _check_type_debug_antipattern's own docstring for the full story.
+_TYPE_NAME_LITERAL_RE = re.compile(
+    r"""['"](str|int|float|bool|list|dict|NoneType|unicode|AnsibleUnsafeText|AnsibleUnicode)['"]"""
+)
 
 
 def _include_role_spec(task: dict) -> dict | None:
@@ -197,7 +210,31 @@ def _walk_string_leaves(node: object, key_path: list[str]) -> list[tuple[list[st
     return hits
 
 
-def _check_none_sentinel_antipattern() -> list[str]:
+def _iter_production_yaml_string_leaves() -> list[tuple[Path, list[str], str]]:
+    """Parse every task file under _ROLE_TASKS_DIR + every playbook under
+    _PLAYBOOKS_DIR and yield (relative_path, key_path, string_value) for
+    every string leaf found — the shared scan both umbrella #272's and
+    #273's static anti-pattern checks below are built on, so production
+    YAML is only parsed once regardless of how many patterns are banned
+    against it. A YAML parse error on any file is reported as a single
+    synthetic "hit" (key_path == ['<parse-error>']) so callers surface it
+    as a normal error rather than needing their own separate handling."""
+    hits: list[tuple[Path, list[str], str]] = []
+    files = sorted(_ROLE_TASKS_DIR.rglob("*.yml")) + sorted(_PLAYBOOKS_DIR.rglob("*.yml"))
+    for path in files:
+        rel = path.relative_to(_REPO_ROOT)
+        try:
+            docs = list(yaml.safe_load_all(path.read_text()))
+        except yaml.YAMLError as exc:
+            hits.append((rel, ["<parse-error>"], str(exc)))
+            continue
+        for doc in docs:
+            for key_path, value in _walk_string_leaves(doc, []):
+                hits.append((rel, key_path, value))
+    return hits
+
+
+def _check_none_sentinel_antipattern(scan: list[tuple[Path, list[str], str]]) -> list[str]:
     """umbrella #272 — regression guard for the version-portability bug
     that motivated this check: a Jinja template classifying "no
     structural failure" via a bare `{{ ... else None }}` chained
@@ -237,33 +274,79 @@ def _check_none_sentinel_antipattern() -> list[str]:
     bug reappears there even though the function itself is pure Python).
     """
     errors: list[str] = []
-    files = sorted(_ROLE_TASKS_DIR.rglob("*.yml")) + sorted(_PLAYBOOKS_DIR.rglob("*.yml"))
-    for path in files:
-        rel = path.relative_to(_REPO_ROOT)
-        try:
-            docs = list(yaml.safe_load_all(path.read_text()))
-        except yaml.YAMLError as exc:
-            errors.append(f"{rel}: YAML parse error while scanning for the umbrella #272 None-sentinel anti-pattern: {exc}")
+    for rel, key_path, value in scan:
+        if key_path == ["<parse-error>"]:
+            errors.append(f"{rel}: YAML parse error while scanning for static anti-patterns: {value}")
             continue
-        for doc in docs:
-            for key_path, value in _walk_string_leaves(doc, []):
-                where = f"{rel} ({'.'.join(key_path)})" if key_path else str(rel)
-                if _NONE_SENTINEL_RE.search(value):
-                    errors.append(
-                        f"{where}: banned `else None` Jinja sentinel "
-                        "(umbrella #272 version-portability class — see "
-                        "_check_none_sentinel_antipattern's docstring). Use "
-                        "an empty-string sentinel (`else ''`) instead."
-                    )
-                if _IS_NONE_GATE_RE.search(value):
-                    errors.append(
-                        f"{where}: banned `is none`/`is not none` comparison "
-                        "(umbrella #272 version-portability class — a "
-                        "template-produced None can render as a defined "
-                        "empty STRING on some ansible-core versions, so "
-                        "this comparison silently never matches there). Use "
-                        "`(var | default('')) | length > 0` instead."
-                    )
+        where = f"{rel} ({'.'.join(key_path)})" if key_path else str(rel)
+        if _NONE_SENTINEL_RE.search(value):
+            errors.append(
+                f"{where}: banned `else None` Jinja sentinel "
+                "(umbrella #272 version-portability class — see "
+                "_check_none_sentinel_antipattern's docstring). Use "
+                "an empty-string sentinel (`else ''`) instead."
+            )
+        if _IS_NONE_GATE_RE.search(value):
+            errors.append(
+                f"{where}: banned `is none`/`is not none` comparison "
+                "(umbrella #272 version-portability class — a "
+                "template-produced None can render as a defined "
+                "empty STRING on some ansible-core versions, so "
+                "this comparison silently never matches there). Use "
+                "`(var | default('')) | length > 0` instead."
+            )
+    return errors
+
+
+def _check_type_debug_antipattern(scan: list[tuple[Path, list[str], str]]) -> list[str]:
+    """umbrella #273 — regression guard for the SECOND member of the same
+    version-portability class umbrella #272 found: `lock.yml`/
+    `snapshot.yml` used to gate a ConfigMap manifest's data values with
+    `map('type_debug') | select('ne', 'str')`. On ansible-core 2.20 (this
+    dev harness, Data Tagging) a templated string reports plain 'str' via
+    type_debug, so the harness's own execution suites always passed. On
+    the AWX EE's OLDER ansible-core, that same templated string is
+    `AnsibleUnsafeText` — a str SUBCLASS — and type_debug reports the
+    subclass's own name, not 'str', so the membership check failed for
+    values that were genuinely, correctly, valid strings (verified live:
+    EE job 135, every manifest value a plain string). Exactly the same
+    shape as #272: correct on this harness's core, wrong on the EE's,
+    because type_debug's exact-name-string output isn't stable across
+    ansible-core versions for anything that isn't a bare, un-subclassed
+    builtin type — so this harness's execution suites can't catch a
+    regression here either, only a static scan can.
+
+    Banned outright in this role's task files and the real entry
+    playbooks: `type_debug` appearing together with a quoted primitive
+    type-name literal (`'str'`, `"int"`, etc.) in the SAME templated
+    value — the shape of a type-name equality/membership check. The fix:
+    the Jinja `string` TEST (`is string` / `reject('string')`), which
+    uses isinstance() and so accepts str and every subclass, on any core.
+
+    tests/ is OUT of scope for this check by construction (the shared
+    scan only walks _ROLE_TASKS_DIR + _PLAYBOOKS_DIR) — tests/
+    l3-budget-logic.yml's own (p) gate deliberately asserts type_debug's
+    ACTUAL behavior on this dev harness's own known core (proving the
+    `| string` coercion filter itself genuinely turns an int into a str),
+    which is a legitimate, correct use this ban must not touch — see that
+    gate's own umbrella #273 comment for why it isn't a re-test of the
+    (now type_debug-free) production gate.
+    """
+    errors: list[str] = []
+    for rel, key_path, value in scan:
+        if key_path == ["<parse-error>"]:
+            continue  # already reported once by _check_none_sentinel_antipattern
+        if "type_debug" not in value:
+            continue
+        if _TYPE_NAME_LITERAL_RE.search(value):
+            where = f"{rel} ({'.'.join(key_path)})" if key_path else str(rel)
+            errors.append(
+                f"{where}: banned `type_debug` compared against a quoted "
+                "type-name literal (umbrella #273 version-portability "
+                "class — see _check_type_debug_antipattern's docstring). "
+                "Use the Jinja `string` test (`reject('string')` / "
+                "`is string`) instead."
+            )
     return errors
 
 
@@ -436,8 +519,9 @@ def main() -> int:
 
     total = len(_LAUNCH_PLAYBOOKS) + len(_TEARDOWN_PLAYBOOKS) + 1
 
-    none_sentinel_errors = _check_none_sentinel_antipattern()
-    all_errors.extend(none_sentinel_errors)
+    production_scan = _iter_production_yaml_string_leaves()
+    all_errors.extend(_check_none_sentinel_antipattern(production_scan))
+    all_errors.extend(_check_type_debug_antipattern(production_scan))
 
     if all_errors:
         print(
@@ -460,7 +544,10 @@ def main() -> int:
         "before it. umbrella #272: no task file under roles/l3_run_guard/"
         "tasks/ or playbooks/ contains the banned None-sentinel "
         "rendering-portability anti-pattern (`else None` template + `is "
-        "[not] none` gate) either."
+        "[not] none` gate) either. umbrella #273: none contain the banned "
+        "`type_debug` vs. quoted-type-name comparison either (same "
+        "portability class — see _check_type_debug_antipattern's "
+        "docstring)."
     )
     return 0
 
