@@ -38,6 +38,60 @@ jobs:
       - name: tag-preservation survival test (ADR-0046)
         run: ansible-playbook tests/tag-preservation.yml
 
+  l3-harness:
+    # CI never ran the L3 harness suites on the AWX EE's ansible-core, so the
+    # #272/#273/#275 defect class (behavior differs between dev-harness
+    # ansible-core 2.20 and the EE's ansible-core 2.15/py3.9) shipped through
+    # 130 green tests (umbrella #274). This matrix runs the suites on both.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # pairs with quay.io/ansible/awx-ee:24.6.1 (see dmf-infra
+          # k3s-lab-bootstrap/ee/execution-environment.yml) — bump the two
+          # together; matrix exists because #272/#273/#275 were invisible on
+          # dev-core (umbrella #274).
+          - name: ee-pinned
+            core: "ansible-core==2.15.*"
+            python: "3.11"
+            # mirrors dmf-infra k3s-lab-bootstrap/ee/requirements.txt, which
+            # pins the same range for the EE image itself.
+            k8s_client: "kubernetes>=28.0.0,<32.0.0"
+          - name: latest
+            core: "ansible-core"
+            python: "3.12"
+            k8s_client: "kubernetes"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "${{ matrix.python }}"
+      - name: Install ansible-core (matrix leg)
+        run: pip install "${{ matrix.core }}"
+      - name: Install kubernetes python client
+        # ansible-galaxy does not install collections' python dependencies;
+        # kubernetes.core's k8s/k8s_info modules need this at runtime, or
+        # every task using them fails ("Failed to import the required
+        # Python library (kubernetes)") on a clean runner (umbrella #274
+        # codex gate round).
+        run: pip install "${{ matrix.k8s_client }}"
+      - name: Install collections
+        run: ansible-galaxy collection install -r requirements.yml
+      - name: l3-budget-logic
+        run: ansible-playbook tests/l3-budget-logic.yml
+      - name: l3-control-flow
+        run: ansible-playbook tests/l3-control-flow.yml
+      - name: l3-playbook-structure
+        run: ansible-playbook tests/l3-playbook-structure.yml
+      - name: l3-playbook-execution
+        run: ansible-playbook tests/l3-playbook-execution.yml
+      - name: l3-reserved-var-meta-test
+        run: ansible-playbook tests/l3-reserved-var-meta-test.yml
+
   working-model:
     # Working-model block sync (umbrella issue dmfdeploy/dmfdeploy#32): the
     # agent-context block in CLAUDE.md/AGENTS.md/QWEN.md must stay byte-identical
