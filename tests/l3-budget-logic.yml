@@ -615,16 +615,21 @@
     # ═════════════════════════════════════════════════════════════════════
 
     # ── Gate (g): snapshot-refusal classification table ─────────────────
-    - name: "(g) snapshot refusal — full classification table"
+    - name: "(g) snapshot refusal — full classification table (umbrella #272:
+        proceed case is '', not None — a bare None here would just move
+        the rendering-portability defect one hop downstream into
+        _l3_snapshot_refusal_token's own template, see l3_budget.py's
+        docstring)"
       ansible.builtin.assert:
         that:
           - (None | l3_snapshot_refusal) == 'no-snapshot'
+          - ('' | l3_snapshot_refusal) == 'no-snapshot'
           - ('run_complete' | l3_snapshot_refusal) == 'stale-snapshot'
           - ('rollback_complete' | l3_snapshot_refusal) == 'stale-snapshot'
           - ('superseded' | l3_snapshot_refusal) == 'stale-snapshot'
-          - ('in-progress' | l3_snapshot_refusal) is none
-          - ('failed_rollback_required' | l3_snapshot_refusal) is none
-          - ('rollback_incomplete' | l3_snapshot_refusal) is none
+          - ('in-progress' | l3_snapshot_refusal) == ''
+          - ('failed_rollback_required' | l3_snapshot_refusal) == ''
+          - ('rollback_incomplete' | l3_snapshot_refusal) == ''
           # An unrecognized status must fail closed, never silently proceed.
           - ('some-future-status-this-role-does-not-know' | l3_snapshot_refusal) == 'stale-snapshot'
         fail_msg: "(g) snapshot refusal classification table FAIL"
@@ -1283,6 +1288,72 @@
           # live against a real playbook run.
           - "((_gate_v_nested_values | l3_flatten_set_values | l3_set_values_dicts) | map(attribute='value') | sort | list) == ((_gate_v_nested_values | l3_flatten_set_values | l3_set_flag_argv) | select('ne', '--set') | sort | list)"
         fail_msg: "(v) set-values transforms FAIL — l3_set_flag_argv/l3_set_values_dicts/l3_flatten_set_values disagree on shape or content"
+
+    # ── Gate (w): umbrella #272 — None-sentinel rendering-portability ───
+    # discriminating check. The bug: `preflight.yml`/`rollback_snapshot_read.yml`
+    # used to classify "no structural failure" with a bare Jinja
+    # `{{ ... else None }}` template, gated by `when: X is not none`. On
+    # ansible-core 2.20 (THIS dev harness) that template preserves the
+    # real Python None object, so the gate correctly stays closed — which
+    # is exactly why the existing success-path execution probe (this
+    # role's own tests/l3-control-flow.yml scenario (7), rc==0 through
+    # real preflight/capacity/lock/mutation) has always passed and CANNOT
+    # by itself catch this bug: this harness's own core cannot reproduce
+    # the AWX EE's older-core rendering (verified live: EE job 122 stored
+    # `_l3_preflight_failure: ""`, a defined empty STRING, not None). This
+    # gate does not try to force that cross-core rendering difference —
+    # it instead proves the LOGIC contract directly: feed both gate
+    # expressions the exact value the EE is known to produce (a defined
+    # empty string) and a genuine non-empty classification, and show the
+    # OLD expression misclassifies the first while the NEW one does not,
+    # on ANY core, because it never depends on None surviving as a type.
+    - name: "(w) None-sentinel portability — simulate the EE's observed
+        rendering (a defined empty string, not None) for a HEALTHY
+        classification"
+      ansible.builtin.set_fact:
+        _gate_w_ee_rendered_empty: "{{ '' }}"
+        _gate_w_ee_rendered_real_token: "{{ 'preflight-error: target namespace not reachable' }}"
+
+    - name: "(w) assert the OLD gate pattern (`is not none`) MISFIRES on
+        the EE's actual observed rendering — the exact bug: a healthy,
+        empty-string classification reads as 'not none' (a defined string
+        is never None), so it would incorrectly refuse a HEALTHY
+        environment"
+      ansible.builtin.assert:
+        that:
+          - _gate_w_ee_rendered_empty is not none
+        fail_msg: >-
+          (w) FAIL — this assertion is supposed to demonstrate the OLD
+          bug's own misfire (a defined '' is "not none"); if it fails,
+          the discriminator this gate relies on no longer holds.
+
+    - name: "(w) assert the NEW gate pattern (`| length > 0`) does NOT
+        misfire on that same EE-observed value — refuses to proceed with
+        the fix only if this holds"
+      ansible.builtin.assert:
+        that:
+          - not ((_gate_w_ee_rendered_empty | default('')) | length > 0)
+        fail_msg: "(w) FAIL — new gate still misfires on an empty-string sentinel, the fix did not land"
+
+    - name: "(w) assert the NEW gate pattern still correctly fires (refuses)
+        on a genuine non-empty classification — the fix must not silently
+        disable real refusals"
+      ansible.builtin.assert:
+        that:
+          - (_gate_w_ee_rendered_real_token | default('')) | length > 0
+        fail_msg: "(w) FAIL — new gate no longer refuses on a real, non-empty classification token"
+
+    - name: "(w) l3_snapshot_refusal — same discriminator through the filter:
+        '' input classifies as no-snapshot (never silently proceeds), and
+        the proceed case itself returns '' (not None), so the SAME
+        misfire can't reappear one hop downstream in
+        _l3_snapshot_refusal_token's own template"
+      ansible.builtin.assert:
+        that:
+          - ('' | l3_snapshot_refusal) == 'no-snapshot'
+          - (('in-progress' | l3_snapshot_refusal) | default('')) | length == 0
+          - (('stale-snapshot-status-marker' | l3_snapshot_refusal | default('')) | length) > 0
+        fail_msg: "(w) FAIL — l3_snapshot_refusal's '' contract broke"
 
     - name: ALL L3 LAUNCHER OFFLINE GATES PASSED
       ansible.builtin.debug:

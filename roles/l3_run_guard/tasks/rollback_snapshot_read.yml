@@ -31,13 +31,20 @@
     namespace: "{{ l3_lock_namespace }}"
   register: _l3_snapshot_read
 
-- name: "L3 rollback: extract snapshot status (None when absent)"
+# umbrella #272: '' sentinel, not None (same rendering-portability class as
+# preflight.yml — a bare `{{ ... else None }}` template renders the actual
+# None object on ansible-core 2.20 but the STRING "" on the AWX EE's older
+# core). l3_snapshot_refusal (filter_plugins, real Python) now treats any
+# falsy input as "no snapshot" and returns '' (not None) for the proceed
+# case, so the SAME portability risk doesn't just move one hop downstream
+# into _l3_snapshot_refusal_token's own template.
+- name: "L3 rollback: extract snapshot status ('' when absent)"
   ansible.builtin.set_fact:
     _l3_snapshot_status: >-
       {{
         (_l3_snapshot_read.resources | first).data.status
         if (_l3_snapshot_read.resources | default([]) | length > 0)
-        else None
+        else ''
       }}
 
 - name: "L3 rollback: classify refusal (pure — l3_snapshot_refusal)"
@@ -45,7 +52,7 @@
     _l3_snapshot_refusal_token: "{{ _l3_snapshot_status | l3_snapshot_refusal }}"
 
 - name: "L3 rollback: snapshot refusal — report, marker, release lock, hard fail (no override)"
-  when: _l3_snapshot_refusal_token is not none
+  when: (_l3_snapshot_refusal_token | default('')) | length > 0
   block:
     - name: Report snapshot refusal
       ansible.builtin.debug:

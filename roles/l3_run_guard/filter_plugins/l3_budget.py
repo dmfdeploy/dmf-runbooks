@@ -615,9 +615,16 @@ def l3_snapshot_refusal(snapshot_status) -> str:
     """Classify a run's snapshot status for rollback eligibility (§4.1).
 
     Returns a refusal token (``"no-snapshot"``/``"stale-snapshot"``) or
-    ``None`` if the rollback should proceed. ``snapshot_status`` is
-    ``None`` when no snapshot ConfigMap was found at all (the caller reads
-    a k8s_info result and passes ``None`` for zero resources found).
+    ``''`` if the rollback should proceed. ``snapshot_status`` is falsy
+    (``''`` from the task-file caller, or ``None`` for direct Python/test
+    callers) when no snapshot ConfigMap was found at all.
+
+    Returns ``''`` rather than ``None`` for the proceed case (umbrella
+    #272) — this return value flows straight back into ANOTHER Jinja
+    template (`_l3_snapshot_refusal_token: "{{ ... | l3_snapshot_refusal
+    }}"`), so a bare ``None`` here would just move the same
+    None-renders-as-empty-string-on-older-ansible-core portability defect
+    one hop downstream instead of fixing it.
 
     An UNRECOGNIZED status (anything outside both known sets — a status
     string introduced by a future WP this function doesn't know about
@@ -625,12 +632,12 @@ def l3_snapshot_refusal(snapshot_status) -> str:
     proceeding against a status it doesn't understand — never assume
     "unknown" means "safe".
     """
-    if snapshot_status is None:
+    if not snapshot_status:
         return "no-snapshot"
     if snapshot_status in _STALE_SNAPSHOT_STATUSES:
         return "stale-snapshot"
     if snapshot_status in _PROCEED_SNAPSHOT_STATUSES:
-        return None
+        return ""
     return "stale-snapshot"
 
 
