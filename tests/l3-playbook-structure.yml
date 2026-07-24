@@ -63,4 +63,9 @@
           healthy environments on the AWX EE's older ansible-core while
           passing clean on this dev harness's own core — a static check,
           since this harness's own core cannot reproduce that rendering
-          difference to catch it at execution time.
+          difference to catch it at execution time. Also umbrella #273
+          (the same portability class's second member): no task file
+          re-introduces a `type_debug` result compared against a quoted
+          type-name literal either — `AnsibleUnsafeText` (a str subclass)
+          on the EE's older core vs. plain 'str' on this harness's core
+          made that comparison just as rendering-unstable.

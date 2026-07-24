@@ -911,7 +911,19 @@
     #    injected INTEGER job id must render as a STRING in the manifest.
     #    Simulated with a genuine Jinja-native int (not a string literal
     #    that merely LOOKS like a number) to reproduce the whole-template
-    #    native-type substitution AWX's own awx_job_id triggers. ──────────
+    #    native-type substitution AWX's own awx_job_id triggers.
+    #
+    #    umbrella #273 note: this block's own `type_debug` uses below are
+    #    a single-known-core (this dev harness's) sanity check that the
+    #    `| string` filter genuinely coerces int -> str — NOT a re-test of
+    #    the production GATE's own cross-core portability. That gate
+    #    (lock.yml/snapshot.yml's "type gate" tasks) no longer uses
+    #    type_debug at all post-#273 (it uses the Jinja `string` test,
+    #    which is subclass-portable); this fixture's RENDER step (the
+    #    `| string` coercion itself, below) is unchanged by that fix, so
+    #    `type_debug=='int'` on the UNCOERCED sibling is still exactly the
+    #    right way to prove this fixture isn't accidentally starting from
+    #    a string that only looks numeric. ─────────────────────────────
     - name: "(p) type coercion — fixture: a genuine INTEGER (not a numeric string)"
       ansible.builtin.set_fact:
         _gate_p_int_job_id: 42
@@ -922,7 +934,7 @@
           - _gate_p_int_job_id | type_debug == 'int'
         fail_msg: "(p) type coercion FAIL — the fixture itself isn't a genuine int, this gate proves nothing"
 
-    - name: "(p) type coercion — render a manifest data value the SAME way lock.yml/snapshot.yml now do"
+    - name: "(p) type coercion — render a manifest data value the SAME way lock.yml/snapshot.yml's RENDER step does (their GATE check itself is now `is string`, not type_debug — see umbrella #273)"
       ansible.builtin.set_fact:
         _gate_p_manifest:
           data:

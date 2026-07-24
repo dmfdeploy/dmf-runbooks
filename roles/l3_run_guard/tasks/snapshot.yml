@@ -213,10 +213,16 @@
           L3 snapshot: one or more label values are not legal Kubernetes label
           values: {{ _l3_snapshot_manifest.metadata.labels }}
 
+    # umbrella #273: same version-portability trap as lock.yml's own type
+    # gate (its header comment has the full story) — `type_debug` reports
+    # a str SUBCLASS's own name (e.g. AnsibleUnsafeText) on older
+    # ansible-core, not 'str', so this membership check failed on the AWX
+    # EE for genuinely valid strings. The Jinja `string` TEST accepts str
+    # and every subclass via isinstance(), on any core.
     - name: "L3 snapshot: type gate — assert every data value is a string (R3a-2)"
       ansible.builtin.assert:
         that:
-          - (_l3_snapshot_manifest.data.values() | list | map('type_debug') | select('ne', 'str') | list | length) == 0
+          - (_l3_snapshot_manifest.data.values() | list | reject('string') | list | length) == 0
         fail_msg: >-
           L3 snapshot: one or more ConfigMap data values are not strings
           after coercion: {{ _l3_snapshot_manifest.data }}

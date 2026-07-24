@@ -130,10 +130,20 @@
         ttl_seconds: "{{ l3_lock_ttl_seconds | string }}"
   when: _l3_api_available
 
+  # umbrella #273: `type_debug == 'str'` is itself version-portability
+  # trap #2 — on older ansible-core, a templated string is
+  # `AnsibleUnsafeText` (a str SUBCLASS; type_debug reports the subclass
+  # name, not 'str'), while ansible-core 2.20's Data Tagging reports
+  # plain 'str' for the same value. The membership check failed on the
+  # AWX EE for values that were genuinely, correctly, valid strings (live:
+  # job 135). The Jinja `string` TEST (`is string` / `reject('string')`)
+  # uses isinstance() under the hood, so it accepts str AND every str
+  # subclass on any core — rendering-stable where the type_debug
+  # comparison wasn't.
 - name: "L3 lock: type gate — assert every manifest data value is a string (R3a-2)"
   ansible.builtin.assert:
     that:
-      - (_l3_lock_manifest.data.values() | list | map('type_debug') | select('ne', 'str') | list | length) == 0
+      - (_l3_lock_manifest.data.values() | list | reject('string') | list | length) == 0
     fail_msg: >-
       L3 lock: one or more ConfigMap data values are not strings after
       coercion: {{ _l3_lock_manifest.data }}
