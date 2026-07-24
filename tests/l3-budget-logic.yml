@@ -1367,6 +1367,159 @@
           - (('stale-snapshot-status-marker' | l3_snapshot_refusal | default('')) | length) > 0
         fail_msg: "(w) FAIL — l3_snapshot_refusal's '' contract broke"
 
+    # ── Gate (x): umbrella #275 — numeric boundary-coercion discriminating
+    # check. Job 147 crashed l3_evaluate_fit with `'>=' not supported
+    # between instances of 'int' and 'str'` on the AWX EE: capacity.yml's
+    # OLD `_l3_run_demand` construction re-templated an already-int filter
+    # result through an EXTRA Jinja hop (`cpu_m: "{{ _l3_run_demand_result.
+    # cpu_m }}"`), which degraded to a digit STRING on the EE's older core
+    # — traced from the error itself (subtraction using allocatable/
+    # existing_demand/ee_reserve succeeded; only the SUBSEQUENT `>=`
+    # against run_demand's fields raised). See capacity.yml's own umbrella
+    # #275 comment for the full trace and the fix (collapsed to one
+    # expression); this gate proves the OTHER half — l3_evaluate_fit's own
+    # boundary coercion — directly against the Python filter.
+    - name: "(x1) EE-shape ALL-STRING numeric leaves — discriminating check:
+        confirmed (temporary revert + rerun) to FAIL pre-#275 with a raw
+        `unsupported operand type(s) for -: 'str' and 'str'`; must now
+        succeed and compute the CORRECT verdict, not merely avoid crashing"
+      ansible.builtin.set_fact:
+        _gate_x1_alloc: {cpu_m: "2000", mem_b: "4294967296", name: "node-1"}
+        _gate_x1_existing: {cpu_m: "500", mem_b: "1073741824"}
+        _gate_x1_run_demand_fit: {cpu_m: "100", mem_b: "104857600"}
+        _gate_x1_run_demand_nofit: {cpu_m: "5000", mem_b: "104857600"}
+
+    - name: "(x1) evaluate fit with ALL-STRING inputs (FIT case) — headroom 1500m/3221225472B >= demand 100m/104857600B"
+      ansible.builtin.set_fact:
+        _gate_x1_fit_result: "{{ _gate_x1_alloc | l3_evaluate_fit(_gate_x1_existing, {'cpu_m': 0, 'mem_b': 0}, _gate_x1_run_demand_fit) }}"
+
+    - name: "(x1) assert FIT — exact same numeric answer int-typed inputs would give, not just 'didn't crash'"
+      ansible.builtin.assert:
+        that:
+          - _gate_x1_fit_result.verdict == 'fit'
+          - _gate_x1_fit_result.headroom_cpu_m == 1500
+          - _gate_x1_fit_result.headroom_mem_b == 3221225472
+        fail_msg: "(x1) FAIL (fit case) — got {{ _gate_x1_fit_result }}"
+
+    - name: "(x1) evaluate fit with ALL-STRING inputs (NO-FIT case) — never silently coerced into the WRONG verdict"
+      ansible.builtin.set_fact:
+        _gate_x1_nofit_result: "{{ _gate_x1_alloc | l3_evaluate_fit(_gate_x1_existing, {'cpu_m': 0, 'mem_b': 0}, _gate_x1_run_demand_nofit) }}"
+
+    - name: "(x1) assert NO-FIT"
+      ansible.builtin.assert:
+        that:
+          - _gate_x1_nofit_result.verdict == 'no-fit'
+        fail_msg: "(x1) FAIL (no-fit case) — got {{ _gate_x1_nofit_result }}"
+
+    - name: "(x2) negative ee_reserve — the WP1 'l3_ee_reserve.cpu_m=-1000
+        manufactures fake headroom' lesson (_assert_authority.yml's own
+        frozen-constant check guards this at a HIGHER layer) — now ALSO
+        caught at l3_evaluate_fit's own boundary, defense in depth"
+      block:
+        - name: "(x2) attempt fit with ee_reserve.cpu_m=-1000 — expected to raise, never silently return FIT"
+          ansible.builtin.set_fact:
+            _gate_x2_unreachable: "{{ {'cpu_m': 1000, 'mem_b': 1000, 'name': 'n'} | l3_evaluate_fit({'cpu_m': 900, 'mem_b': 900}, {'cpu_m': -1000, 'mem_b': 0}, {'cpu_m': 200, 'mem_b': 200}) }}"
+        - name: "(x2) FAIL — must never reach here"
+          ansible.builtin.fail:
+            msg: "(x2) FAIL — l3_evaluate_fit did not reject a negative ee_reserve.cpu_m"
+      rescue:
+        - name: "(x2) assert the raised error identifies ee_reserve.cpu_m as negative"
+          ansible.builtin.assert:
+            that:
+              - "'ee_reserve.cpu_m' in ansible_failed_result.msg"
+              - "'negative' in ansible_failed_result.msg"
+            fail_msg: "(x2) FAIL — raised, but didn't identify ee_reserve.cpu_m/negative: {{ ansible_failed_result.msg }}"
+
+    - name: "(x3) genuinely invalid numeric inputs each raise, identifying the exact offending field — never silently coerced"
+      block:
+        - name: "(x3a) attempt fit with a FLOAT run_demand.mem_b — expected to raise"
+          ansible.builtin.set_fact:
+            _gate_x3a_unreachable: "{{ {'cpu_m': 1000, 'mem_b': 1000, 'name': 'n'} | l3_evaluate_fit({'cpu_m': 0, 'mem_b': 0}, {'cpu_m': 0, 'mem_b': 0}, {'cpu_m': 100, 'mem_b': 100.5}) }}"
+        - name: "(x3a) FAIL — must never reach here"
+          ansible.builtin.fail:
+            msg: "(x3a) FAIL — l3_evaluate_fit silently accepted a float"
+      rescue:
+        - name: "(x3a) assert the raised error identifies run_demand.mem_b"
+          ansible.builtin.assert:
+            that:
+              - "'run_demand.mem_b' in ansible_failed_result.msg"
+            fail_msg: "(x3a) FAIL — {{ ansible_failed_result.msg }}"
+
+    - name: "(x3b) None input raises"
+      block:
+        - name: "(x3b) attempt fit with a None allocatable.cpu_m — expected to raise"
+          ansible.builtin.set_fact:
+            _gate_x3b_unreachable: "{{ {'cpu_m': None, 'mem_b': 1000, 'name': 'n'} | l3_evaluate_fit({'cpu_m': 0, 'mem_b': 0}, {'cpu_m': 0, 'mem_b': 0}, {'cpu_m': 100, 'mem_b': 100}) }}"
+        - name: "(x3b) FAIL — must never reach here"
+          ansible.builtin.fail:
+            msg: "(x3b) FAIL — l3_evaluate_fit silently accepted None"
+      rescue:
+        - name: "(x3b) assert the raised error identifies allocatable.cpu_m"
+          ansible.builtin.assert:
+            that:
+              - "'allocatable.cpu_m' in ansible_failed_result.msg"
+            fail_msg: "(x3b) FAIL — {{ ansible_failed_result.msg }}"
+
+    - name: "(x3c) non-digit garbage string raises"
+      block:
+        - name: "(x3c) attempt fit with a non-digit garbage string existing_demand.cpu_m — expected to raise"
+          ansible.builtin.set_fact:
+            _gate_x3c_unreachable: "{{ {'cpu_m': 1000, 'mem_b': 1000, 'name': 'n'} | l3_evaluate_fit({'cpu_m': 'lots', 'mem_b': 0}, {'cpu_m': 0, 'mem_b': 0}, {'cpu_m': 100, 'mem_b': 100}) }}"
+        - name: "(x3c) FAIL — must never reach here"
+          ansible.builtin.fail:
+            msg: "(x3c) FAIL — l3_evaluate_fit silently accepted a non-digit string"
+      rescue:
+        - name: "(x3c) assert the raised error identifies existing_demand.cpu_m"
+          ansible.builtin.assert:
+            that:
+              - "'existing_demand.cpu_m' in ansible_failed_result.msg"
+            fail_msg: "(x3c) FAIL — {{ ansible_failed_result.msg }}"
+
+    - name: "(x3d) bool input raises (never silently accepted as 0/1)"
+      block:
+        - name: "(x3d) attempt fit with a bool allocatable.cpu_m — expected to raise"
+          ansible.builtin.set_fact:
+            _gate_x3d_unreachable: "{{ {'cpu_m': True, 'mem_b': 1000, 'name': 'n'} | l3_evaluate_fit({'cpu_m': 0, 'mem_b': 0}, {'cpu_m': 0, 'mem_b': 0}, {'cpu_m': 100, 'mem_b': 100}) }}"
+        - name: "(x3d) FAIL — must never reach here"
+          ansible.builtin.fail:
+            msg: "(x3d) FAIL — l3_evaluate_fit silently accepted a bool"
+      rescue:
+        - name: "(x3d) assert the raised error identifies allocatable.cpu_m as a bool"
+          ansible.builtin.assert:
+            that:
+              - "'allocatable.cpu_m' in ansible_failed_result.msg"
+              - "'bool' in ansible_failed_result.msg"
+            fail_msg: "(x3d) FAIL — {{ ansible_failed_result.msg }}"
+
+    - name: "(x4) l3_lock_decision (the OTHER filter umbrella #275 flagged,
+        'lock TTL/decision filters compare timestamps!') accepts the SAME
+        EE-shape digit-string epoch/ttl/created_at inputs and computes the
+        correct action"
+      ansible.builtin.set_fact:
+        _gate_x4_result: "{{ {'created_at': '1000', 'holder': 'h', 'holder_attempt_id': 'a'} | l3_lock_decision('2000', '500') }}"
+
+    - name: "(x4) assert reclaim — age 1000s > ttl 500s, computed correctly from all-string inputs"
+      ansible.builtin.assert:
+        that:
+          - _gate_x4_result.action == 'reclaim'
+          - _gate_x4_result.age_seconds == 1000
+        fail_msg: "(x4) FAIL — got {{ _gate_x4_result }}"
+
+    - name: "(x5) l3_lock_decision rejects a genuinely garbage created_at (never silently defaults it to 0, masking a corrupt lock record)"
+      block:
+        - name: "(x5) attempt with created_at='garbage' — expected to raise"
+          ansible.builtin.set_fact:
+            _gate_x5_unreachable: "{{ {'created_at': 'garbage', 'holder': 'h', 'holder_attempt_id': 'a'} | l3_lock_decision('2000', '500') }}"
+        - name: "(x5) FAIL — must never reach here"
+          ansible.builtin.fail:
+            msg: "(x5) FAIL — l3_lock_decision silently coerced a garbage created_at instead of raising"
+      rescue:
+        - name: "(x5) assert the raised error identifies existing_lock.created_at"
+          ansible.builtin.assert:
+            that:
+              - "'existing_lock.created_at' in ansible_failed_result.msg"
+            fail_msg: "(x5) FAIL — {{ ansible_failed_result.msg }}"
+
     - name: ALL L3 LAUNCHER OFFLINE GATES PASSED
       ansible.builtin.debug:
         msg: >-
