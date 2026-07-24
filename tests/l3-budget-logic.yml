@@ -945,7 +945,7 @@
       ansible.builtin.assert:
         that:
           - _gate_p_manifest.data.holder == '42'
-          - _gate_p_manifest.data.holder | type_debug == 'str'
+          - _gate_p_manifest.data.holder is string
           - _gate_p_manifest.data.uncoerced_would_be | type_debug == 'int'
         fail_msg: >-
           (p) type coercion FAIL: expected the |string-coerced field to be
