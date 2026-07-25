@@ -1,0 +1,185 @@
+---
+# umbrella #201 WP3 stage — topology_params validation + release-group
+# derivation, an OPTIONAL stage BEFORE lock acquisition (main.yml wires this
+# as stage 2.5, between preflight.yml and lock.yml — a topology-shaped
+# launch's whole point, N helm releases derived from sources[], is decided
+# here, before the facility lock denies every other run the facility over a
+# check that doesn't need it, same rationale as preflight.yml's own
+# before-lock placement).
+#
+# umbrella #201 WP3 fix round (codex GATE:FAIL D1): this stage is gated
+# PURELY on `topology_params is defined` — there is no separate
+# "l3_topology_params_required" flag. The original draft computed that flag
+# as a play var (`mxl_role == 'view'`) in launch-mxl-fabrics-demo.yml; codex
+# proved TWO forgery vectors against it: (a) a direct
+# `-e '{"l3_topology_params_required": false}'` extra_var trivially
+# overrides ANY play var under normal Ansible precedence — the exact
+# "named intermediate" bug class _assert_reserved_vars.yml's own R4a/P1-2
+# fix already documents ("a named intermediate... just moves the same
+# bypass"); (b) forging `mxl_role=source` on what would otherwise be a
+# topology-carrying view-role launch flips that SAME computed flag to
+# false, silently skipping validation for a run that legitimately carries
+# topology_params. Gating on bare presence closes BOTH: there is no
+# separately-nameable flag left to forge (closes (a) structurally), and
+# this stage no longer reads mxl_role at all, so forging it has zero
+# effect on whether validation runs (closes (b)) — topology_params, once
+# supplied, is ALWAYS fully validated, unconditionally. This also matches
+# umbrella #201 WP3 fix-round D3: a genuinely topology-free scalar launch
+# (either role, chart 0.4.0's own scalar-source semantics) is a fully
+# legitimate path now, not an error — there is no more "required but
+# absent" refusal, only "present, so validate" vs "absent, so scalar mode".
+#
+# l3_release_group (list of {release, netbox_service_name, source_id,
+# chart_set_values}) is DERIVED-ONLY: a direct caller-supplied
+# l3_release_group extra_var is refused by identity.yml's own
+# _assert_reserved_vars.yml include, stage 1 — BEFORE this file (stage 2.5)
+# ever runs, let alone validates anything. Unlike l3_run_id (a legitimate
+# caller input on rollback), l3_release_group/l3_topology_viewer_projection
+# have no legitimate caller-input case on ANY entry path, so both live in
+# _assert_reserved_vars.yml's universal list rather than a bespoke check
+# here — see that file's own umbrella #201 WP3 addendum.
+#
+# target_facility's LIVE agreement check (spec §3.4, dmf-media
+# catalog/topology-params.schema.yaml's own awx_inventory_timing note): the
+# launcher validates AGREEMENT against the env's own NetBox site, never
+# SELECTION — WP3a (dmf-cms) already resolved target_facility to the env's
+# real site slug before injecting it into extra_vars (replacing the
+# catalog's illustrative placeholder), so a mismatch here means either a
+# stale/forged extra_var or an env with the wrong NetBox site shape, not a
+# legitimate multi-facility choice (deferred to #231).
+
+- name: "L3 topology: structural validation (pure — l3_validate_topology_params) + refusal"
+  when: topology_params is defined
+  block:
+    - name: "L3 topology: validate (pure)"
+      ansible.builtin.set_fact:
+        _l3_topology_validation: "{{ topology_params | l3_validate_topology_params }}"
+
+    - name: "L3 topology-invalid refusal (never override-able, pre-lock)"
+      when: not _l3_topology_validation.ok
+      block:
+        - name: Report topology_params validation failure
+          ansible.builtin.debug:
+            msg: >-
+              L3 launcher refused: preflight-error (topology-invalid):
+              {{ _l3_topology_validation.error }}
+
+        - name: "L3 topology-invalid refusal cleanup (never override-able, pre-lock)"
+          ansible.builtin.include_tasks: _refuse_pre_mutation.yml
+          vars:
+            l3_outcome_token: preflight-error
+            l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }} detail=topology-invalid"
+            l3_refusal_fail_msg: >-
+              L3 launcher refused: preflight-error (topology-invalid):
+              {{ _l3_topology_validation.error }}. Structural precondition —
+              cannot be overridden.
+
+# ── Live target_facility AGREEMENT check (spec §3.4) — only reached with a
+#    structurally valid topology_params. Queries NetBox for the env's OWN
+#    site (exactly one legal shape in J1); refuses on 0/>1 sites (this
+#    launcher must never GUESS a facility) or a mismatch against the
+#    received target_facility (WP3a already resolved it to the env's real
+#    slug before injection — a mismatch here is stale/forged input, not a
+#    legitimate choice; #231/multi-facility is the only place selection
+#    ever belongs). ──────────────────────────────────────────────────────
+- name: "L3 topology: target_facility live agreement check"
+  when:
+    - topology_params is defined
+    - _l3_topology_validation.ok
+  block:
+    - name: "L3 topology: list NetBox sites (the env's own facility identity, dmf-born-inventory-minted)"
+      ansible.builtin.uri:
+        url: "{{ netbox_api_url }}/api/dcim/sites/"
+        method: GET
+        headers:
+          Authorization: "Token {{ netbox_api_token }}"
+        validate_certs: false
+        return_content: true
+      register: _l3_topology_sites_lookup
+
+    - name: "L3 topology: extract site slugs"
+      ansible.builtin.set_fact:
+        _l3_topology_site_slugs: "{{ _l3_topology_sites_lookup.json.results | default([]) | map(attribute='slug') | list }}"
+
+    - name: "L3 topology-facility-ambiguous refusal (0 or >1 NetBox sites — never override-able, pre-lock)"
+      when: (_l3_topology_site_slugs | length) != 1
+      block:
+        - name: Report facility ambiguity
+          ansible.builtin.debug:
+            msg: >-
+              L3 launcher refused: preflight-error (topology-facility-ambiguous).
+              Expected exactly 1 NetBox site, found
+              {{ _l3_topology_site_slugs | length }}: {{ _l3_topology_site_slugs }}.
+
+        - name: "L3 topology-facility-ambiguous refusal cleanup (never override-able, pre-lock)"
+          ansible.builtin.include_tasks: _refuse_pre_mutation.yml
+          vars:
+            l3_outcome_token: preflight-error
+            l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }} detail=topology-facility-ambiguous"
+            l3_refusal_fail_msg: >-
+              L3 launcher refused: preflight-error (topology-facility-ambiguous).
+              Expected exactly 1 NetBox site, found
+              {{ _l3_topology_site_slugs | length }}. Structural precondition
+              — cannot be overridden.
+
+    - name: "L3 topology-facility-mismatch refusal (received target_facility disagrees
+        with the env's own NetBox site — never override-able, pre-lock)"
+      when:
+        - (_l3_topology_site_slugs | length) == 1
+        - topology_params.target_facility != _l3_topology_site_slugs[0]
+      block:
+        - name: Report facility mismatch
+          ansible.builtin.debug:
+            msg: >-
+              L3 launcher refused: preflight-error (topology-facility-mismatch).
+              topology_params.target_facility={{ topology_params.target_facility }}
+              does not match this env's own NetBox site
+              ({{ _l3_topology_site_slugs[0] }}).
+
+        - name: "L3 topology-facility-mismatch refusal cleanup (never override-able, pre-lock)"
+          ansible.builtin.include_tasks: _refuse_pre_mutation.yml
+          vars:
+            l3_outcome_token: preflight-error
+            l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }} detail=topology-facility-mismatch"
+            l3_refusal_fail_msg: >-
+              L3 launcher refused: preflight-error (topology-facility-mismatch).
+              target_facility={{ topology_params.target_facility }} !=
+              env site={{ _l3_topology_site_slugs[0] }}. Structural
+              precondition — cannot be overridden.
+
+# ── Release-group derivation (only reached with valid topology_params AND
+#    an agreeing target_facility) — pure, mechanical, lossless (spec §3.2):
+#    l3_topology_source_base_set_values is the caller's own common
+#    per-source values (interface/image/placement/nodeAccess — the SAME
+#    shape the viewer's own l3_chart_set_values already carries, minus
+#    role, which this derivation always sets to source itself). ───────────
+- name: "L3 topology: derive l3_release_group (pure — l3_topology_release_group)"
+  when:
+    - topology_params is defined
+    - _l3_topology_validation.ok
+    - (_l3_topology_site_slugs | default([]) | length) == 1
+    - topology_params.target_facility == _l3_topology_site_slugs[0]
+  block:
+    - name: "L3 topology: set l3_release_group"
+      ansible.builtin.set_fact:
+        l3_release_group: >-
+          {{
+            topology_params
+            | l3_topology_release_group(l3_release, l3_topology_source_base_set_values | default([]))
+          }}
+
+    - name: "L3 topology: derive the viewer-side projection (active-source + this
+        release's own flow.id — spec §5, consumed by the calling playbook,
+        NOT by this generic role, which has no mxl-specific coordinator
+        knowledge)"
+      ansible.builtin.set_fact:
+        l3_topology_viewer_projection: "{{ topology_params | l3_topology_viewer_projection }}"
+
+    - name: "L3 topology: report derived release group"
+      ansible.builtin.debug:
+        msg: >-
+          L3 topology: derived l3_release_group with
+          {{ l3_release_group | length }} source release(s):
+          {{ l3_release_group | map(attribute='release') | list }};
+          viewer active-source={{ l3_topology_viewer_projection.active_source }}
+          flow.id={{ l3_topology_viewer_projection.flow_id }}.

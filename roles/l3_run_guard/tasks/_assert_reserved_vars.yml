@@ -182,6 +182,58 @@
           - _l3_snapshot_read is not defined
           - _l3_snapshot_verify_read is not defined
           - _l3_target_ns is not defined
+          # umbrella #201 WP3 — topology_params validation + l3_release_group
+          # derivation (topology_validate.yml) and its downstream group-aware
+          # consumers (capacity.yml, snapshot.yml, rollback_netbox_surface.yml).
+          # l3_release_group/l3_topology_viewer_projection have NO legitimate
+          # caller-input case on any entry path (unlike l3_run_id) — both are
+          # purely derived from a validated topology_params, so they belong in
+          # THIS universal list, not a bespoke per-file check.
+          - l3_release_group is not defined
+          - l3_topology_viewer_projection is not defined
+          - _l3_topology_validation is not defined
+          - _l3_topology_sites_lookup is not defined
+          - _l3_topology_site_slugs is not defined
+          - _l3_topology_service_names is not defined
+          - _l3_snapshot_topology_service_names is not defined
+          - _l3_netbox_lookup_results is not defined
+          - _l3_current_netbox_lookup_results is not defined
+          - _l3_group_demand_accum is not defined
+          - _l3_group_helm_template_one is not defined
+          - _l3_combined_demand_result is not defined
+          # umbrella #201 WP3 fix-round D2: moved from a playbook-local
+          # set_fact (a capacity/install divergence forgery vector codex
+          # caught) into capacity.yml itself — now a role-internal fact like
+          # everything else above.
+          - _l3_effective_chart_set_values is not defined
+          # umbrella #201 WP3 fix-round D2 (finding 7 — scoping gap): the
+          # reserved-var scanner (tests/scripts/check_reserved_vars.py) now
+          # ALSO scans playbooks/*.yml, not just roles/l3_run_guard/tasks/ —
+          # the FULL set of register:/set_fact: names every launch-*.yml/
+          # teardown-*.yml playbook's own tasks produce, none of which are
+          # legitimate caller inputs (all are internal K8s-object/tempdir
+          # handles a caller has no business supplying).
+          - _mxl_chart_tmp is not defined
+          - _mxl_coordinator_cm is not defined
+          - _mxl_group_workload is not defined
+          - _mxl_helm_list is not defined
+          - _mxl_other_releases is not defined
+          - _mxl_uninstall is not defined
+          - _mxl_workload is not defined
+          - _nmos_chart_tmp is not defined
+          - _nmos_workload is not defined
+          - _xp_chart_tmp is not defined
+          - _xp_workload is not defined
+          # umbrella #201 WP3 fix-round D3/D4: coordinator active-source
+          # write discipline (launch-mxl-fabrics-demo.yml) + its
+          # snapshot/rollback persistence (snapshot.yml,
+          # rollback_snapshot_read.yml, rollback_coordinator_surface.yml).
+          - _l3_coordinator_active_source_write is not defined
+          - _l3_coordinator_active_source_already_set is not defined
+          - _l3_coordinator_cm_read is not defined
+          - _l3_coordinator_snapshot_extra is not defined
+          - _l3_snapshot_coordinator_state is not defined
+          - _l3_coordinator_rollback_read is not defined
         fail_msg: >-
           L3 launcher refused: preflight-error (reserved-var). One or more
           reserved internal variables were supplied as extra_vars — these
