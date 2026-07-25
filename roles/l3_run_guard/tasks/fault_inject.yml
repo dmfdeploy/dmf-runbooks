@@ -43,6 +43,15 @@
 #   post-first-mutation     — immediately after the caller's first real mutation
 #                           completes (launch: provision; teardown: helm removal;
 #                           rollback: first surface mutation)
+#   post-topology-mutation  — umbrella #201 WP3 fix-round finding 7 — ONLY
+#                           wired by launch-mxl-fabrics-demo.yml, immediately
+#                           after its topology release-group NetBox provision
+#                           + mxl-coordinator active-source patch, before any
+#                           helm install — lets a test drive "an interrupted
+#                           topology launch" with the N+1 NetBox records AND
+#                           the coordinator's active-source write already in
+#                           place, so a SEPARATE rollback-run.yml invocation
+#                           has something real to restore/remove (D4).
 #
 # Two actions, both gated by `l3_fault_inject == <boundary>` AND the
 # L3_TESTMODE env sentinel:
