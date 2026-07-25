@@ -13,6 +13,13 @@
 #                   no reason to deny every other run the facility while
 #                   checking them. Frozen 'preflight-error' marker, never
 #                   override-able.
+#   2.5. topology  — umbrella #201 WP3: topology_params validation +
+#                   l3_release_group derivation, gated PURELY on
+#                   `topology_params is defined` (fix-round D1 — no
+#                   separate required-flag: any such flag is itself a
+#                   forgeable named intermediate, R4a/P1-2's own lesson). A
+#                   no-op for every launcher that never receives
+#                   topology_params. See topology_validate.yml's own header.
 #   3. lock       — facility lock (§4.5)
 #   4. snapshot   — pre-run baseline (§4.1), captured as early after lock
 #                   acquisition as possible, CREATE-ONLY
@@ -67,6 +74,15 @@
 
 - name: L3 stage 2 — structural preconditions (R2a-9, before lock)
   ansible.builtin.include_tasks: preflight.yml
+
+- name: "L3 stage 2.5 — topology_params validation + l3_release_group
+    derivation (umbrella #201 WP3, before lock — same before-lock
+    rationale as preflight.yml: none of this depends on holding the
+    facility lock, and there's no reason to deny every other run the
+    facility while validating a caller-supplied object. A no-op single
+    `when:` for every launcher that never receives topology_params — see
+    topology_validate.yml's own header)"
+  ansible.builtin.include_tasks: topology_validate.yml
 
 - name: L3 stage 3 — facility lock
   ansible.builtin.include_tasks: lock.yml
