@@ -28,35 +28,70 @@
 # wrapper is a convenience layer over the same filter, not required) and
 # _netbox_owned_namespace.
 
+# umbrella #201 WP3 fix-round (finding 7's own coverage caught this LIVE —
+# a pre-existing, role-wide defect, not new to this WP): `include_role`
+# defaults to `public: no` — its role defaults (_netbox_owned_namespace)
+# stay PRIVATE to this one include_role task and never escape into the
+# LATER, separately-included _rollback_netbox_restore_one.yml/
+# _rollback_netbox_delete_one.yml task files below, which reference
+# _netbox_owned_namespace directly. `public: yes` is required whenever a
+# bare include_role's defaults must outlive the include itself — this had
+# apparently NEVER been exercised by any prior test: every existing
+# rollback execution-harness scenario faults at post-lock, well before
+# this stage ever runs a REAL finalise+delete against a genuinely
+# run-created record.
 - name: "L3 rollback: load netbox_catalog_common (merge_owned_tags filter + _netbox_owned_namespace)"
   ansible.builtin.include_role:
     name: netbox_catalog_common
+    public: true
 
-- name: "L3 rollback: look up CURRENT NetBox service by EXACT NAME (R2a-5 — same identity the provision stage uses)"
+- name: "L3 rollback: look up CURRENT NetBox service by EXACT NAME, once per name
+    in the snapshot's recovered topology service-name set (R2a-5 — same
+    identity the provision stage uses; umbrella #201 WP3 generalizes the
+    former single-name lookup into a loop over
+    _l3_snapshot_topology_service_names — one iteration for every
+    non-topology rollback)"
   ansible.builtin.uri:
-    url: "{{ netbox_api_url }}/api/ipam/services/?name={{ l3_catalog_key | urlencode }}"
+    url: "{{ netbox_api_url }}/api/ipam/services/?name={{ item | urlencode }}"
     method: GET
     headers:
       Authorization: "Token {{ netbox_api_token }}"
     validate_certs: false
     return_content: true
   no_log: true
-  register: _l3_current_netbox_lookup
+  loop: "{{ _l3_snapshot_topology_service_names }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _l3_current_netbox_lookup_results
 
-- name: "L3 rollback: assert at most one record for this exact name (structural — NetBox name uniqueness)"
+- name: "L3 rollback: assert at most one record per exact name (structural — NetBox name uniqueness)"
   ansible.builtin.assert:
     that:
-      - (_l3_current_netbox_lookup.json.results | default([])) | length <= 1
+      - (item.json.results | default([])) | length <= 1
     fail_msg: >-
       L3 rollback: NetBox returned
-      {{ (_l3_current_netbox_lookup.json.results | default([])) | length }}
-      records for the exact name '{{ l3_catalog_key }}' — service names
+      {{ (item.json.results | default([])) | length }}
+      records for the exact name '{{ item.item }}' — service names
       must be unique; this is a structural NetBox data-integrity problem,
       not a per-run decision.
+  loop: "{{ _l3_current_netbox_lookup_results.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  no_log: true
 
-- name: "L3 rollback: extract current NetBox surface WITH id (pure — l3_netbox_surface_with_id)"
+- name: "L3 rollback: extract current NetBox surface WITH id (pure —
+    l3_netbox_surface_with_id; umbrella #201 WP3 — flattens every name's
+    own results list first)"
   ansible.builtin.set_fact:
-    _l3_current_netbox_records: "{{ _l3_current_netbox_lookup.json.results | default([]) | l3_netbox_surface_with_id }}"
+    _l3_current_netbox_records: >-
+      {{
+        _l3_current_netbox_lookup_results.results
+        | map(attribute='json')
+        | map(attribute='results', default=[])
+        | list
+        | flatten
+        | l3_netbox_surface_with_id
+      }}
   no_log: true
 
 - name: "L3 rollback: classify restore vs delete vs missing (pure — l3_netbox_records_to_restore_or_delete, R3a-7 iterates the SNAPSHOT's own ids)"

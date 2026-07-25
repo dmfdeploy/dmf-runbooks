@@ -107,6 +107,35 @@
     l3_catalog_key: "{{ _l3_snapshot_cm.metadata.labels['dmf.io/catalog-key'] | default('') }}"
     l3_release: "{{ _l3_snapshot_cm.metadata.labels['dmf.io/release'] | default('') }}"
 
+- name: "L3 rollback: recover the topology service-name set (umbrella #201 WP3
+    — every snapshot taken under this WP persists this; a snapshot from
+    BEFORE this WP, or any non-topology launch's snapshot, never wrote the
+    field at all and falls back to [l3_catalog_key] alone — the SAME
+    single-name lookup rollback always did before this WP, byte-identical)"
+  ansible.builtin.set_fact:
+    _l3_snapshot_topology_service_names: >-
+      {{
+        (_l3_snapshot_cm.data.topology_service_names | from_json)
+        if (_l3_snapshot_cm.data.topology_service_names is defined)
+        else [l3_catalog_key]
+      }}
+
+- name: "L3 rollback: recover the coordinator's pre-run state (fix-round D4 —
+    only present for a snapshot taken with l3_coordinator_configmap_name
+    opted in; absent for every other snapshot, in which case
+    rollback_coordinator_surface.yml has nothing to restore and is a
+    complete no-op — see that file's own header). An empty MAPPING (not a
+    None-sentinel) marks 'no coordinator mechanism for this snapshot' —
+    umbrella #272's own portability lesson: a None-typed value renders
+    differently across ansible-core versions, an empty mapping does not."
+  ansible.builtin.set_fact:
+    _l3_snapshot_coordinator_state: >-
+      {{
+        (_l3_snapshot_cm.data.coordinator_state | from_json)
+        if (_l3_snapshot_cm.data.coordinator_state is defined)
+        else {}
+      }}
+
 - name: "L3 rollback: report eligibility"
   ansible.builtin.debug:
     msg: >-

@@ -9,7 +9,9 @@
 # can no longer supersede/mutate/finish the snapshot between this read
 # and the lock acquisition the R2a draft left as two separate,
 # race-prone steps) -> helm surface (§4.4) -> netbox surface (§4.2) ->
-# terminal (§4.5/§4.6 aggregate outcome, marker, lock release — R2a-7:
+# coordinator surface (umbrella #201 WP3 fix-round D4 — OPT-IN, a no-op
+# unless the snapshot recorded a coordinator mechanism) -> terminal
+# (§4.5/§4.6 aggregate outcome, marker, lock release — R2a-7:
 # ALWAYS rollback_incomplete in WP3, see rollback_terminal.yml).
 #
 # l3_catalog_key/l3_release are DERIVED from the snapshot (now stage 3,
@@ -100,6 +102,14 @@
 
     - name: WP3-B stage 5 — netbox surface rollback
       ansible.builtin.include_tasks: rollback_netbox_surface.yml
+
+    - name: "L3 lock checkpoint before coordinator surface mutation (R3a-3b pattern; umbrella #201 WP3 fix-round D4)"
+      ansible.builtin.include_tasks: lock_checkpoint.yml
+
+    - name: "WP3-B stage 5.5 — coordinator active-source rollback (umbrella
+        #201 WP3 fix-round D4 — OPT-IN, a no-op unless this run's own
+        snapshot recorded a coordinator mechanism)"
+      ansible.builtin.include_tasks: rollback_coordinator_surface.yml
 
     - name: WP3-B stage 6 — terminal (aggregate outcome, marker, lock
         release, fail — R2a-7 always rollback_incomplete in WP3)
