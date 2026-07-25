@@ -1,0 +1,1015 @@
+---
+# umbrella #201 WP4b — REAL-playbook stubbed execution tests for
+# playbooks/switch-mxl-fabrics-demo.yml (spec §6.2's quiesce -> re-point ->
+# select). Same pattern as tests/l3-topology-execution.yml: each scenario
+# starts a FRESH stub-server process, runs the REAL, unmodified switch
+# playbook as a nested `ansible-playbook` subprocess, and asserts on its
+# real stdout + real HTTP against the stub K8s API + the helm invocation
+# log (tests/harness/stub_helm.sh's own L3_STUB_HELM_LOG).
+#
+# Unlike a launch/teardown, a switch touches NO NetBox at all — every
+# scenario here only needs the K8s stub + the helm PATH shim, never the
+# NetBox stub or a dcim.sites seed.
+#
+# Sequencing-order proof (mutant-detectable, claude1's own condition):
+# scenarios 4a/4b/4c fault at each of the three phase boundaries in turn
+# and assert the EXACT intermediate state at each — a reordered mutant
+# (e.g. select-before-repoint, or repoint-before-quiesce) fails at least
+# one of these three staged assertions. Scenario 6 (happy path) then
+# proves the full, unfaulted sequence reaches the correct final state.
+#
+# Atomic re-point (claude1's own condition 1): scenario 5 simulates a
+# `helm upgrade` failure via L3_STUB_HELM_UPGRADE_FAIL — the stub cannot
+# itself model Helm's OWN --atomic rollback-to-pre-values guarantee (that
+# is Helm's own tested behavior, not code this repo owns); what IS proven
+# here is that the playbook genuinely REQUESTS atomicity (via the logged
+# argv) and correctly treats a failed re-point as a failure — never
+# advancing to phase 3, never masking it as success.
+#
+# Run:  ansible-playbook tests/l3-switch-execution.yml
+
+- name: "Umbrella #201 WP4b — L3 switch playbook real-playbook stubbed execution tests"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    l3_harness_dir: "{{ playbook_dir }}/harness"
+    _se_j1_topology_params_switched_to_b:
+      schema_version: 1
+      target_facility: dmf-example-site
+      sources:
+        - id: source-a
+          flow_id: "5fbec3b1-1b0f-417d-9059-8b94a47197ed"
+          pattern: smpte
+        - id: source-b
+          flow_id: "b0ae9cba-a989-4568-ac96-8bd19272c966"
+          pattern: ball
+      viewer:
+        id: viewer-a
+        source_selection: source-b
+
+  tasks:
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 1: malformed topology_params (bad schema_version) -> refused
+    # BEFORE any lock acquisition (no mutation, nothing to release).
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(1) malformed topology_params (schema_version=2) — start fresh stubs, run the REAL switch playbook"
+      vars:
+        _se1_run_id: "11111111111111111111111111111111"
+        _se1_bad_topology_params: "{{ _se_j1_topology_params_switched_to_b | combine({'schema_version': 2}) }}"
+      block:
+        - name: "(1) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-1.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(1) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-se-1.json]
+          register: _se1_start
+          changed_when: false
+
+        - name: "(1) parse stub URLs"
+          ansible.builtin.set_fact:
+            _se1_k8s_url: "{{ _se1_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+
+        - name: "(1) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-se-1-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _se1_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(1) run the REAL switch playbook"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/switch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _se1_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - receiver_instance=mxl-videotest-view
+              - -e
+              - source_instance=source-b
+              - -e
+              - reason=test switch
+              - -e
+              - "{{ {'topology_params': _se1_bad_topology_params} | to_json }}"
+              - -e
+              - "l3_request_id={{ _se1_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-se-1-kubeconfig.yaml
+          register: _se1_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(1) ASSERT: the REAL playbook run FAILED"
+          ansible.builtin.assert:
+            that:
+              - _se1_run.rc != 0
+              - "'DMF_L3_SWITCH_REFUSED' in _se1_run.stdout"
+              - "'detail=topology-invalid' in _se1_run.stdout"
+            fail_msg: "(1) FAIL — expected a topology-invalid refusal. stdout={{ _se1_run.stdout }}"
+
+        - name: "(1) ASSERT (via real HTTP against the stub): the facility lock was NEVER created (pre-lock refusal)"
+          ansible.builtin.uri:
+            url: "{{ _se1_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(1) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-1.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 2: source_instance disagrees with topology_params.viewer.
+    # source_selection -> refused BEFORE any lock acquisition.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(2) source_instance/viewer.source_selection mismatch — start fresh stubs, run the REAL switch playbook"
+      vars:
+        _se2_run_id: "22222222222222222222222222222222"
+      block:
+        - name: "(2) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-2.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(2) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-se-2.json]
+          register: _se2_start
+          changed_when: false
+
+        - name: "(2) parse stub URLs"
+          ansible.builtin.set_fact:
+            _se2_k8s_url: "{{ _se2_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+
+        - name: "(2) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-se-2-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _se2_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(2) run the REAL switch playbook, source_instance=source-a
+            but topology_params.viewer.source_selection=source-b (the
+            fixture's own default) — a forged/malformed pair"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/switch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _se2_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - receiver_instance=mxl-videotest-view
+              - -e
+              - source_instance=source-a
+              - -e
+              - reason=test switch
+              - -e
+              - "{{ {'topology_params': _se_j1_topology_params_switched_to_b} | to_json }}"
+              - -e
+              - "l3_request_id={{ _se2_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-se-2-kubeconfig.yaml
+          register: _se2_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(2) ASSERT: the REAL playbook run FAILED"
+          ansible.builtin.assert:
+            that:
+              - _se2_run.rc != 0
+              - "'detail=switch-source-instance-mismatch' in _se2_run.stdout"
+            fail_msg: "(2) FAIL — expected a switch-source-instance-mismatch refusal. stdout={{ _se2_run.stdout }}"
+
+        - name: "(2) ASSERT (via real HTTP against the stub): the facility lock was NEVER created (pre-lock refusal)"
+          ansible.builtin.uri:
+            url: "{{ _se2_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(2) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-2.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 3: coordinator ConfigMap absent -> refused AFTER a brief
+    # lock hold (the check runs post-lock, per this playbook's own design)
+    # — proves the lock is still released even for this refusal.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(3) coordinator ConfigMap missing — start fresh stubs (no seed), run the REAL switch playbook"
+      vars:
+        _se3_run_id: "33333333333333333333333333333333"
+      block:
+        - name: "(3) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-3.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(3) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-se-3.json]
+          register: _se3_start
+          changed_when: false
+
+        - name: "(3) parse stub URLs"
+          ansible.builtin.set_fact:
+            _se3_k8s_url: "{{ _se3_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+
+        - name: "(3) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-se-3-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _se3_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(3) run the REAL switch playbook against a stub with NO coordinator ConfigMap seeded"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/switch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _se3_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - receiver_instance=mxl-videotest-view
+              - -e
+              - source_instance=source-b
+              - -e
+              - reason=test switch
+              - -e
+              - "{{ {'topology_params': _se_j1_topology_params_switched_to_b} | to_json }}"
+              - -e
+              - "l3_request_id={{ _se3_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-se-3-kubeconfig.yaml
+          register: _se3_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(3) ASSERT: the REAL playbook run FAILED"
+          ansible.builtin.assert:
+            that:
+              - _se3_run.rc != 0
+              - "'detail=switch-coordinator-missing' in _se3_run.stdout"
+            fail_msg: "(3) FAIL — expected a switch-coordinator-missing refusal. stdout={{ _se3_run.stdout }}"
+
+        - name: "(3) ASSERT (via real HTTP against the stub): the facility
+            lock was acquired then RELEASED (this refusal fires AFTER
+            switch_lock, proving the lock does not leak even for a
+            post-lock, pre-mutation refusal)"
+          ansible.builtin.uri:
+            url: "{{ _se3_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(3) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-3.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 4: sequencing-order proof, three staged fault-injection
+    # points against a SEEDED, already-running topology (active-source=
+    # source-a pre-switch). A reordered mutant (e.g. select-before-repoint)
+    # fails at least one of 4a/4b/4c's own staged assertions.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(4) sequencing-order proof — start fresh stubs, seed an already-running topology, fault at each of the three phase boundaries in turn"
+      vars:
+        _se4_run_id: "44444444444444444444444444444444"
+      block:
+        - name: "(4) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-4.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(4) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-se-4.json]
+          register: _se4_start
+          changed_when: false
+
+        - name: "(4) parse stub URLs"
+          ansible.builtin.set_fact:
+            _se4_k8s_url: "{{ _se4_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+
+        - name: "(4) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-se-4-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _se4_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(4) seed the coordinator ConfigMap with a live PRE-switch state (active-source=source-a)"
+          ansible.builtin.uri:
+            url: "{{ _se4_k8s_url }}/api/v1/namespaces/mxl/configmaps/"
+            method: POST
+            body_format: json
+            body:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata: { name: mxl-coordinator, namespace: mxl }
+              data:
+                active-source: source-a
+                target-info: '{"pod_uid": "pre-switch-uid", "start_ts": "1000"}'
+                epoch: "pre-switch-uid:1000"
+            status_code: [201]
+
+        - name: "(4) create the helm PATH shim dir"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin
+            state: directory
+
+        - name: "(4) symlink helm -> stub_helm.sh"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin/helm
+            src: "{{ l3_harness_dir }}/stub_helm.sh"
+            state: link
+            force: true
+
+        # ── 4a: fault at post-switch-lock (before ANY coordinator mutation)
+        - name: "(4a) run the REAL switch playbook, fault at post-switch-lock"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/switch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _se4_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - receiver_instance=mxl-videotest-view
+              - -e
+              - source_instance=source-b
+              - -e
+              - reason=test switch
+              - -e
+              - "{{ {'topology_params': _se_j1_topology_params_switched_to_b} | to_json }}"
+              - -e
+              - "l3_request_id={{ _se4_run_id }}"
+              - -e
+              - l3_fault_inject=post-switch-lock
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-se-4-kubeconfig.yaml
+            PATH: "/tmp/l3-harness-bin:{{ lookup('env', 'PATH') }}"
+            L3_STUB_HELM_LOG: /tmp/l3-se-4a-helm.log
+          register: _se4a_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(4a) ASSERT: the REAL playbook run FAILED (the injected fault propagated)"
+          ansible.builtin.assert:
+            that:
+              - _se4a_run.rc != 0
+            fail_msg: "(4a) FAIL — exited 0. stdout={{ _se4a_run.stdout }}"
+
+        - name: "(4a) ASSERT (via real HTTP against the stub): the coordinator is COMPLETELY UNCHANGED (no phase ever ran)"
+          ansible.builtin.uri:
+            url: "{{ _se4_k8s_url }}/api/v1/namespaces/mxl/configmaps/mxl-coordinator"
+            method: GET
+            return_content: true
+            validate_certs: false
+          register: _se4a_coordinator
+
+        - name: "(4a) assert coordinator unchanged"
+          ansible.builtin.assert:
+            that:
+              - _se4a_coordinator.json.data['active-source'] == 'source-a'
+              - _se4a_coordinator.json.data['target-info'] is defined
+              - _se4a_coordinator.json.data['epoch'] == 'pre-switch-uid:1000'
+            fail_msg: "(4a) FAIL — coordinator was mutated despite faulting before phase 1. got={{ _se4a_coordinator.json.data }}"
+
+        - name: "(4a) ASSERT: no helm upgrade call was ever made"
+          ansible.builtin.stat:
+            path: /tmp/l3-se-4a-helm.log
+          register: _se4a_helm_log_stat
+
+        - name: "(4a) assert no helm log exists at all (no helm invocation of any kind)"
+          ansible.builtin.assert:
+            that:
+              - not _se4a_helm_log_stat.stat.exists
+            fail_msg: "(4a) FAIL — expected zero helm invocations before phase 1, got a log file"
+
+        - name: "(4a) ASSERT (via real HTTP against the stub): the facility lock was released"
+          ansible.builtin.uri:
+            url: "{{ _se4_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+
+        # ── 4b: fault at post-switch-quiesce (after phase 1, before phase 2)
+        - name: "(4b) run the REAL switch playbook, fault at post-switch-quiesce"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/switch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _se4_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - receiver_instance=mxl-videotest-view
+              - -e
+              - source_instance=source-b
+              - -e
+              - reason=test switch
+              - -e
+              - "{{ {'topology_params': _se_j1_topology_params_switched_to_b} | to_json }}"
+              - -e
+              - "l3_request_id={{ _se4_run_id }}"
+              - -e
+              - l3_fault_inject=post-switch-quiesce
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-se-4-kubeconfig.yaml
+            PATH: "/tmp/l3-harness-bin:{{ lookup('env', 'PATH') }}"
+            L3_STUB_HELM_LOG: /tmp/l3-se-4b-helm.log
+          register: _se4b_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(4b) ASSERT: the REAL playbook run FAILED (the injected fault propagated)"
+          ansible.builtin.assert:
+            that:
+              - _se4b_run.rc != 0
+            fail_msg: "(4b) FAIL — exited 0. stdout={{ _se4b_run.stdout }}"
+
+        - name: "(4b) ASSERT (via real HTTP against the stub): the coordinator is QUIESCED (active-source/target-info/epoch all cleared) — phase 1 ran, phase 2/3 did not"
+          ansible.builtin.uri:
+            url: "{{ _se4_k8s_url }}/api/v1/namespaces/mxl/configmaps/mxl-coordinator"
+            method: GET
+            return_content: true
+            validate_certs: false
+          register: _se4b_coordinator
+
+        - name: "(4b) assert coordinator quiesced"
+          ansible.builtin.assert:
+            that:
+              - "'active-source' not in (_se4b_coordinator.json.data | default({}))"
+              - "'target-info' not in (_se4b_coordinator.json.data | default({}))"
+              - "'epoch' not in (_se4b_coordinator.json.data | default({}))"
+            fail_msg: "(4b) FAIL — expected a fully quiesced coordinator (phase 1 complete). got={{ _se4b_coordinator.json.data }}"
+
+        - name: "(4b) ASSERT: no helm upgrade call was made (phase 2 never reached)"
+          ansible.builtin.stat:
+            path: /tmp/l3-se-4b-helm.log
+          register: _se4b_helm_log_stat
+
+        - name: "(4b) assert no helm log exists"
+          ansible.builtin.assert:
+            that:
+              - not _se4b_helm_log_stat.stat.exists
+            fail_msg: "(4b) FAIL — expected zero helm invocations before phase 2, got a log file"
+
+        - name: "(4b) ASSERT (via real HTTP against the stub): the facility lock was released"
+          ansible.builtin.uri:
+            url: "{{ _se4_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+
+        - name: "(4c) delete the coordinator (4b's own real quiesce left it
+            cleared but present) so it can be freshly re-seeded — the stub
+            K8s API enforces optimistic-concurrency resourceVersion
+            checking on updates, so a PUT/PATCH here would need to read it
+            back first; delete+recreate is simpler and matches every other
+            scenario's own seed step exactly"
+          ansible.builtin.uri:
+            url: "{{ _se4_k8s_url }}/api/v1/namespaces/mxl/configmaps/mxl-coordinator"
+            method: DELETE
+            status_code: [200, 202, 204]
+
+        - name: "(4c) re-seed the coordinator with the SAME live PRE-switch state, for a clean 4c run"
+          ansible.builtin.uri:
+            url: "{{ _se4_k8s_url }}/api/v1/namespaces/mxl/configmaps/"
+            method: POST
+            body_format: json
+            body:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata: { name: mxl-coordinator, namespace: mxl }
+              data:
+                active-source: source-a
+                target-info: '{"pod_uid": "pre-switch-uid", "start_ts": "1000"}'
+                epoch: "pre-switch-uid:1000"
+            status_code: [201]
+
+        # ── 4c: fault at post-switch-repoint (after phase 2, before phase 3)
+        - name: "(4c) run the REAL switch playbook, fault at post-switch-repoint"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/switch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _se4_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - receiver_instance=mxl-videotest-view
+              - -e
+              - source_instance=source-b
+              - -e
+              - reason=test switch
+              - -e
+              - "{{ {'topology_params': _se_j1_topology_params_switched_to_b} | to_json }}"
+              - -e
+              - "l3_request_id={{ _se4_run_id }}"
+              - -e
+              - l3_fault_inject=post-switch-repoint
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-se-4-kubeconfig.yaml
+            PATH: "/tmp/l3-harness-bin:{{ lookup('env', 'PATH') }}"
+            L3_STUB_HELM_LOG: /tmp/l3-se-4c-helm.log
+          register: _se4c_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(4c) ASSERT: the REAL playbook run FAILED (the injected fault propagated)"
+          ansible.builtin.assert:
+            that:
+              - _se4c_run.rc != 0
+            fail_msg: "(4c) FAIL — exited 0. stdout={{ _se4c_run.stdout }}"
+
+        - name: "(4c) ASSERT: the viewer's helm release WAS re-pointed
+            (phase 2 ran), with --atomic and the target source's flow.id
+            (proves both the re-point AND its atomicity request happened
+            before the fault, not after)"
+          ansible.builtin.slurp:
+            src: /tmp/l3-se-4c-helm.log
+          register: _se4c_helm_log_raw
+
+        - name: "(4c) assert helm upgrade argv"
+          ansible.builtin.assert:
+            that:
+              - "'upgrade mxl-videotest-view --reuse-values -n mxl --set flow.id=b0ae9cba-a989-4568-ac96-8bd19272c966 --atomic' in (_se4c_helm_log_raw.content | b64decode)"
+            fail_msg: >-
+              (4c) FAIL — expected the viewer's helm upgrade with --atomic
+              and the target source's own flow.id. Got:
+              {{ _se4c_helm_log_raw.content | b64decode }}
+
+        - name: "(4c) ASSERT (via real HTTP against the stub): active-source
+            is STILL absent (phase 3/select never ran — proves select is
+            genuinely LAST, not reordered before/during the re-point)"
+          ansible.builtin.uri:
+            url: "{{ _se4_k8s_url }}/api/v1/namespaces/mxl/configmaps/mxl-coordinator"
+            method: GET
+            return_content: true
+            validate_certs: false
+          register: _se4c_coordinator
+
+        - name: "(4c) assert active-source still absent"
+          ansible.builtin.assert:
+            that:
+              - "'active-source' not in (_se4c_coordinator.json.data | default({}))"
+            fail_msg: "(4c) FAIL — active-source was set despite faulting before phase 3 (select ran too early). got={{ _se4c_coordinator.json.data }}"
+
+        - name: "(4c) ASSERT (via real HTTP against the stub): the facility lock was released"
+          ansible.builtin.uri:
+            url: "{{ _se4_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(4) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-4.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 5: a genuinely FAILED helm upgrade (--atomic requested,
+    # simulated failure) — proves the failure propagates, active-source
+    # stays cleared (never selected), and the lock is released. This
+    # cannot itself prove Helm's own --atomic rollback-to-pre-values
+    # behavior (see this file's own header) — only that this playbook
+    # correctly requests it and correctly treats a failure as a failure.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(5) failed helm re-point (--atomic requested, simulated failure) — start fresh stubs, seed an already-running topology, run the REAL switch playbook"
+      vars:
+        _se5_run_id: "55555555555555555555555555555555"
+      block:
+        - name: "(5) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-5.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(5) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-se-5.json]
+          register: _se5_start
+          changed_when: false
+
+        - name: "(5) parse stub URLs"
+          ansible.builtin.set_fact:
+            _se5_k8s_url: "{{ _se5_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+
+        - name: "(5) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-se-5-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _se5_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(5) seed the coordinator ConfigMap with a live PRE-switch state (active-source=source-a)"
+          ansible.builtin.uri:
+            url: "{{ _se5_k8s_url }}/api/v1/namespaces/mxl/configmaps/"
+            method: POST
+            body_format: json
+            body:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata: { name: mxl-coordinator, namespace: mxl }
+              data:
+                active-source: source-a
+                target-info: '{"pod_uid": "pre-switch-uid", "start_ts": "1000"}'
+                epoch: "pre-switch-uid:1000"
+            status_code: [201]
+
+        - name: "(5) create the helm PATH shim dir"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin
+            state: directory
+
+        - name: "(5) symlink helm -> stub_helm.sh"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin/helm
+            src: "{{ l3_harness_dir }}/stub_helm.sh"
+            state: link
+            force: true
+
+        - name: "(5) run the REAL switch playbook, helm upgrade fixtured to fail"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/switch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _se5_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - receiver_instance=mxl-videotest-view
+              - -e
+              - source_instance=source-b
+              - -e
+              - reason=test switch
+              - -e
+              - "{{ {'topology_params': _se_j1_topology_params_switched_to_b} | to_json }}"
+              - -e
+              - "l3_request_id={{ _se5_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-se-5-kubeconfig.yaml
+            PATH: "/tmp/l3-harness-bin:{{ lookup('env', 'PATH') }}"
+            L3_STUB_HELM_LOG: /tmp/l3-se-5-helm.log
+            L3_STUB_HELM_UPGRADE_FAIL: "1"
+          register: _se5_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(5) ASSERT: the REAL playbook run FAILED"
+          ansible.builtin.assert:
+            that:
+              - _se5_run.rc != 0
+            fail_msg: "(5) FAIL — exited 0 despite a fixtured helm upgrade failure. stdout={{ _se5_run.stdout }}"
+
+        - name: "(5) ASSERT: helm upgrade WAS attempted with --atomic (the playbook genuinely requests atomicity, even though this attempt failed)"
+          ansible.builtin.slurp:
+            src: /tmp/l3-se-5-helm.log
+          register: _se5_helm_log_raw
+
+        - name: "(5) assert --atomic was requested"
+          ansible.builtin.assert:
+            that:
+              - "'upgrade mxl-videotest-view --reuse-values -n mxl --set flow.id=b0ae9cba-a989-4568-ac96-8bd19272c966 --atomic' in (_se5_helm_log_raw.content | b64decode)"
+            fail_msg: "(5) FAIL — expected the failed upgrade attempt to have requested --atomic. Got: {{ _se5_helm_log_raw.content | b64decode }}"
+
+        - name: "(5) ASSERT (via real HTTP against the stub): active-source
+            is STILL absent (phase 1 quiesced it, the failed phase 2 never
+            reaches phase 3 — never masked as success)"
+          ansible.builtin.uri:
+            url: "{{ _se5_k8s_url }}/api/v1/namespaces/mxl/configmaps/mxl-coordinator"
+            method: GET
+            return_content: true
+            validate_certs: false
+          register: _se5_coordinator
+
+        - name: "(5) assert active-source still absent"
+          ansible.builtin.assert:
+            that:
+              - "'active-source' not in (_se5_coordinator.json.data | default({}))"
+            fail_msg: "(5) FAIL — active-source was set despite the re-point failing. got={{ _se5_coordinator.json.data }}"
+
+        - name: "(5) ASSERT (via real HTTP against the stub): the facility lock was released"
+          ansible.builtin.uri:
+            url: "{{ _se5_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(5) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-5.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 6: the full, unfaulted happy path — proves the complete
+    # sequence reaches the correct final state and releases the lock on
+    # the SUCCESS path (not just on failure, which scenarios 1-5 already
+    # cover).
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(6) happy path — start fresh stubs, seed an already-running topology, run the REAL switch playbook to completion"
+      vars:
+        _se6_run_id: "66666666666666666666666666666666"
+      block:
+        - name: "(6) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-6.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(6) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-se-6.json]
+          register: _se6_start
+          changed_when: false
+
+        - name: "(6) parse stub URLs"
+          ansible.builtin.set_fact:
+            _se6_k8s_url: "{{ _se6_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+
+        - name: "(6) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-se-6-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _se6_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(6) seed the coordinator ConfigMap with a live PRE-switch state (active-source=source-a)"
+          ansible.builtin.uri:
+            url: "{{ _se6_k8s_url }}/api/v1/namespaces/mxl/configmaps/"
+            method: POST
+            body_format: json
+            body:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata: { name: mxl-coordinator, namespace: mxl }
+              data:
+                active-source: source-a
+                target-info: '{"pod_uid": "pre-switch-uid", "start_ts": "1000"}'
+                epoch: "pre-switch-uid:1000"
+            status_code: [201]
+
+        - name: "(6) create the helm PATH shim dir"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin
+            state: directory
+
+        - name: "(6) symlink helm -> stub_helm.sh"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin/helm
+            src: "{{ l3_harness_dir }}/stub_helm.sh"
+            state: link
+            force: true
+
+        - name: "(6) run the REAL switch playbook to completion (no faults, no failures)"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/switch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _se6_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - receiver_instance=mxl-videotest-view
+              - -e
+              - source_instance=source-b
+              - -e
+              - reason=test switch
+              - -e
+              - "{{ {'topology_params': _se_j1_topology_params_switched_to_b} | to_json }}"
+              - -e
+              - "l3_request_id={{ _se6_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-se-6-kubeconfig.yaml
+            PATH: "/tmp/l3-harness-bin:{{ lookup('env', 'PATH') }}"
+            L3_STUB_HELM_LOG: /tmp/l3-se-6-helm.log
+          register: _se6_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(6) ASSERT: the REAL playbook run SUCCEEDED"
+          ansible.builtin.assert:
+            that:
+              - _se6_run.rc == 0
+            fail_msg: "(6) FAIL — expected a clean success. stdout={{ _se6_run.stdout }}"
+
+        - name: "(6) ASSERT: helm upgrade ran with --atomic and the target source's own flow.id"
+          ansible.builtin.slurp:
+            src: /tmp/l3-se-6-helm.log
+          register: _se6_helm_log_raw
+
+        - name: "(6) assert helm upgrade argv"
+          ansible.builtin.assert:
+            that:
+              - "'upgrade mxl-videotest-view --reuse-values -n mxl --set flow.id=b0ae9cba-a989-4568-ac96-8bd19272c966 --atomic' in (_se6_helm_log_raw.content | b64decode)"
+            fail_msg: "(6) FAIL — expected the viewer's helm upgrade with --atomic. Got: {{ _se6_helm_log_raw.content | b64decode }}"
+
+        - name: "(6) ASSERT (via real HTTP against the stub): active-source now reflects the switch target"
+          ansible.builtin.uri:
+            url: "{{ _se6_k8s_url }}/api/v1/namespaces/mxl/configmaps/mxl-coordinator"
+            method: GET
+            return_content: true
+            validate_certs: false
+          register: _se6_coordinator
+
+        - name: "(6) assert final coordinator state"
+          ansible.builtin.assert:
+            that:
+              - _se6_coordinator.json.data['active-source'] == 'source-b'
+            fail_msg: "(6) FAIL — expected active-source=source-b, got {{ _se6_coordinator.json.data }}"
+
+        - name: "(6) ASSERT (via real HTTP against the stub): the facility lock was released on the SUCCESS path"
+          ansible.builtin.uri:
+            url: "{{ _se6_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(6) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-6.json]
+          changed_when: false
+          failed_when: false
+
+    - name: ALL L3 SWITCH EXECUTION TESTS PASSED
+      ansible.builtin.debug:
+        msg: >-
+          umbrella #201 WP4b: the REAL, unmodified playbooks/switch-mxl-fabrics-demo.yml,
+          run as real ansible-playbook subprocesses against the test harness stubs,
+          correctly refuses BEFORE lock acquisition for malformed topology_params
+          (scenario 1) and a source_instance/viewer.source_selection mismatch
+          (scenario 2) — both with the facility lock confirmed 404 via real HTTP.
+          A missing coordinator ConfigMap (scenario 3) refuses AFTER a brief lock
+          hold, proving the lock still releases for a post-lock, pre-mutation
+          refusal. Scenario 4's three staged fault injections (post-switch-lock,
+          post-switch-quiesce, post-switch-repoint) each assert the EXACT
+          intermediate coordinator/helm state at that boundary — a reordered
+          mutant (select-before-repoint, repoint-before-quiesce, or any
+          skipped phase) fails at least one of these three assertions, and the
+          facility lock is confirmed released after every one. Scenario 5
+          proves a genuinely failed helm re-point (--atomic requested) never
+          advances to phase 3 (active-source stays cleared) and still releases
+          the lock — this cannot itself verify Helm's own --atomic
+          rollback-to-pre-values guarantee (that is Helm's tested behavior, not
+          code this repo owns), only that this playbook correctly requests
+          atomicity and correctly treats a failure as a failure. Scenario 6
+          proves the full, unfaulted sequence reaches the correct final state
+          (active-source = the switch target) and releases the lock on the
+          SUCCESS path too.

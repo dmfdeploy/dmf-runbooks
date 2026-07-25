@@ -30,6 +30,7 @@
 #                                       simulate a fetch failure
 #   L3_STUB_HELM_ROLLBACK_FAIL=1        simulate `helm rollback` failure
 #   L3_STUB_HELM_UNINSTALL_FAIL=1       simulate `helm uninstall` failure
+#   L3_STUB_HELM_UPGRADE_FAIL=1         simulate `helm upgrade` failure (umbrella #201 WP4b)
 #   L3_STUB_HELM_LOG=<path>             when set, EVERY invocation (any
 #                                       subcommand) appends its full
 #                                       received argv as one line to this
@@ -154,10 +155,21 @@ for item in items:
     # `helm upgrade --install <release> <chart> -n <ns> [--set k=v ...]`
     # (raw command form) or whatever kubernetes.core.helm's module itself
     # shells out to. Same tolerant style as `uninstall` above — not strict
-    # about exact flags/order, always succeeds. $2 is often `--install`
-    # rather than the release name, so this doesn't try to parse it out;
-    # callers that need the concrete argv (e.g. to compare --set values
-    # against a `template` call) read it back via L3_STUB_HELM_LOG instead.
+    # about exact flags/order, always succeeds unless
+    # L3_STUB_HELM_UPGRADE_FAIL=1 (umbrella #201 WP4b — the switch
+    # playbook's own re-point step needs to prove a FAILED
+    # `helm upgrade --atomic` propagates correctly; this stub cannot
+    # itself model Helm's own --atomic rollback-to-pre-values behavior,
+    # only that the surrounding playbook correctly requests atomicity
+    # (via L3_STUB_HELM_LOG) and correctly treats a failure as a
+    # failure). $2 is often `--install` rather than the release name, so
+    # this doesn't try to parse it out; callers that need the concrete
+    # argv (e.g. to compare --set/--atomic values against a `template`
+    # call) read it back via L3_STUB_HELM_LOG instead.
+    if [ "${L3_STUB_HELM_UPGRADE_FAIL:-0}" = "1" ]; then
+      echo "stub_helm.sh: simulated 'helm upgrade' failure" >&2
+      exit 1
+    fi
     echo "Release \"${2:-unknown}\" has been upgraded. Happy Helming! (stub)"
     exit 0
     ;;
