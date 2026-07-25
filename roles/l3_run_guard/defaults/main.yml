@@ -76,6 +76,13 @@ l3_kube_api_validate_certs: true
 # ── Run snapshot (§4.1) ─────────────────────────────────────────────────────
 l3_run_configmap_prefix: "dmf-run-"
 
+# umbrella #201 WP3 fix-round D4: OPT-IN coordinator ConfigMap name whose
+# pre-run active-source state snapshot.yml should capture (and rollback
+# restore/remove) — empty by default, a no-op for every launcher that
+# never sets it. Only launch-mxl-fabrics-demo.yml sets this
+# (mxl-coordinator).
+l3_coordinator_configmap_name: ""
+
 # ── NetBox (snapshot surface #1) ────────────────────────────────────────────
 # Mirrors the SAME defaults every other launcher role declares (nmos-cpp,
 # nmos-crosspoint, mxl) — deliberately the identical var names/values, not
@@ -100,6 +107,22 @@ netbox_api_token: "{{ vault_netbox_catalog_token | default('') }}"
 # capacity gate evaluates the SAME artifact the install step actually
 # uses. Empty by default (the normal OCI-pull path, unaffected).
 l3_chart_local: ""
+
+# ── Topology params (umbrella #201 WP3, §3.2) ──────────────────────────────
+# umbrella #201 WP3 fix round (codex D1): there is deliberately NO
+# l3_topology_params_required default here — topology_validate.yml gates
+# purely on `topology_params is defined`, never a separate named flag (see
+# that file's own header for the forgery this avoids).
+#
+# umbrella #201 WP3 fix-round D2: GENERIC extra --set values a caller
+# (the calling playbook) wants folded into capacity.yml's own
+# _l3_effective_chart_set_values computation, alongside l3_chart_set_values
+# and any topology viewer flow.id override — empty by default (a no-op for
+# every launcher that never sets it; nmos-cpp/nmos-crosspoint never do).
+# This role has no opinion on WHAT these values mean (e.g. mxl's own
+# sourceId= for a scalar source launch, umbrella #201 WP3 D3) — it only
+# guarantees they reach the SAME render+install path as everything else.
+l3_chart_extra_set_values: []
 
 # ── Capacity preflight (§3.2) ───────────────────────────────────────────────
 # ee_reserve is ALWAYS zero on both launcher entry paths — see l3_budget.py's

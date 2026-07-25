@@ -120,13 +120,34 @@
             else (_l3_chart_tmp.path ~ '/' ~ l3_chart_name)
           }}
 
+    - name: "L3 capacity: this run's own EFFECTIVE chart --set values (umbrella
+        #201 WP3 fix-round D2 — the ONE authoritative computation, consumed
+        by BOTH this render and the calling playbook's own install step via
+        the SAME fact name. Codex proved a playbook-local duplicate of this
+        computation (an install-only alias) is a capacity/install DIVERGENCE
+        forgery vector: forging the alias directly let the real install
+        receive different --set values than this gate ever validated. Computed
+        HERE, inside the role, so it is covered by the SAME reserved-var
+        mechanism as every other role-internal fact — l3_chart_extra_set_values
+        is the only piece a caller (the playbook) supplies, a GENERIC empty-
+        by-default list of extra --set strings; l3_topology_viewer_projection
+        (role-derived, stage 2.5) supplies the viewer's own re-derived flow.id
+        when topology mode is active)"
+      ansible.builtin.set_fact:
+        _l3_effective_chart_set_values: >-
+          {{
+            (l3_chart_set_values | default([]))
+            + (['flow.id=' ~ l3_topology_viewer_projection.flow_id] if l3_topology_viewer_projection is defined else [])
+            + (l3_chart_extra_set_values | default([]))
+          }}
+
     - name: Render the chart from the resolved path
       ansible.builtin.command:
         argv: >-
           {{
             ['helm', 'template', l3_release, _l3_chart_render_path,
              '-n', l3_target_namespace]
-            + (l3_chart_set_values | default([]) | l3_set_flag_argv)
+            + (_l3_effective_chart_set_values | l3_set_flag_argv)
           }}
       register: _l3_helm_template
       changed_when: false
@@ -165,22 +186,42 @@
 # re-hop) — l3_evaluate_fit ALSO now boundary-coerces this input
 # defensively regardless (see l3_budget.py's _coerce_capacity_int), so
 # this is defense-in-depth, not the only fix.
-- name: "L3 capacity: run demand (cpu_m/mem_b pair for l3_evaluate_fit)"
+- name: "L3 capacity: render + compute demand for each topology release-group
+    item (umbrella #201 WP3 — reuses the SAME resolved chart path/version
+    the scalar render above just used; a no-op loop over an
+    empty/undefined list for every non-topology launch)"
+  ansible.builtin.include_tasks: _capacity_render_group_item.yml
+  loop: "{{ l3_release_group | default([]) }}"
+  loop_control:
+    loop_var: l3_capacity_group_item
+    label: "{{ l3_capacity_group_item.release }}"
+
+- name: "L3 capacity: combine scalar + group demand into one budget total
+    (pure — l3_sum_demand; l3_release_group undefined degrades this to a
+    single-element list, which l3_sum_demand's own docstring guarantees
+    returns the scalar result completely unchanged — byte-identical)"
   ansible.builtin.set_fact:
-    _l3_run_demand: "{{ {'cpu_m': _l3_run_demand_result.cpu_m, 'mem_b': _l3_run_demand_result.mem_b} }}"
+    _l3_combined_demand_result: >-
+      {{ ([_l3_run_demand_result] + (_l3_group_demand_accum | default([]))) | l3_sum_demand }}
+
+- name: "L3 capacity: run demand (cpu_m/mem_b pair for l3_evaluate_fit; umbrella
+    #201 WP3 — now the COMBINED scalar+group total, see above)"
+  ansible.builtin.set_fact:
+    _l3_run_demand: "{{ {'cpu_m': _l3_combined_demand_result.cpu_m, 'mem_b': _l3_combined_demand_result.mem_b} }}"
 
 # ── missing-budget refusal ──────────────────────────────────────────────────
 - name: "L3 capacity: missing-budget refusal (unless overridden)"
-  when: not _l3_run_demand_result.has_requests
+  when: not _l3_combined_demand_result.has_requests
   block:
     - name: Report missing-budget
       ansible.builtin.debug:
         msg: >-
           L3 launcher refused: missing-budget. The rendered chart for
-          release={{ l3_release }} has at least one app or init container
-          across its pod templates missing a parseable cpu AND/OR memory
-          request (R2a-6a fail-closed — every container must be budgeted,
-          not just the workload as a whole).
+          release={{ l3_release }}{{ ' (+ topology release-group: ' ~ (l3_release_group | map(attribute='release') | join(', ')) ~ ')' if l3_release_group is defined else '' }}
+          has at least one app or init container across its pod template(s)
+          missing a parseable cpu AND/OR memory request (R2a-6a fail-closed
+          — every container in every release must be budgeted, not just the
+          workload as a whole).
 
     - name: "L3 override: WARNING — missing-budget would have refused"
       ansible.builtin.debug:
@@ -206,15 +247,15 @@
 - name: "L3 capacity: evaluate fit (pure — l3_evaluate_fit)"
   ansible.builtin.set_fact:
     _l3_fit: "{{ _l3_allocatable | l3_evaluate_fit(_l3_existing_demand, l3_ee_reserve, _l3_run_demand) }}"
-  when: _l3_run_demand_result.has_requests
+  when: _l3_combined_demand_result.has_requests
 
 - name: "L3 capacity: report verdict"
   ansible.builtin.debug:
     msg: "{{ _l3_fit.report }}"
-  when: _l3_run_demand_result.has_requests
+  when: _l3_combined_demand_result.has_requests
 
 - name: "L3 capacity: no-fit refusal (unless overridden)"
-  when: _l3_run_demand_result.has_requests and _l3_fit.verdict == 'no-fit'
+  when: _l3_combined_demand_result.has_requests and _l3_fit.verdict == 'no-fit'
   block:
     - name: "L3 override: WARNING — no-fit would have refused"
       ansible.builtin.debug:

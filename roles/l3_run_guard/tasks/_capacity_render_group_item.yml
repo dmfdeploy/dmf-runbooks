@@ -1,0 +1,34 @@
+---
+# umbrella #201 WP3 — render ONE l3_release_group item's chart + compute its
+# demand, accumulating into _l3_group_demand_accum. Looped from capacity.yml
+# over l3_release_group (loop_var l3_capacity_group_item) — never included
+# at all when l3_release_group is undefined, so this file has zero effect
+# on any non-topology launch.
+#
+# Reuses _l3_chart_render_path (capacity.yml's own resolved chart path/
+# version, computed ONCE above this include) — a topology run's group
+# releases are the SAME chart as the run's own scalar release (mxl's
+# source/view split is a `role` VALUE within one chart, not a different
+# chart), so there is nothing to re-pull per item, only a fresh `helm
+# template` with that item's own release name + chart_set_values.
+
+- name: "L3 capacity (group): render {{ l3_capacity_group_item.release }}"
+  ansible.builtin.command:
+    argv: >-
+      {{
+        ['helm', 'template', l3_capacity_group_item.release, _l3_chart_render_path,
+         '-n', l3_target_namespace]
+        + (l3_capacity_group_item.chart_set_values | l3_set_flag_argv)
+      }}
+  register: _l3_group_helm_template_one
+  changed_when: false
+
+- name: "L3 capacity (group): parse + compute demand for
+    {{ l3_capacity_group_item.release }} (pure — l3_render_demand, same
+    fail-closed rule as the scalar render above)"
+  ansible.builtin.set_fact:
+    _l3_group_demand_accum: >-
+      {{
+        (_l3_group_demand_accum | default([]))
+        + [ (_l3_group_helm_template_one.stdout | from_yaml_all | list | select('mapping') | list | l3_render_demand) ]
+      }}

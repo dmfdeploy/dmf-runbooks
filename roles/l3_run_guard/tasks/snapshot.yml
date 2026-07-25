@@ -75,31 +75,59 @@
 - name: "L3 snapshot: capture + write"
   when: _l3_api_available
   block:
-    - name: "L3 snapshot: look up NetBox service by EXACT NAME (same identity the provision stage uses — R2a-5)"
+    - name: "L3 snapshot: compute the full topology service-name set for this run
+        (pure — l3_topology_service_names; umbrella #201 WP3 — this run's own
+        scalar l3_catalog_key PLUS every l3_release_group item's
+        netbox_service_name; l3_release_group undefined degrades this to
+        [l3_catalog_key] alone, the single-name list every launch queried
+        before this WP — byte-identical)"
+      ansible.builtin.set_fact:
+        _l3_topology_service_names: "{{ l3_catalog_key | l3_topology_service_names(l3_release_group | default(none)) }}"
+
+    - name: "L3 snapshot: look up NetBox service by EXACT NAME, once per name in
+        the topology service-name set (R2a-5 — same identity the provision
+        stage uses; umbrella #201 WP3 generalizes the former single-name
+        lookup into a loop — one iteration for every non-topology launch)"
       ansible.builtin.uri:
-        url: "{{ netbox_api_url }}/api/ipam/services/?name={{ l3_catalog_key | urlencode }}"
+        url: "{{ netbox_api_url }}/api/ipam/services/?name={{ item | urlencode }}"
         method: GET
         headers:
           Authorization: "Token {{ netbox_api_token }}"
         validate_certs: false
         return_content: true
       no_log: true
-      register: _l3_netbox_lookup
+      loop: "{{ _l3_topology_service_names }}"
+      loop_control:
+        label: "{{ item }}"
+      register: _l3_netbox_lookup_results
 
-    - name: "L3 snapshot: assert at most one record for this exact name (structural — NetBox name uniqueness)"
+    - name: "L3 snapshot: assert at most one record per exact name (structural — NetBox name uniqueness)"
       ansible.builtin.assert:
         that:
-          - (_l3_netbox_lookup.json.results | default([])) | length <= 1
+          - (item.json.results | default([])) | length <= 1
         fail_msg: >-
           L3 snapshot: NetBox returned
-          {{ (_l3_netbox_lookup.json.results | default([])) | length }} records
-          for the exact name '{{ l3_catalog_key }}' — service names must be
+          {{ (item.json.results | default([])) | length }} records
+          for the exact name '{{ item.item }}' — service names must be
           unique; this is a structural NetBox data-integrity problem, not a
           per-run decision.
+      loop: "{{ _l3_netbox_lookup_results.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      no_log: true
 
-    - name: "L3 snapshot: extract NetBox surface WITH id (pure — l3_netbox_surface_with_id, R2a-5)"
+    - name: "L3 snapshot: extract NetBox surface WITH id (pure — l3_netbox_surface_with_id,
+        R2a-5; umbrella #201 WP3 — flattens every name's own results list first)"
       ansible.builtin.set_fact:
-        _l3_netbox_surface: "{{ _l3_netbox_lookup.json.results | default([]) | l3_netbox_surface_with_id }}"
+        _l3_netbox_surface: >-
+          {{
+            _l3_netbox_lookup_results.results
+            | map(attribute='json')
+            | map(attribute='results', default=[])
+            | list
+            | flatten
+            | l3_netbox_surface_with_id
+          }}
       no_log: true
 
     - name: "L3 snapshot: helm list (mxl namespace)"
@@ -180,6 +208,55 @@
       ansible.builtin.set_fact:
         _l3_monitoring_surface: "{{ _l3_netbox_surface | l3_monitoring_surface }}"
 
+    # ── umbrella #201 WP3 fix-round D4 — OPT-IN coordinator-state capture.
+    #    l3_coordinator_configmap_name is empty by default (role default,
+    #    see defaults/main.yml) — a no-op for every launcher that doesn't
+    #    set it; only launch-mxl-fabrics-demo.yml does (mxl-coordinator).
+    #    Captured BEFORE this run's own active-source write (this stage
+    #    runs before the calling playbook's own provision/install stage),
+    #    so rollback can restore EXACTLY the pre-run state — present with
+    #    a value, or genuinely absent — rather than guessing. A failed
+    #    install must not leave a selection this run itself introduced. ──
+    - name: "L3 snapshot: read the coordinator ConfigMap's PRE-RUN state (opt-in)"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: ConfigMap
+        name: "{{ l3_coordinator_configmap_name }}"
+        namespace: "{{ l3_target_namespace }}"
+      register: _l3_coordinator_cm_read
+      when: (l3_coordinator_configmap_name | default('') | trim) != ''
+
+    - name: "L3 snapshot: capture the coordinator's pre-run active-source state
+        (opt-in). 'namespace' is persisted alongside 'configmap_name' —
+        unlike catalog_key/release (recovered from this run's OWN snapshot
+        labels), l3_target_namespace is NEVER available to a later
+        rollback-run.yml invocation at all (no label carries it, and it is
+        not among rollback's own caller-supplied inputs) — without this,
+        rollback_coordinator_surface.yml would reference an undefined
+        variable the very first time this mechanism was ever exercised."
+      ansible.builtin.set_fact:
+        _l3_coordinator_snapshot_extra:
+          coordinator_state: >-
+            {{
+              {
+                'configmap_name': l3_coordinator_configmap_name,
+                'namespace': l3_target_namespace,
+                'active_source_present': (
+                  (_l3_coordinator_cm_read.resources | length > 0)
+                  and ('active-source' in (_l3_coordinator_cm_read.resources[0].data | default({})))
+                ),
+                'active_source_value': (
+                  _l3_coordinator_cm_read.resources[0].data['active-source']
+                  if (
+                    (_l3_coordinator_cm_read.resources | length > 0)
+                    and ('active-source' in (_l3_coordinator_cm_read.resources[0].data | default({})))
+                  )
+                  else ''
+                ),
+              } | to_json
+            }}
+      when: (l3_coordinator_configmap_name | default('') | trim) != ''
+
     - name: "L3 snapshot: resolve owner (R2a-10iv, coerced |string — R3a-2)"
       ansible.builtin.set_fact:
         _l3_owner: "{{ (l3_owner if (l3_owner | default('') | trim) != '' else l3_awx_job_id) | string }}"
@@ -198,12 +275,28 @@
               dmf.io/catalog-key: "{{ l3_catalog_key | string }}"
               dmf.io/release: "{{ l3_release | string }}"
               dmf.io/owner: "{{ _l3_owner | string }}"
-          data:
-            created_at: "{{ l3_now_epoch | string }}"
-            status: in-progress
-            netbox_surface: "{{ _l3_netbox_surface | to_json }}"
-            helm_surface: "{{ _l3_helm_surface | to_json }}"
-            monitoring_surface: "{{ _l3_monitoring_surface | to_json }}"
+          # topology_service_names (umbrella #201 WP3): persisted so a LATER
+          # rollback-run.yml invocation (a separate Ansible process —
+          # l3_release_group is a runtime-only fact, never available there)
+          # can recover the same name set for its own current-state NetBox
+          # lookup — see rollback_snapshot_read.yml's own recovery task.
+          # coordinator_state (fix-round D4, folded in via combine — a
+          # genuinely ABSENT key for every launch that never opts in via
+          # l3_coordinator_configmap_name, byte-identical to before D4):
+          # same rationale, one level deeper — rollback_coordinator_surface.yml
+          # restores the coordinator's pre-run active-source exactly, or
+          # removes it entirely if it was absent before this run.
+          data: >-
+            {{
+              {
+                'created_at': l3_now_epoch | string,
+                'status': 'in-progress',
+                'netbox_surface': _l3_netbox_surface | to_json,
+                'helm_surface': _l3_helm_surface | to_json,
+                'monitoring_surface': _l3_monitoring_surface | to_json,
+                'topology_service_names': _l3_topology_service_names | to_json,
+              } | combine(_l3_coordinator_snapshot_extra | default({}))
+            }}
 
     - name: "L3 snapshot: assert every label value is a legal K8s label value (R2a-1)"
       ansible.builtin.assert:

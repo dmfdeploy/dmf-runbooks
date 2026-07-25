@@ -1,0 +1,75 @@
+---
+# umbrella #201 WP3 fix-round D4 — coordinator active-source rollback
+# restore/remove. OPT-IN, driven ENTIRELY by the snapshot's own persisted
+# coordinator_state (rollback_snapshot_read.yml's own recovery task) — a
+# complete no-op (every task below skips) when that state is empty: every
+# snapshot taken before this WP, or any launch that never opted in via
+# l3_coordinator_configmap_name at snapshot time.
+#
+# Restores the coordinator ConfigMap's active-source field to EXACTLY its
+# pre-run state:
+#   - PRESENT with a value -> merge-patch back to that value (this run's
+#     own cold-launch write, if any, must not survive a rollback — a
+#     failed install must not leave a selection behind).
+#   - ABSENT -> remove the key entirely via a JSON Patch remove op (a
+#     strategic merge-patch, kubernetes.core.k8s's own default, cannot
+#     delete a single data key the way a JSON Patch can) — but ONLY when
+#     the key is CURRENTLY present (read-first, same discipline as the
+#     launch's own cold-launch-only write in launch-mxl-fabrics-demo.yml):
+#     a JSON Patch "remove" op against an already-absent path is a
+#     protocol ERROR, not a no-op, so this never blindly fires it.
+#
+# Namespace comes from _l3_snapshot_coordinator_state.namespace (persisted
+# by snapshot.yml), NEVER from l3_target_namespace directly — unlike
+# catalog_key/release (recovered from this run's own snapshot LABELS),
+# l3_target_namespace is never available to a rollback-run.yml invocation
+# at all: no label carries it, and rollback has no equivalent caller input.
+
+- name: "L3 rollback (coordinator): read current state (only when this
+    snapshot recorded a coordinator mechanism at all)"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    name: "{{ _l3_snapshot_coordinator_state.configmap_name }}"
+    namespace: "{{ _l3_snapshot_coordinator_state.namespace }}"
+  register: _l3_coordinator_rollback_read
+  when: (_l3_snapshot_coordinator_state | default({}) | length) > 0
+
+- name: "L3 rollback (coordinator): restore active-source to its pre-run value (was present)"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ _l3_snapshot_coordinator_state.configmap_name }}"
+        namespace: "{{ _l3_snapshot_coordinator_state.namespace }}"
+      data:
+        active-source: "{{ _l3_snapshot_coordinator_state.active_source_value }}"
+  when:
+    - (_l3_snapshot_coordinator_state | default({}) | length) > 0
+    - _l3_snapshot_coordinator_state.active_source_present
+
+- name: "L3 rollback (coordinator): remove active-source entirely (was absent
+    pre-run, and is CURRENTLY present — read-first, same discipline as the
+    restore task above). A `null` value in a merge-patch's map field is the
+    standard K8s idiom for deleting that single key (the SAME idiom this
+    codebase's own NetBox custom_fields clear already uses,
+    l3_netbox_monitoring_custom_fields_clear) — NOT a JSON Patch remove op,
+    which needs a DIFFERENT content-type/body shape every OTHER write in
+    this role already avoids."
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ _l3_snapshot_coordinator_state.configmap_name }}"
+        namespace: "{{ _l3_snapshot_coordinator_state.namespace }}"
+      data:
+        active-source: null
+  when:
+    - (_l3_snapshot_coordinator_state | default({}) | length) > 0
+    - not _l3_snapshot_coordinator_state.active_source_present
+    - (_l3_coordinator_rollback_read.resources | default([]) | length) > 0
+    - "'active-source' in (_l3_coordinator_rollback_read.resources[0].data | default({}))"
