@@ -492,6 +492,15 @@ class StubK8sHandler(BaseHTTPRequestHandler):
         # Minimal strategic/merge-patch approximation: shallow-merge `data`
         # and `metadata.labels`, good enough for _supersede_sweep.yml's
         # `state: present` status-field patch via kubernetes.core.k8s.
+        #
+        # umbrella #201 WP3 fix-round (finding 7's own coverage caught
+        # this): a `null` value for a `data` key is the standard K8s
+        # merge-patch idiom for DELETING that single key (honored by a
+        # real API server for map-typed fields) — this stub used to just
+        # `dict.update()` the raw patch body, which sets the key to a
+        # literal `None` rather than removing it, silently diverging from
+        # real cluster behavior for rollback_coordinator_surface.yml's own
+        # "remove this key" write.
         body = self._read_json_body() or {}
         key = (ns, name)
         with _STATE_LOCK:
@@ -502,7 +511,12 @@ class StubK8sHandler(BaseHTTPRequestHandler):
                 )
             merged = json.loads(json.dumps(stored))
             if "data" in body:
-                merged.setdefault("data", {}).update(body["data"] or {})
+                merged.setdefault("data", {})
+                for data_key, data_value in (body["data"] or {}).items():
+                    if data_value is None:
+                        merged["data"].pop(data_key, None)
+                    else:
+                        merged["data"][data_key] = data_value
             if "metadata" in body and "labels" in (body["metadata"] or {}):
                 merged.setdefault("metadata", {}).setdefault("labels", {}).update(
                     body["metadata"]["labels"] or {}

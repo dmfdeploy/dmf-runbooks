@@ -1,0 +1,427 @@
+---
+# umbrella #201 WP3 — topology_params projection offline gates
+# (roles/l3_run_guard/filter_plugins/l3_topology.py). Same pattern as
+# tests/l3-budget-logic.yml: exercises the filter plugin functions directly
+# with synthetic fixtures — no live cluster required.
+#
+# Run:  ansible-playbook tests/l3-topology-logic.yml
+
+- name: "umbrella #201 WP3 — L3 topology_params offline gates"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    # The REAL J1 instance (dmf-media catalog/topology-params.j1.yaml,
+    # WP1 frozen contract) — used verbatim so the projection assertions
+    # below prove the EXACT --set shape J1 will actually run with, not a
+    # synthetic stand-in.
+    _j1_topology_params:
+      schema_version: 1
+      target_facility: dmf-example-site
+      sources:
+        - id: source-a
+          flow_id: "5fbec3b1-1b0f-417d-9059-8b94a47197ed"
+          pattern: smpte
+        - id: source-b
+          flow_id: "b0ae9cba-a989-4568-ac96-8bd19272c966"
+          pattern: ball
+      viewer:
+        id: viewer-a
+        source_selection: source-a
+
+    _j1_base_set_values:
+      - "createNamespace=false"
+      - "fabrics.interface=eth0"
+      - "image.tag=v1.0.3"
+      - "placementMode=split-node"
+      - "nodeAccess.create=false"
+
+  tasks:
+    - name: Load l3_run_guard role (filter plugins + defaults only — see
+        tasks/filters_only.yml; this role's bare tasks/main.yml is the
+        REAL launch-playbook entry point and must never run from a test)
+      ansible.builtin.include_role:
+        name: l3_run_guard
+        tasks_from: filters_only
+
+    # ── Gate (a): valid J1 instance passes structural validation ─────────
+    - name: "(a) valid J1 topology_params — assert ok"
+      ansible.builtin.set_fact:
+        _gate_a: "{{ _j1_topology_params | l3_validate_topology_params }}"
+
+    - name: "(a) assertions"
+      ansible.builtin.assert:
+        that:
+          - _gate_a.ok
+        fail_msg: "(a) FAIL — the real J1 instance was rejected: {{ _gate_a }}"
+
+    # ── Gate (b): schema_version != 1 refused ─────────────────────────────
+    - name: "(b) wrong schema_version refused"
+      ansible.builtin.set_fact:
+        _gate_b: "{{ (_j1_topology_params | combine({'schema_version': 2})) | l3_validate_topology_params }}"
+
+    - name: "(b) assertions"
+      ansible.builtin.assert:
+        that:
+          - not _gate_b.ok
+          - "'schema_version' in _gate_b.error"
+        fail_msg: "(b) FAIL — expected refusal, got {{ _gate_b }}"
+
+    # ── Gate (c): empty sources[] refused ─────────────────────────────────
+    - name: "(c) empty sources[] refused"
+      ansible.builtin.set_fact:
+        _gate_c: "{{ (_j1_topology_params | combine({'sources': []})) | l3_validate_topology_params }}"
+
+    - name: "(c) assertions"
+      ansible.builtin.assert:
+        that:
+          - not _gate_c.ok
+          - "'sources' in _gate_c.error"
+        fail_msg: "(c) FAIL — expected refusal, got {{ _gate_c }}"
+
+    # ── Gate (d): malformed flow_id (not a UUID) refused ──────────────────
+    - name: "(d) malformed flow_id refused"
+      ansible.builtin.set_fact:
+        _gate_d_params: >-
+          {{
+            _j1_topology_params | combine({
+              'sources': [
+                _j1_topology_params.sources[0] | combine({'flow_id': 'not-a-uuid'}),
+                _j1_topology_params.sources[1],
+              ]
+            }, recursive=true)
+          }}
+
+    - name: "(d) validate"
+      ansible.builtin.set_fact:
+        _gate_d: "{{ _gate_d_params | l3_validate_topology_params }}"
+
+    - name: "(d) assertions"
+      ansible.builtin.assert:
+        that:
+          - not _gate_d.ok
+          - "'flow_id' in _gate_d.error"
+          - "'well-formed UUID' in _gate_d.error"
+        fail_msg: "(d) FAIL — expected refusal, got {{ _gate_d }}"
+
+    # ── Gate (e): duplicate flow_id ACROSS CASE SPELLING refused (the
+    #    parsed-UUID comparison, not a raw-string compare) ─────────────────
+    - name: "(e) case-spelling flow_id duplicate refused (compares PARSED uuid.UUID)"
+      ansible.builtin.set_fact:
+        _gate_e_params: >-
+          {{
+            _j1_topology_params | combine({
+              'sources': [
+                _j1_topology_params.sources[0] | combine({'flow_id': '5FBEC3B1-1B0F-417D-9059-8B94A47197ED'}),
+                _j1_topology_params.sources[1] | combine({'flow_id': '5fbec3b1-1b0f-417d-9059-8b94a47197ed'}),
+              ]
+            }, recursive=true)
+          }}
+
+    - name: "(e) validate"
+      ansible.builtin.set_fact:
+        _gate_e: "{{ _gate_e_params | l3_validate_topology_params }}"
+
+    - name: "(e) assertions"
+      ansible.builtin.assert:
+        that:
+          - not _gate_e.ok
+          - "'flow_id' in _gate_e.error"
+          - "'not unique' in _gate_e.error"
+        fail_msg: >-
+          (e) FAIL — a raw-string comparison would have let two
+          differently-cased spellings of the SAME uuid through as
+          "unique". Got: {{ _gate_e }}
+
+    # ── Gate (f): duplicate sources[].id refused ──────────────────────────
+    - name: "(f) duplicate sources[].id refused"
+      ansible.builtin.set_fact:
+        _gate_f_params: >-
+          {{
+            _j1_topology_params | combine({
+              'sources': [
+                _j1_topology_params.sources[0],
+                _j1_topology_params.sources[1] | combine({'id': 'source-a'}),
+              ]
+            }, recursive=true)
+          }}
+
+    - name: "(f) validate"
+      ansible.builtin.set_fact:
+        _gate_f: "{{ _gate_f_params | l3_validate_topology_params }}"
+
+    - name: "(f) assertions"
+      ansible.builtin.assert:
+        that:
+          - not _gate_f.ok
+          - "'id' in _gate_f.error"
+          - "'not unique' in _gate_f.error"
+        fail_msg: "(f) FAIL — expected refusal, got {{ _gate_f }}"
+
+    # ── Gate (g): duplicate pattern refused (the "visually unambiguous" rule) ─
+    - name: "(g) duplicate pattern refused"
+      ansible.builtin.set_fact:
+        _gate_g_params: >-
+          {{
+            _j1_topology_params | combine({
+              'sources': [
+                _j1_topology_params.sources[0],
+                _j1_topology_params.sources[1] | combine({'pattern': 'smpte'}),
+              ]
+            }, recursive=true)
+          }}
+
+    - name: "(g) validate"
+      ansible.builtin.set_fact:
+        _gate_g: "{{ _gate_g_params | l3_validate_topology_params }}"
+
+    - name: "(g) assertions"
+      ansible.builtin.assert:
+        that:
+          - not _gate_g.ok
+          - "'pattern' in _gate_g.error"
+          - "'distinct' in _gate_g.error"
+        fail_msg: "(g) FAIL — expected refusal, got {{ _gate_g }}"
+
+    # ── Gate (h): viewer.source_selection referencing an unknown id refused ─
+    - name: "(h) unknown source_selection refused"
+      ansible.builtin.set_fact:
+        _gate_h_params: "{{ _j1_topology_params | combine({'viewer': {'id': 'viewer-a', 'source_selection': 'source-z'}}) }}"
+
+    - name: "(h) validate"
+      ansible.builtin.set_fact:
+        _gate_h: "{{ _gate_h_params | l3_validate_topology_params }}"
+
+    - name: "(h) assertions"
+      ansible.builtin.assert:
+        that:
+          - not _gate_h.ok
+          - "'source_selection' in _gate_h.error"
+        fail_msg: "(h) FAIL — expected refusal, got {{ _gate_h }}"
+
+    # ── Gate (i): missing target_facility refused ─────────────────────────
+    - name: "(i) missing target_facility refused"
+      ansible.builtin.set_fact:
+        _gate_i_params: "{{ _j1_topology_params | combine({'target_facility': ''}) }}"
+
+    - name: "(i) validate"
+      ansible.builtin.set_fact:
+        _gate_i: "{{ _gate_i_params | l3_validate_topology_params }}"
+
+    - name: "(i) assertions"
+      ansible.builtin.assert:
+        that:
+          - not _gate_i.ok
+          - "'target_facility' in _gate_i.error"
+        fail_msg: "(i) FAIL — expected refusal, got {{ _gate_i }}"
+
+    # ── Gate (j): non-mapping input refused, never raises ─────────────────
+    - name: "(j) non-mapping input refused (never raises)"
+      ansible.builtin.set_fact:
+        _gate_j: "{{ 'not-a-dict' | l3_validate_topology_params }}"
+
+    - name: "(j) assertions"
+      ansible.builtin.assert:
+        that:
+          - not _gate_j.ok
+          - "'mapping' in _gate_j.error"
+        fail_msg: "(j) FAIL — expected refusal, got {{ _gate_j }}"
+
+    # ── Gate (k): l3_topology_release_group — EXACT projection for the
+    #    real J1 instance ON THE RATIFIED VIEWER JT's own l3_release
+    #    (umbrella #201 WP3 fix-round D5 — this MUST be the real shipping
+    #    identity, mxl-videotest-view, not an alternate contract: the
+    #    view-role invocation is the only one that ever calls this
+    #    function live, see topology_validate.yml's own header + this
+    #    filter's own docstring naming-rule note). The "projection
+    #    assertion" item 9 build-list entry names explicitly. ────────────
+    - name: "(k) derive J1's release group (on the ratified viewer JT identity)"
+      ansible.builtin.set_fact:
+        _gate_k: "{{ _j1_topology_params | l3_topology_release_group('mxl-videotest-view', _j1_base_set_values) }}"
+
+    - name: "(k) assert exact release/netbox_service_name/source_id shape
+        (mxl-videotest-view-source-a/b — the real names this ships with,
+        NOT mxl-videotestsrc-*, which is a different, unrelated catalog
+        entry that plays no further role once a topology launch is live)"
+      ansible.builtin.assert:
+        that:
+          - _gate_k | length == 2
+          - _gate_k[0].release == 'mxl-videotest-view-source-a'
+          - _gate_k[0].netbox_service_name == 'mxl-videotest-view-source-a'
+          - _gate_k[0].source_id == 'source-a'
+          - _gate_k[1].release == 'mxl-videotest-view-source-b'
+          - _gate_k[1].netbox_service_name == 'mxl-videotest-view-source-b'
+          - _gate_k[1].source_id == 'source-b'
+        fail_msg: "(k) FAIL — {{ _gate_k }}"
+
+    - name: "(k) assert the EXACT --set chart_set_values list for source-a
+        (order matters — helm applies --set left to right; base values
+        first, then role/flow.id/pattern/sourceId, matching the WP1 seam
+        doc's own projection table verbatim)"
+      ansible.builtin.assert:
+        that:
+          - >-
+            _gate_k[0].chart_set_values == (
+              _j1_base_set_values + [
+                'role=source',
+                'flow.id=5fbec3b1-1b0f-417d-9059-8b94a47197ed',
+                'pattern=smpte',
+                'sourceId=source-a',
+              ]
+            )
+        fail_msg: "(k) FAIL — source-a chart_set_values: {{ _gate_k[0].chart_set_values }}"
+
+    - name: "(k) assert the EXACT --set chart_set_values list for source-b"
+      ansible.builtin.assert:
+        that:
+          - >-
+            _gate_k[1].chart_set_values == (
+              _j1_base_set_values + [
+                'role=source',
+                'flow.id=b0ae9cba-a989-4568-ac96-8bd19272c966',
+                'pattern=ball',
+                'sourceId=source-b',
+              ]
+            )
+        fail_msg: "(k) FAIL — source-b chart_set_values: {{ _gate_k[1].chart_set_values }}"
+
+    # ── Gate (l): l3_topology_viewer_projection — EXACT active-source +
+    #    viewer flow.id for J1's own selection (source-a) ─────────────────
+    - name: "(l) derive J1's viewer projection"
+      ansible.builtin.set_fact:
+        _gate_l: "{{ _j1_topology_params | l3_topology_viewer_projection }}"
+
+    - name: "(l) assertions"
+      ansible.builtin.assert:
+        that:
+          - _gate_l.active_source == 'source-a'
+          - _gate_l.flow_id == '5fbec3b1-1b0f-417d-9059-8b94a47197ed'
+        fail_msg: "(l) FAIL — {{ _gate_l }}"
+
+    # ── Gate (m): a switched selection (source-b active) re-derives the
+    #    viewer's OWN flow.id to the NEWLY selected source — proves the
+    #    "don't leave the viewer on the baseline flow" schema requirement ─
+    - name: "(m) re-derive with source-b selected"
+      ansible.builtin.set_fact:
+        _gate_m_params: "{{ _j1_topology_params | combine({'viewer': {'id': 'viewer-a', 'source_selection': 'source-b'}}) }}"
+
+    - name: "(m) derive"
+      ansible.builtin.set_fact:
+        _gate_m: "{{ _gate_m_params | l3_topology_viewer_projection }}"
+
+    - name: "(m) assertions"
+      ansible.builtin.assert:
+        that:
+          - _gate_m.active_source == 'source-b'
+          - _gate_m.flow_id == 'b0ae9cba-a989-4568-ac96-8bd19272c966'
+        fail_msg: >-
+          (m) FAIL — an implementation that left the viewer's flow.id on
+          whichever source it started with would still report source-a's
+          flow_id here. Got: {{ _gate_m }}
+
+    # ── Gate (n): l3_topology_service_names — degrades to [l3_catalog_key]
+    #    alone when no group is defined (byte-identical to the pre-WP3
+    #    single-name lookup every launch used) ─────────────────────────────
+    - name: "(n) no group -> single-name list"
+      ansible.builtin.set_fact:
+        _gate_n: "{{ 'mxl-videotest-view' | l3_topology_service_names(none) }}"
+
+    - name: "(n) assertions"
+      ansible.builtin.assert:
+        that:
+          - _gate_n == ['mxl-videotest-view']
+        fail_msg: "(n) FAIL — {{ _gate_n }}"
+
+    # ── Gate (o): l3_topology_service_names — scalar + group names, in order ─
+    - name: "(o) with group -> scalar first, then every group item's netbox_service_name"
+      ansible.builtin.set_fact:
+        _gate_o: "{{ 'mxl-videotest-view' | l3_topology_service_names(_gate_k) }}"
+
+    - name: "(o) assertions"
+      ansible.builtin.assert:
+        that:
+          - _gate_o == ['mxl-videotest-view', 'mxl-videotest-view-source-a', 'mxl-videotest-view-source-b']
+        fail_msg: "(o) FAIL — {{ _gate_o }}"
+
+    # ── Gate (p): l3_sum_demand — a single-element list is byte-identical
+    #    to that element's own cpu_m/mem_b/has_requests (the scalar-path
+    #    regression proof capacity.yml's combine step depends on) ─────────
+    - name: "(p) single-element sum == the element itself, unchanged"
+      ansible.builtin.set_fact:
+        _gate_p_input:
+          cpu_m: 225
+          mem_b: 134217728
+          has_requests: true
+        _gate_p: "{{ [{'cpu_m': 225, 'mem_b': 134217728, 'has_requests': true}] | l3_sum_demand }}"
+
+    - name: "(p) assertions"
+      ansible.builtin.assert:
+        that:
+          - _gate_p.cpu_m == _gate_p_input.cpu_m
+          - _gate_p.mem_b == _gate_p_input.mem_b
+          - _gate_p.has_requests == _gate_p_input.has_requests
+        fail_msg: >-
+          (p) FAIL — capacity.yml's own combine step relies on this
+          returning the scalar result completely unchanged when
+          l3_release_group is undefined (a single-element list). Got:
+          {{ _gate_p }}
+
+    # ── Gate (q): l3_sum_demand — multi-element sums cpu_m/mem_b, ANDs has_requests ─
+    - name: "(q) multi-element sum (viewer + 2 sources)"
+      ansible.builtin.set_fact:
+        _gate_q: >-
+          {{
+            [
+              {'cpu_m': 225, 'mem_b': 134217728, 'has_requests': true},
+              {'cpu_m': 450, 'mem_b': 167772160, 'has_requests': true},
+              {'cpu_m': 450, 'mem_b': 167772160, 'has_requests': true},
+            ] | l3_sum_demand
+          }}
+
+    - name: "(q) assertions"
+      ansible.builtin.assert:
+        that:
+          - _gate_q.cpu_m == 1125
+          - _gate_q.mem_b == 469762048
+          - _gate_q.has_requests
+        fail_msg: "(q) FAIL — {{ _gate_q }}"
+
+    - name: "(q2) ANY unbudgeted release fails the WHOLE combined total (fail-closed,
+        the same rule l3_render_demand already applies within one chart —
+        here one level up, across releases)"
+      ansible.builtin.set_fact:
+        _gate_q2: >-
+          {{
+            [
+              {'cpu_m': 225, 'mem_b': 134217728, 'has_requests': true},
+              {'cpu_m': 1, 'mem_b': 1, 'has_requests': false},
+            ] | l3_sum_demand
+          }}
+
+    - name: "(q2) assertions"
+      ansible.builtin.assert:
+        that:
+          - not _gate_q2.has_requests
+        fail_msg: >-
+          (q2) FAIL — one under-budgeted release anywhere must fail the
+          whole run's budget, never silently averaged away. Got: {{ _gate_q2 }}
+
+    - name: ALL L3 TOPOLOGY OFFLINE GATES PASSED
+      ansible.builtin.debug:
+        msg: >-
+          umbrella #201 WP3: structural topology_params validation (the
+          real J1 instance passes; schema_version/empty-sources/malformed-
+          or-duplicate-flow_id[case-spelling-aware]/duplicate-id/duplicate-
+          pattern/unknown-source_selection/missing-target_facility/non-
+          mapping-input all refuse with a legible reason, never raise);
+          l3_topology_release_group's EXACT per-source chart --set
+          projection for the real J1 instance (gate k, the "projection
+          assertion" build-list item); l3_topology_viewer_projection's
+          active-source + re-derived viewer flow.id, INCLUDING across a
+          switched selection (gate m); l3_topology_service_names and
+          l3_sum_demand's own byte-identical degrade-to-scalar behavior
+          when no release group is defined (gates n/p — what
+          snapshot.yml/rollback_netbox_surface.yml/capacity.yml's own
+          generalizations depend on for the non-topology launch path) all
+          passed.

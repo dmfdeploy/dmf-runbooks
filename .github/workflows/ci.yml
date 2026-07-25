@@ -91,6 +91,10 @@ jobs:
         run: ansible-playbook tests/l3-playbook-execution.yml
       - name: l3-reserved-var-meta-test
         run: ansible-playbook tests/l3-reserved-var-meta-test.yml
+      - name: l3-topology-logic
+        run: ansible-playbook tests/l3-topology-logic.yml
+      - name: l3-topology-execution
+        run: ansible-playbook tests/l3-topology-execution.yml
 
   working-model:
     # Working-model block sync (umbrella issue dmfdeploy/dmfdeploy#32): the
