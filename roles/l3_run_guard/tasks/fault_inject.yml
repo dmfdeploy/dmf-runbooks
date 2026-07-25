@@ -52,6 +52,37 @@
 #                           the coordinator's active-source write already in
 #                           place, so a SEPARATE rollback-run.yml invocation
 #                           has something real to restore/remove (D4).
+#   post-topology-teardown-mutation — umbrella #201 WP3b — ONLY wired by
+#                           teardown-mxl-fabrics-demo.yml, immediately after
+#                           its topology source Helm releases are uninstalled
+#                           (the viewer's own release + post-first-mutation
+#                           already fired first), before the shared
+#                           mxl-coordinator ConfigMap removal + any NetBox
+#                           finalise — lets a test drive "an interrupted
+#                           topology teardown" with the N source releases
+#                           already gone but their NetBox records/the
+#                           coordinator ConfigMap still present.
+#   post-switch-lock        — umbrella #201 WP4b — ONLY wired by
+#                           switch-mxl-fabrics-demo.yml, immediately after
+#                           switch_lock acquisition, before ANY coordinator
+#                           mutation — proves a pre-mutation switch failure
+#                           releases the lock with the coordinator
+#                           completely untouched.
+#   post-switch-quiesce     — umbrella #201 WP4b — ONLY wired by
+#                           switch-mxl-fabrics-demo.yml, immediately after
+#                           phase 1 (active-source + target-info/epoch
+#                           cleared), before phase 2 (viewer re-point) —
+#                           proves a quiesce-only failure leaves zero
+#                           transmitters (coordinator cleared, viewer NOT
+#                           yet re-pointed) and releases the lock.
+#   post-switch-repoint     — umbrella #201 WP4b — ONLY wired by
+#                           switch-mxl-fabrics-demo.yml, immediately after
+#                           phase 2 (the viewer's Helm release re-pointed,
+#                           --atomic), before phase 3 (select) — proves
+#                           active-source is STILL cleared (select is
+#                           genuinely last) and releases the lock even
+#                           though the viewer's own re-point already
+#                           succeeded.
 #
 # Two actions, both gated by `l3_fault_inject == <boundary>` AND the
 # L3_TESTMODE env sentinel:

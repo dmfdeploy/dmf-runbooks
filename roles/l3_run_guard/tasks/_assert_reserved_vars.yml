@@ -234,6 +234,18 @@
           - _l3_coordinator_snapshot_extra is not defined
           - _l3_snapshot_coordinator_state is not defined
           - _l3_coordinator_rollback_read is not defined
+          # umbrella #201 WP3b: teardown-mxl-fabrics-demo.yml's own
+          # topology-aware source-release discovery (Helm release-name
+          # prefix match) + removal loop.
+          - _mxl_topology_source_releases is not defined
+          - _mxl_topology_source_uninstall is not defined
+          # umbrella #201 WP4b: switch-mxl-fabrics-demo.yml's own
+          # validation/derivation facts (topology_params structural check,
+          # the switch-target viewer projection, the pre-switch coordinator
+          # read).
+          - _switch_validation is not defined
+          - _switch_target_projection is not defined
+          - _switch_coordinator_pre is not defined
         fail_msg: >-
           L3 launcher refused: preflight-error (reserved-var). One or more
           reserved internal variables were supplied as extra_vars — these

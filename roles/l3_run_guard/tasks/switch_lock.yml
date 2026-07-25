@@ -1,0 +1,30 @@
+---
+# umbrella #201 WP4b — narrow-scope lock entry point for the coarse
+# `reconnect` switch actuator (spec §6.2). Unlike main.yml (full launch
+# gate: identity->preflight->topology->lock->snapshot->capacity) and
+# lock_only.yml (identity->netbox-token->lock, teardown's own entry
+# point), a switch touches NEITHER NetBox NOR a fresh Helm install/
+# uninstall — it only reconfigures an ALREADY-RUNNING topology's
+# coordinator ConfigMap + re-points the viewer's EXISTING Helm release.
+# So this entry point is deliberately the THINNEST of the three: identity
+# (so l3_run_id/l3_entry_path exist for logging + the SAME lock schema
+# every other entry point uses) + the shared facility lock, nothing else
+# — no `_assert_netbox_token.yml` (switch never touches NetBox), no
+# preflight/topology/snapshot/capacity stage.
+#
+# Reuses the IDENTICAL dmf-facility-lock ConfigMap (lock.yml/
+# lock_release.yml/lock_checkpoint.yml, unmodified — umbrella #201 WP4b
+# design decision, confirmed) as launch/teardown/rollback: one source of
+# truth for "is an L3 op in flight" facility-wide, never a second,
+# narrower lock resource for just the coordinator. The calling playbook
+# (switch-mxl-fabrics-demo.yml) acquires this lock IMMEDIATELY before its
+# own quiesce/re-point/select sequence and releases it IMMEDIATELY after
+# — a SHORT hold bracketing just that mutation, not the whole-run hold
+# pattern launch/teardown use (their own multi-minute installs genuinely
+# need the whole span held; a switch's own actuator timeout is ~120s, and
+# there is nothing else in this flow worth holding the lock through).
+- name: "L3 switch-lock: identity (shared with launch/teardown — identity.yml; preserves a console-supplied l3_request_id, hex32-validated, self-minting ONLY when absent)"
+  ansible.builtin.include_tasks: identity.yml
+
+- name: "L3 switch-lock: acquire the facility lock (shared mechanism — lock.yml, mints its own attempt_id internally)"
+  ansible.builtin.include_tasks: lock.yml
