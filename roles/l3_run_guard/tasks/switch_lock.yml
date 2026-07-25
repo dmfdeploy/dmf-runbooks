@@ -23,8 +23,21 @@
 # pattern launch/teardown use (their own multi-minute installs genuinely
 # need the whole span held; a switch's own actuator timeout is ~120s, and
 # there is nothing else in this flow worth holding the lock through).
-- name: "L3 switch-lock: identity (shared with launch/teardown — identity.yml; preserves a console-supplied l3_request_id, hex32-validated, self-minting ONLY when absent)"
+#
+# qwen1 gate fix round: switch_validate.yml (topology_params structural
+# check + source_instance/receiver_instance checks + the viewer
+# projection) is included HERE, after identity.yml's own reserved-var
+# assert but before lock.yml — not left as playbook-level set_fact tasks
+# BEFORE this whole sequence, which would make those facts already
+# "defined" by the time identity.yml's assert runs and trip the SAME
+# forged-reserved-var refusal a genuine attacker's extra_var would (see
+# switch_validate.yml's own header for the full story). This preserves
+# validate-before-lock ordering while keeping the blocklist meaningful.
+- name: "L3 switch-lock: identity (shared with launch/teardown — identity.yml; preserves a console-supplied l3_request_id, hex32-validated, self-minting ONLY when absent). MUST run before switch_validate.yml below — its own _assert_reserved_vars.yml check is only meaningful if it runs before ANY of this entry point's own facts are ever set."
   ansible.builtin.include_tasks: identity.yml
+
+- name: "L3 switch-lock: switch-specific validation (topology_params structural check + source_instance/receiver_instance + viewer projection) — BEFORE lock, per condition 4, but AFTER identity's reserved-var assert (qwen1 gate fix round)"
+  ansible.builtin.include_tasks: switch_validate.yml
 
 - name: "L3 switch-lock: acquire the facility lock (shared mechanism — lock.yml, mints its own attempt_id internally)"
   ansible.builtin.include_tasks: lock.yml

@@ -1,0 +1,74 @@
+---
+# umbrella #201 WP4b (qwen1 gate fix round) — switch-specific validation as
+# a proper role-internal stage, included from switch_lock.yml AFTER
+# identity.yml's own reserved-var assert but BEFORE lock.yml.
+#
+# WHY THIS FILE EXISTS (the bug this fixes): _assert_reserved_vars.yml
+# (identity.yml's own first task) only checks "is this fact ALREADY
+# defined" — it cannot distinguish a caller-supplied extra_var from an
+# EARLIER TASK IN THIS SAME PLAY having already set it via set_fact. The
+# original draft had the CALLING PLAYBOOK (switch-mxl-fabrics-demo.yml)
+# set_fact _switch_validation/_switch_target_projection BEFORE ever
+# including switch_lock — which meant they were ALREADY "defined" by the
+# time identity.yml's assert ran, and the assert (correctly, by its own
+# rules) refused every switch run that reached it as a forged reserved-var,
+# even though nothing was forged. qwen1's clean-room gate run caught this
+# live (scenarios 3-6 all died with detail=reserved-var, EXIT_CODE=2) —
+# the fix-round report explains the evidence gap that let a stale "86 ok
+# dual-core" claim through.
+#
+# THE FIX: move the set_fact tasks IN HERE — a role file included only
+# AFTER the reserved-var assert has already run and found them undefined.
+# The names STAY on the blocklist (a genuine externally-supplied extra_var
+# of the same name is already defined from the very start of the play,
+# BEFORE identity.yml's assert ever runs, so it is still caught regardless
+# of where the legitimate set_fact for that name happens later) — only the
+# ORDERING changed, not the forgery net. validate-before-lock is preserved:
+# this file still runs before lock.yml, just now inside switch_lock.yml's
+# own sequence rather than in the calling playbook.
+#
+# NOTE: the coordinator-existence read (_switch_coordinator_pre) is
+# DELIBERATELY NOT here — see switch_read_coordinator.yml's own header for
+# why it stays POST-lock instead.
+- name: "L3 switch validate: structural check of the received topology_params (WP3's own l3_validate_topology_params filter)"
+  ansible.builtin.set_fact:
+    _switch_validation: "{{ topology_params | l3_validate_topology_params }}"
+
+- name: Refuse a structurally invalid topology_params (pre-lock, no mutation, nothing to release)
+  ansible.builtin.fail:
+    msg: >-
+      DMF_L3_SWITCH_REFUSED: detail=topology-invalid
+      request_id={{ l3_request_id | default('') }}
+      error={{ _switch_validation.error }}
+  when: not _switch_validation.ok
+
+- name: "L3 switch validate: source_instance must agree with topology_params.viewer.source_selection
+    (the two must be IDENTICAL by construction; a divergence means a
+    forged/malformed extra_var pair, refuse rather than silently trust
+    either value alone)"
+  ansible.builtin.assert:
+    that:
+      - source_instance == topology_params.viewer.source_selection
+    fail_msg: >-
+      DMF_L3_SWITCH_REFUSED: detail=switch-source-instance-mismatch
+      request_id={{ l3_request_id | default('') }}
+      source_instance={{ source_instance }}
+      viewer.source_selection={{ topology_params.viewer.source_selection }}
+
+- name: "L3 switch validate: receiver_instance must be a non-empty string
+    (the concrete Helm release the playbook re-points; a blank value would
+    silently target an undefined release name downstream)"
+  ansible.builtin.assert:
+    that:
+      - (receiver_instance | default('') | trim) != ''
+    fail_msg: >-
+      DMF_L3_SWITCH_REFUSED: detail=switch-receiver-instance-missing
+      request_id={{ l3_request_id | default('') }}
+
+- name: "L3 switch validate: derive the viewer projection for the SWITCH
+    TARGET (WP3's own l3_topology_viewer_projection filter; topology_params
+    already carries the reassigned selection, so this is exactly the pure
+    re-derivation tests/l3-topology-logic.yml scenario (m) already proves
+    correct offline)"
+  ansible.builtin.set_fact:
+    _switch_target_projection: "{{ topology_params | l3_topology_viewer_projection }}"
