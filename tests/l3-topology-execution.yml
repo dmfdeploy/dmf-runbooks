@@ -7,6 +7,11 @@
 # subprocess, and asserts on its real stdout + real HTTP against the
 # stub K8s API.
 #
+# Scenario 9 (umbrella #201 WP3b) extends this file to the TEARDOWN side:
+# playbooks/teardown-mxl-fabrics-demo.yml becoming topology-aware (removing
+# the N source releases + resetting their NetBox records a topology launch
+# created, not just the viewer's own scalar release).
+#
 # Unlike l3-playbook-execution.yml's own scenarios, NO l3_fault_inject is
 # needed for the refusal scenarios below — topology_validate.yml's own
 # refusals are DATA-driven (a malformed/missing topology_params, or a
@@ -1336,6 +1341,209 @@
         - name: "(8) stop stubs"
           ansible.builtin.command:
             argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-te-8.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 9 (umbrella #201 WP3b): teardown-mxl-fabrics-demo.yml becomes
+    # topology-aware — tearing down a topology-launched viewer must also
+    # remove its N source Helm releases + reset their NetBox records, not
+    # just its own scalar release (the pre-WP3b orphaning bug). stub_helm.sh
+    # is STATELESS across upgrade/uninstall calls (it just answers `helm
+    # list` from a fixed L3_STUB_HELM_LIST_MXL env var, see its own header),
+    # so this seeds the "already-launched" state directly (3 NetBox
+    # services + the coordinator's active-source + the helm-list fixture)
+    # rather than round-tripping through a real launch first — leaner, and
+    # this scenario's own subject is teardown's discovery/removal logic,
+    # not launch (already covered by scenario 7).
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(9) topology-aware teardown — start fresh stubs, seed an already-launched 2-source topology, run the REAL teardown playbook"
+      vars:
+        _te9_run_id: "99999999999999999999999999999999"
+      block:
+        - name: "(9) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-te-9.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(9) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-te-9.json]
+          register: _te9_start
+          changed_when: false
+
+        - name: "(9) parse stub URLs"
+          ansible.builtin.set_fact:
+            _te9_k8s_url: "{{ _te9_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _te9_netbox_url: "{{ _te9_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(9) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-te-9-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _te9_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(9) seed the 3 already-launched NetBox services (viewer + 2 topology sources), all lifecycle:active"
+          ansible.builtin.uri:
+            url: "{{ _te9_netbox_url }}/api/ipam/services/"
+            method: POST
+            body_format: json
+            body:
+              name: "{{ item }}"
+              tags:
+                - { name: "dmf-catalog" }
+                - { name: "app:{{ item }}" }
+                - { name: "lifecycle:active" }
+              custom_fields:
+                cluster_service: "{{ item }}"
+                cluster_namespace: mxl
+                cluster_port: 9000
+            status_code: [201]
+          loop:
+            - mxl-videotest-view
+            - mxl-videotest-view-source-a
+            - mxl-videotest-view-source-b
+          loop_control:
+            label: "{{ item }}"
+
+        - name: "(9) seed the coordinator ConfigMap with a live active-source (this run's own switch/launch history — irrelevant to teardown, which never reads it)"
+          ansible.builtin.uri:
+            url: "{{ _te9_k8s_url }}/api/v1/namespaces/mxl/configmaps/"
+            method: POST
+            body_format: json
+            body:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata: { name: mxl-coordinator, namespace: mxl }
+              data: { active-source: source-a }
+            status_code: [201]
+
+        - name: "(9) create the helm PATH shim dir"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin
+            state: directory
+
+        - name: "(9) symlink helm -> stub_helm.sh"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin/helm
+            src: "{{ l3_harness_dir }}/stub_helm.sh"
+            state: link
+            force: true
+
+        - name: "(9) run the REAL teardown-mxl-fabrics-demo.yml as a nested
+            ansible-playbook, helm list fixtured to the 3 already-launched
+            releases (viewer + 2 topology sources) via L3_STUB_HELM_LIST_MXL"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/teardown-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _te9_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _te9_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - mxl_release=mxl-videotest-view
+              - -e
+              - "l3_request_id={{ _te9_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-te-9-kubeconfig.yaml
+            PATH: "/tmp/l3-harness-bin:{{ lookup('env', 'PATH') }}"
+            L3_STUB_HELM_LIST_MXL: >-
+              [{"name": "mxl-videotest-view"}, {"name": "mxl-videotest-view-source-a"}, {"name": "mxl-videotest-view-source-b"}]
+            L3_STUB_HELM_LOG: /tmp/l3-te-9-helm.log
+          register: _te9_teardown_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(9) ASSERT: the REAL teardown run SUCCEEDED"
+          ansible.builtin.assert:
+            that:
+              - _te9_teardown_run.rc == 0
+            fail_msg: "(9) FAIL — teardown exited non-zero. stdout={{ _te9_teardown_run.stdout }}"
+
+        - name: "(9) read the helm invocation log"
+          ansible.builtin.slurp:
+            src: /tmp/l3-te-9-helm.log
+          register: _te9_helm_log_raw
+
+        - name: "(9) ASSERT: helm uninstall ran for the viewer AND both topology source releases (the pre-WP3b bug: only the viewer would appear)"
+          ansible.builtin.assert:
+            that:
+              - "'uninstall mxl-videotest-view -n mxl' in (_te9_helm_log_raw.content | b64decode)"
+              - "'uninstall mxl-videotest-view-source-a -n mxl' in (_te9_helm_log_raw.content | b64decode)"
+              - "'uninstall mxl-videotest-view-source-b -n mxl' in (_te9_helm_log_raw.content | b64decode)"
+            fail_msg: >-
+              (9) FAIL — expected helm uninstall for all three releases. Got:
+              {{ _te9_helm_log_raw.content | b64decode }}
+
+        - name: "(9) ASSERT (via real HTTP against the stub): all three NetBox
+            records are reset to lifecycle:bootstrapped (finalise ran for
+            the viewer AND both topology sources — mirrors the scalar
+            teardown's own semantics, a reset not a delete)"
+          ansible.builtin.uri:
+            url: "{{ _te9_netbox_url }}/api/ipam/services/?name={{ item | urlencode }}"
+            method: GET
+            return_content: true
+            validate_certs: false
+          register: _te9_post_teardown_netbox
+          loop:
+            - mxl-videotest-view
+            - mxl-videotest-view-source-a
+            - mxl-videotest-view-source-b
+          loop_control:
+            label: "{{ item }}"
+
+        - name: "(9) assert all three records are reset to bootstrapped"
+          ansible.builtin.assert:
+            that:
+              - (item.json.results | default([])) | length == 1
+              - "'lifecycle:bootstrapped' in (item.json.results[0].tags | map(attribute='name') | list)"
+              - "'lifecycle:active' not in (item.json.results[0].tags | map(attribute='name') | list)"
+            fail_msg: "(9) FAIL — expected '{{ item.item }}' reset to lifecycle:bootstrapped, got {{ item.json.results }}"
+          loop: "{{ _te9_post_teardown_netbox.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+
+        - name: "(9) ASSERT (via real HTTP against the stub): the shared
+            mxl-coordinator ConfigMap was removed (all three mxl-* releases
+            were torn down — none left, so _mxl_other_releases correctly
+            saw zero even though it must now also exclude the two topology
+            source releases it JUST discovered, not only the viewer)"
+          ansible.builtin.uri:
+            url: "{{ _te9_k8s_url }}/api/v1/namespaces/mxl/configmaps/mxl-coordinator"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(9) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-te-9.json]
           changed_when: false
           failed_when: false
 
