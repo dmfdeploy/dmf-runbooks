@@ -1,0 +1,1216 @@
+---
+# umbrella #201 WP3 — REAL-playbook stubbed execution tests for
+# topology_validate.yml. Same pattern as tests/l3-playbook-execution.yml
+# (which this file complements, not replaces): each scenario starts a
+# FRESH stub-server process, runs the REAL, unmodified
+# playbooks/launch-mxl-fabrics-demo.yml as a nested `ansible-playbook`
+# subprocess, and asserts on its real stdout + real HTTP against the
+# stub K8s API.
+#
+# Unlike l3-playbook-execution.yml's own scenarios, NO l3_fault_inject is
+# needed for the refusal scenarios below — topology_validate.yml's own
+# refusals are DATA-driven (a malformed/missing topology_params, or a
+# NetBox site that doesn't agree with target_facility), so simply
+# supplying the bad data is enough to exercise the real refusal path.
+# Scenario 5 is the exception: it proves the HAPPY validation+derivation
+# path reaches lock acquisition by combining a VALID topology_params with
+# the EXISTING post-lock fault mechanism (avoiding any need to stub a real
+# `helm pull`/`helm template`, the same accepted limitation
+# tests/harness/README.md documents for l3-playbook-execution.yml).
+#
+# Run:  ansible-playbook tests/l3-topology-execution.yml
+
+- name: "Umbrella #201 WP3 — L3 topology_params real-playbook stubbed execution tests"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    l3_harness_dir: "{{ playbook_dir }}/harness"
+    _te_j1_topology_params:
+      schema_version: 1
+      target_facility: dmf-example-site
+      sources:
+        - id: source-a
+          flow_id: "5fbec3b1-1b0f-417d-9059-8b94a47197ed"
+          pattern: smpte
+        - id: source-b
+          flow_id: "b0ae9cba-a989-4568-ac96-8bd19272c966"
+          pattern: ball
+      viewer:
+        id: viewer-a
+        source_selection: source-a
+
+  tasks:
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 1: malformed topology_params (bad schema_version) -> refused
+    # topology-invalid, BEFORE lock acquisition (no mutation, nothing to
+    # release).
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(1) malformed topology_params (schema_version=2) — start fresh stubs, run the REAL playbook"
+      vars:
+        _te1_run_id: "11111111111111111111111111111111"
+        _te1_bad_topology_params: "{{ _te_j1_topology_params | combine({'schema_version': 2}) }}"
+      block:
+        - name: "(1) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-te-1.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(1) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-te-1.json]
+          register: _te1_start
+          changed_when: false
+
+        - name: "(1) parse stub URLs"
+          ansible.builtin.set_fact:
+            _te1_k8s_url: "{{ _te1_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _te1_netbox_url: "{{ _te1_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(1) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-te-1-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _te1_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(1) run the REAL playbooks/launch-mxl-fabrics-demo.yml as a nested ansible-playbook, mxl_role=view + malformed topology_params"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/launch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _te1_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _te1_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - mxl_role=view
+              - -e
+              - l3_release=mxl-videotest-view
+              - -e
+              - l3_catalog_key=mxl-videotest-view
+              - -e
+              - "{{ {'topology_params': _te1_bad_topology_params} | to_json }}"
+              - -e
+              - "l3_request_id={{ _te1_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-te-1-kubeconfig.yaml
+          register: _te1_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(1) ASSERT: the REAL playbook run FAILED"
+          ansible.builtin.assert:
+            that:
+              - _te1_run.rc != 0
+            fail_msg: "(1) FAIL — exited 0 with a malformed topology_params. stdout={{ _te1_run.stdout }}"
+
+        - name: "(1) ASSERT: exactly ONE DMF_L3_OUTCOME marker, preflight-error/topology-invalid"
+          ansible.builtin.set_fact:
+            _te1_markers: "{{ (_te1_run.stdout_lines | select('match', '.*DMF_L3_OUTCOME:.*') | list) }}"
+
+        - name: "(1) assert marker-count + token + detail"
+          ansible.builtin.assert:
+            that:
+              - _te1_markers | length == 1
+              - "'preflight-error' in _te1_markers[0]"
+              - "'topology-invalid' in _te1_markers[0]"
+            fail_msg: "(1) FAIL — expected exactly one preflight-error/topology-invalid marker, got: {{ _te1_markers }}"
+
+        - name: "(1) ASSERT (via real HTTP against the stub): the facility lock was NEVER created (pre-lock refusal — nothing to release)"
+          ansible.builtin.uri:
+            url: "{{ _te1_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+
+        - name: "(1) ASSERT (via real HTTP against the stub): no run snapshot ConfigMap was ever created (no mutation at all)"
+          ansible.builtin.uri:
+            url: "{{ _te1_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-run-{{ _te1_run_id }}"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(1) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-te-1.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 2: umbrella #201 WP3 fix-round D1/D3 — topology_params
+    # ABSENT on a view-role launch is now a fully legitimate SCALAR path
+    # (there is no more "required" refusal at all, per D1's own fix — see
+    # topology_validate.yml's header), so this scenario proves the
+    # COMPLEMENT to scenario 5: a scalar (non-topology) view launch reaches
+    # lock acquisition JUST AS CLEANLY, with topology_validate.yml a
+    # complete no-op — no l3_release_group ever derived, no topology-*
+    # marker detail, nothing in stdout naming a source release. Uses the
+    # SAME post-lock fault mechanism as scenario 5 to avoid needing a real
+    # helm chart (an earlier draft ran this WITHOUT fault injection and
+    # discovered exactly why every other real-playbook scenario needs one:
+    # without it, the run correctly proceeds past topology_validate.yml
+    # and lock acquisition into snapshot.yml's own `helm list`, which has
+    # no real Helm-release-as-Secret backing in this stub environment —
+    # not a topology-mode defect, just the same accepted stubbing limit
+    # tests/harness/README.md documents).
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(2) topology_params absent on a view-role launch (scalar mode) — start fresh stubs, run the REAL playbook"
+      vars:
+        _te2_run_id: "22222222222222222222222222222222"
+      block:
+        - name: "(2) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-te-2.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(2) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-te-2.json]
+          register: _te2_start
+          changed_when: false
+
+        - name: "(2) parse stub URLs"
+          ansible.builtin.set_fact:
+            _te2_k8s_url: "{{ _te2_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _te2_netbox_url: "{{ _te2_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(2) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-te-2-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _te2_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(2) run the REAL playbook, mxl_role=view, NO topology_params
+            extra_var, fault at post-lock (same mechanism as scenario 5 —
+            see this scenario's own header)"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/launch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _te2_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _te2_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - mxl_role=view
+              - -e
+              - l3_release=mxl-videotest-view
+              - -e
+              - l3_catalog_key=mxl-videotest-view
+              - -e
+              - l3_fault_inject=post-lock
+              - -e
+              - "l3_request_id={{ _te2_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-te-2-kubeconfig.yaml
+          register: _te2_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(2) ASSERT: the REAL playbook run FAILED (the post-lock fault, not a topology refusal)"
+          ansible.builtin.assert:
+            that:
+              - _te2_run.rc != 0
+            fail_msg: "(2) FAIL — exited 0. stdout={{ _te2_run.stdout }}"
+
+        - name: "(2) ASSERT: topology_validate.yml never derived anything at
+            all — no l3_release_group report line anywhere in stdout,
+            proving it was a genuine no-op for this scalar launch, not a
+            silently-swallowed derivation"
+          ansible.builtin.assert:
+            that:
+              - "'derived l3_release_group' not in _te2_run.stdout"
+            fail_msg: >-
+              (2) FAIL — topology_validate.yml derived a release group for
+              a launch with no topology_params at all. stdout={{ _te2_run.stdout }}
+
+        - name: "(2) ASSERT: exactly ONE DMF_L3_OUTCOME marker, the STANDARD
+            post-lock preflight-error (NOT a topology-* detail — this is
+            the SAME shared post-lock boundary every other launcher's own
+            scenario exercises, proving a topology-free scalar view launch
+            is indistinguishable from any other non-topology launch up to
+            this point)"
+          ansible.builtin.set_fact:
+            _te2_markers: "{{ (_te2_run.stdout_lines | select('match', '.*DMF_L3_OUTCOME:.*') | list) }}"
+
+        - name: "(2) assert marker-count + token (no topology-* detail)"
+          ansible.builtin.assert:
+            that:
+              - _te2_markers | length == 1
+              - "'preflight-error' in _te2_markers[0]"
+              - "'topology' not in _te2_markers[0]"
+            fail_msg: "(2) FAIL — expected exactly one plain preflight-error marker, got: {{ _te2_markers }}"
+
+        - name: "(2) ASSERT (via real HTTP against the stub): the facility lock
+            was released (unconditional release on ANY post-lock failure —
+            same property scenario 5 proves for the topology-mode case)"
+          ansible.builtin.uri:
+            url: "{{ _te2_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(2) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-te-2.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 3: valid topology_params, but the env's own NetBox has TWO
+    # sites -> refused topology-facility-ambiguous (never GUESS a facility).
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(3) NetBox facility ambiguous (2 sites) — start fresh stubs, seed 2 sites, run the REAL playbook"
+      vars:
+        _te3_run_id: "33333333333333333333333333333333"
+      block:
+        - name: "(3) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-te-3.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(3) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-te-3.json]
+          register: _te3_start
+          changed_when: false
+
+        - name: "(3) parse stub URLs"
+          ansible.builtin.set_fact:
+            _te3_k8s_url: "{{ _te3_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _te3_netbox_url: "{{ _te3_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(3) seed TWO NetBox sites"
+          ansible.builtin.uri:
+            url: "{{ _te3_netbox_url }}/api/dcim/sites/"
+            method: POST
+            body_format: json
+            body: { name: "{{ item }}", slug: "{{ item }}" }
+            status_code: [201]
+          loop:
+            - dmf-example-site
+            - dmf-other-site
+
+        - name: "(3) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-te-3-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _te3_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(3) run the REAL playbook, mxl_role=view, VALID topology_params, 2 NetBox sites"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/launch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _te3_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _te3_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - mxl_role=view
+              - -e
+              - l3_release=mxl-videotest-view
+              - -e
+              - l3_catalog_key=mxl-videotest-view
+              - -e
+              - "{{ {'topology_params': _te_j1_topology_params} | to_json }}"
+              - -e
+              - "l3_request_id={{ _te3_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-te-3-kubeconfig.yaml
+          register: _te3_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(3) ASSERT: the REAL playbook run FAILED"
+          ansible.builtin.assert:
+            that:
+              - _te3_run.rc != 0
+            fail_msg: "(3) FAIL — exited 0 with 2 ambiguous NetBox sites. stdout={{ _te3_run.stdout }}"
+
+        - name: "(3) ASSERT: exactly ONE DMF_L3_OUTCOME marker, preflight-error/topology-facility-ambiguous"
+          ansible.builtin.set_fact:
+            _te3_markers: "{{ (_te3_run.stdout_lines | select('match', '.*DMF_L3_OUTCOME:.*') | list) }}"
+
+        - name: "(3) assert marker-count + token + detail"
+          ansible.builtin.assert:
+            that:
+              - _te3_markers | length == 1
+              - "'preflight-error' in _te3_markers[0]"
+              - "'topology-facility-ambiguous' in _te3_markers[0]"
+            fail_msg: "(3) FAIL — expected exactly one preflight-error/topology-facility-ambiguous marker, got: {{ _te3_markers }}"
+
+        - name: "(3) ASSERT (via real HTTP against the stub): the facility lock was NEVER created"
+          ansible.builtin.uri:
+            url: "{{ _te3_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(3) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-te-3.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 4: valid topology_params, exactly ONE NetBox site, but it
+    # does NOT match topology_params.target_facility -> refused
+    # topology-facility-mismatch.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(4) NetBox facility mismatch — start fresh stubs, seed 1 disagreeing site, run the REAL playbook"
+      vars:
+        _te4_run_id: "44444444444444444444444444444444"
+      block:
+        - name: "(4) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-te-4.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(4) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-te-4.json]
+          register: _te4_start
+          changed_when: false
+
+        - name: "(4) parse stub URLs"
+          ansible.builtin.set_fact:
+            _te4_k8s_url: "{{ _te4_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _te4_netbox_url: "{{ _te4_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(4) seed ONE NetBox site with a DIFFERENT slug than topology_params.target_facility"
+          ansible.builtin.uri:
+            url: "{{ _te4_netbox_url }}/api/dcim/sites/"
+            method: POST
+            body_format: json
+            body: { name: dmf-wrong-site, slug: dmf-wrong-site }
+            status_code: [201]
+
+        - name: "(4) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-te-4-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _te4_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(4) run the REAL playbook, mxl_role=view, VALID topology_params (target_facility=dmf-example-site), NetBox site=dmf-wrong-site"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/launch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _te4_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _te4_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - mxl_role=view
+              - -e
+              - l3_release=mxl-videotest-view
+              - -e
+              - l3_catalog_key=mxl-videotest-view
+              - -e
+              - "{{ {'topology_params': _te_j1_topology_params} | to_json }}"
+              - -e
+              - "l3_request_id={{ _te4_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-te-4-kubeconfig.yaml
+          register: _te4_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(4) ASSERT: the REAL playbook run FAILED"
+          ansible.builtin.assert:
+            that:
+              - _te4_run.rc != 0
+            fail_msg: "(4) FAIL — exited 0 with a mismatched NetBox site. stdout={{ _te4_run.stdout }}"
+
+        - name: "(4) ASSERT: exactly ONE DMF_L3_OUTCOME marker, preflight-error/topology-facility-mismatch"
+          ansible.builtin.set_fact:
+            _te4_markers: "{{ (_te4_run.stdout_lines | select('match', '.*DMF_L3_OUTCOME:.*') | list) }}"
+
+        - name: "(4) assert marker-count + token + detail"
+          ansible.builtin.assert:
+            that:
+              - _te4_markers | length == 1
+              - "'preflight-error' in _te4_markers[0]"
+              - "'topology-facility-mismatch' in _te4_markers[0]"
+            fail_msg: "(4) FAIL — expected exactly one preflight-error/topology-facility-mismatch marker, got: {{ _te4_markers }}"
+
+        - name: "(4) ASSERT (via real HTTP against the stub): the facility lock was NEVER created"
+          ansible.builtin.uri:
+            url: "{{ _te4_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(4) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-te-4.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 5: HAPPY validation + derivation path — valid topology_params
+    # AND exactly one AGREEING NetBox site. Proves the run passes
+    # topology_validate.yml cleanly (l3_release_group derived, no topology
+    # marker) and proceeds all the way to lock acquisition, where the
+    # EXISTING post-lock fault (the same mechanism
+    # tests/l3-playbook-execution.yml's own scenarios use) stops it before
+    # any real `helm pull`/`helm template` would be needed.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(5) valid topology_params + agreeing NetBox site, fault at post-lock — proves the happy path reaches lock"
+      vars:
+        _te5_run_id: "55555555555555555555555555555555"
+      block:
+        - name: "(5) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-te-5.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(5) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-te-5.json]
+          register: _te5_start
+          changed_when: false
+
+        - name: "(5) parse stub URLs"
+          ansible.builtin.set_fact:
+            _te5_k8s_url: "{{ _te5_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _te5_netbox_url: "{{ _te5_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(5) seed the ONE agreeing NetBox site"
+          ansible.builtin.uri:
+            url: "{{ _te5_netbox_url }}/api/dcim/sites/"
+            method: POST
+            body_format: json
+            body: { name: dmf-example-site, slug: dmf-example-site }
+            status_code: [201]
+
+        - name: "(5) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-te-5-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _te5_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(5) run the REAL playbook, mxl_role=view, VALID topology_params, agreeing NetBox site, fault at post-lock"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/launch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _te5_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _te5_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - mxl_role=view
+              - -e
+              - l3_release=mxl-videotest-view
+              - -e
+              - l3_catalog_key=mxl-videotest-view
+              - -e
+              - "{{ {'topology_params': _te_j1_topology_params} | to_json }}"
+              - -e
+              - l3_fault_inject=post-lock
+              - -e
+              - "l3_request_id={{ _te5_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-te-5-kubeconfig.yaml
+          register: _te5_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(5) ASSERT: the REAL playbook run FAILED (the post-lock fault, NOT a topology refusal)"
+          ansible.builtin.assert:
+            that:
+              - _te5_run.rc != 0
+            fail_msg: "(5) FAIL — exited 0. stdout={{ _te5_run.stdout }}"
+
+        - name: "(5) ASSERT: l3_release_group was actually derived with the
+            REAL shipping names (umbrella #201 WP3 fix-round D5 — this run
+            supplies l3_release=mxl-videotest-view, the ratified viewer JT
+            identity, so the derived releases MUST be
+            mxl-videotest-view-source-a/-b, not mxl-videotestsrc-*, an
+            unrelated catalog entry) before the post-lock fault fired —
+            proves validation+derivation succeeded, not that it never ran"
+          ansible.builtin.assert:
+            that:
+              - "'derived l3_release_group with 2 source release(s)' in _te5_run.stdout"
+              - "'mxl-videotest-view-source-a' in _te5_run.stdout"
+              - "'mxl-videotest-view-source-b' in _te5_run.stdout"
+            fail_msg: >-
+              (5) FAIL — expected to see the topology derivation report,
+              naming the real mxl-videotest-view-source-a/-b releases, in
+              stdout before the fault fired. stdout={{ _te5_run.stdout }}
+
+        - name: "(5) ASSERT: exactly ONE DMF_L3_OUTCOME marker, the STANDARD post-lock preflight-error (NOT a topology-* detail — proves this is the SAME shared post-lock boundary every other launcher's own scenario exercises, not a topology-specific refusal)"
+          ansible.builtin.set_fact:
+            _te5_markers: "{{ (_te5_run.stdout_lines | select('match', '.*DMF_L3_OUTCOME:.*') | list) }}"
+
+        - name: "(5) assert marker-count + token"
+          ansible.builtin.assert:
+            that:
+              - _te5_markers | length == 1
+              - "'preflight-error' in _te5_markers[0]"
+              - "'topology' not in _te5_markers[0]"
+            fail_msg: "(5) FAIL — expected exactly one plain preflight-error marker, got: {{ _te5_markers }}"
+
+        - name: "(5) ASSERT (via real HTTP against the stub): the facility lock was released (unconditional release on ANY post-lock failure)"
+          ansible.builtin.uri:
+            url: "{{ _te5_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(5) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-te-5.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 6 (finding 7 coverage): the group CAPACITY loop-and-sum
+    # actually renders every release. Reaches PAST the gate (capacity.yml's
+    # own `helm pull`+`helm template`), so needs the `helm` PATH shim
+    # (same mechanism as l3-playbook-execution.yml's own scenarios 8-11)
+    # and l3_override=true (stub_helm.sh's `template` always renders an
+    # empty manifest, which is a genuine missing-budget refusal unless
+    # overridden — same reason scenario 10 there needs it). Fault at
+    # post-first-mutation (fires AFTER capacity has fully run, but BEFORE
+    # any topology group provision/install) stops the run cleanly without
+    # needing a real Deployment-readiness wait.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(6) group capacity loop-and-sum — start fresh stubs, seed 1 agreeing site, run the REAL playbook with the helm PATH shim"
+      vars:
+        _te6_run_id: "66666666666666666666666666666666"
+      block:
+        - name: "(6) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-te-6.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(6) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-te-6.json]
+          register: _te6_start
+          changed_when: false
+
+        - name: "(6) parse stub URLs"
+          ansible.builtin.set_fact:
+            _te6_k8s_url: "{{ _te6_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _te6_netbox_url: "{{ _te6_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(6) seed the ONE agreeing NetBox site"
+          ansible.builtin.uri:
+            url: "{{ _te6_netbox_url }}/api/dcim/sites/"
+            method: POST
+            body_format: json
+            body: { name: dmf-example-site, slug: dmf-example-site }
+            status_code: [201]
+
+        - name: "(6) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-te-6-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _te6_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(6) create the helm PATH shim dir"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin
+            state: directory
+
+        - name: "(6) symlink helm -> stub_helm.sh"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin/helm
+            src: "{{ l3_harness_dir }}/stub_helm.sh"
+            state: link
+            force: true
+
+        - name: "(6) remove any stale helm invocation log from a prior run"
+          ansible.builtin.file:
+            path: /tmp/l3-te-6-helm.log
+            state: absent
+
+        - name: "(6) run the REAL playbook, mxl_role=view, VALID topology_params,
+            agreeing NetBox site, l3_override for the stub's empty-render,
+            fault at post-first-mutation (after capacity, before any
+            topology group mutation)"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/launch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _te6_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _te6_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - mxl_role=view
+              - -e
+              - l3_release=mxl-videotest-view
+              - -e
+              - l3_catalog_key=mxl-videotest-view
+              - -e
+              - "{{ {'topology_params': _te_j1_topology_params} | to_json }}"
+              - -e
+              - l3_override=true
+              - -e
+              - "l3_override_reason=(6) capacity loop-and-sum probe - stub helm template always renders empty, expected"
+              - -e
+              - l3_fault_inject=post-first-mutation
+              - -e
+              - "l3_request_id={{ _te6_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-te-6-kubeconfig.yaml
+            PATH: "/tmp/l3-harness-bin:{{ lookup('env', 'PATH') }}"
+            L3_STUB_HELM_LOG: /tmp/l3-te-6-helm.log
+          register: _te6_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(6) ASSERT: the REAL playbook run FAILED (the post-first-mutation fault)"
+          ansible.builtin.assert:
+            that:
+              - _te6_run.rc != 0
+            fail_msg: "(6) FAIL — exited 0. stdout={{ _te6_run.stdout }}"
+
+        - name: "(6) read the helm invocation log"
+          ansible.builtin.slurp:
+            src: /tmp/l3-te-6-helm.log
+          register: _te6_helm_log_raw
+
+        - name: "(6) parse helm invocation log lines"
+          ansible.builtin.set_fact:
+            _te6_helm_log_lines: "{{ (_te6_helm_log_raw.content | b64decode).splitlines() }}"
+
+        - name: "(6) ASSERT: capacity.yml rendered ALL THREE releases — the
+            scalar viewer AND both topology group items — proving the
+            group loop-and-sum (_capacity_render_group_item.yml, looped
+            over l3_release_group) actually ran, not just the scalar
+            render alone"
+          ansible.builtin.assert:
+            that:
+              - _te6_helm_log_lines | select('match', '^template mxl-videotest-view ') | list | length >= 1
+              - _te6_helm_log_lines | select('match', '^template mxl-videotest-view-source-a ') | list | length >= 1
+              - _te6_helm_log_lines | select('match', '^template mxl-videotest-view-source-b ') | list | length >= 1
+            fail_msg: >-
+              (6) FAIL — expected `helm template` calls for the scalar
+              viewer AND both group items; got: {{ _te6_helm_log_lines }}
+
+        - name: "(6) ASSERT: NO helm upgrade/install call happened yet — the
+            fault fired strictly BEFORE any topology group mutation, so
+            this proves capacity's render+sum completed on its own, not as
+            a side effect of a further-along failure"
+          ansible.builtin.assert:
+            that:
+              - _te6_helm_log_lines | select('match', '^upgrade ') | list | length == 0
+            fail_msg: >-
+              (6) FAIL — an upgrade/install call was logged; the fault
+              should have fired before any install. Got: {{ _te6_helm_log_lines }}
+
+        - name: "(6) ASSERT: exactly ONE DMF_L3_OUTCOME marker, post-mutation-failed
+            (mutation had started — the scalar viewer's own NetBox
+            provision already ran before this boundary)"
+          ansible.builtin.set_fact:
+            _te6_markers: "{{ (_te6_run.stdout_lines | select('match', '.*DMF_L3_OUTCOME:.*') | list) }}"
+
+        - name: "(6) assert marker-count + token"
+          ansible.builtin.assert:
+            that:
+              - _te6_markers | length == 1
+              - "'post-mutation-failed' in _te6_markers[0]"
+            fail_msg: "(6) FAIL — expected exactly one post-mutation-failed marker, got: {{ _te6_markers }}"
+      always:
+        - name: "(6) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-te-6.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 7 (finding 7 coverage): snapshot -> SEPARATE rollback-run.yml
+    # round-trip, exercising BOTH the persisted topology_service_names (N+1
+    # NetBox records, all genuinely created this time) AND D4's coordinator
+    # state (a REAL active-source write this run made, which rollback must
+    # remove). Fault at the NEW post-topology-mutation boundary (fires
+    # after the topology group's own NetBox provision + the coordinator
+    # patch, before any helm install) — the whole point is to leave BOTH
+    # surfaces genuinely mutated for rollback to clean up, not merely
+    # snapshotted.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(7) snapshot -> rollback round-trip with N+1 NetBox records + coordinator state — start fresh stubs, seed 1 agreeing site, run the REAL launch then the REAL rollback"
+      vars:
+        _te7_run_id: "77777777777777777777777777777777"
+      block:
+        - name: "(7) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-te-7.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(7) start stubs (L3_STUB_NETBOX_LOG set HERE — the detached
+            stub server child inherits this environment at spawn time,
+            same pattern l3-playbook-execution.yml scenario 11 uses)"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-te-7.json]
+          register: _te7_start
+          changed_when: false
+          environment:
+            L3_STUB_NETBOX_LOG: /tmp/l3-te-7-netbox.log
+
+        - name: "(7) remove any stale netbox invocation log from a prior run"
+          ansible.builtin.file:
+            path: /tmp/l3-te-7-netbox.log
+            state: absent
+
+        - name: "(7) parse stub URLs"
+          ansible.builtin.set_fact:
+            _te7_k8s_url: "{{ _te7_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _te7_netbox_url: "{{ _te7_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(7) seed the ONE agreeing NetBox site"
+          ansible.builtin.uri:
+            url: "{{ _te7_netbox_url }}/api/dcim/sites/"
+            method: POST
+            body_format: json
+            body: { name: dmf-example-site, slug: dmf-example-site }
+            status_code: [201]
+
+        - name: "(7) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-te-7-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _te7_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(7) create the helm PATH shim dir"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin
+            state: directory
+
+        - name: "(7) symlink helm -> stub_helm.sh"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin/helm
+            src: "{{ l3_harness_dir }}/stub_helm.sh"
+            state: link
+            force: true
+
+        - name: "(7) run the REAL launch, mxl_role=view, VALID topology_params,
+            agreeing NetBox site, l3_override for the stub's empty-render,
+            fault at post-topology-mutation (after the group's own NetBox
+            provision AND the coordinator active-source patch — both
+            genuinely happen before this boundary)"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/launch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _te7_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _te7_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - mxl_role=view
+              - -e
+              - l3_release=mxl-videotest-view
+              - -e
+              - l3_catalog_key=mxl-videotest-view
+              - -e
+              - "{{ {'topology_params': _te_j1_topology_params} | to_json }}"
+              - -e
+              - l3_override=true
+              - -e
+              - "l3_override_reason=(7) rollback round-trip probe - stub helm template always renders empty, expected"
+              - -e
+              - l3_fault_inject=post-topology-mutation
+              - -e
+              - "l3_request_id={{ _te7_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-te-7-kubeconfig.yaml
+            PATH: "/tmp/l3-harness-bin:{{ lookup('env', 'PATH') }}"
+          register: _te7_launch_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(7) ASSERT: the REAL launch FAILED (the post-topology-mutation fault)"
+          ansible.builtin.assert:
+            that:
+              - _te7_launch_run.rc != 0
+            fail_msg: "(7) FAIL — launch exited 0. stdout={{ _te7_launch_run.stdout }}"
+
+        - name: "(7) ASSERT (via real HTTP against the stub): all THREE topology
+            NetBox records genuinely exist (the group provision loop ran
+            for real, before the fault fired)"
+          ansible.builtin.uri:
+            url: "{{ _te7_netbox_url }}/api/ipam/services/?name={{ item | urlencode }}"
+            method: GET
+            return_content: true
+            validate_certs: false
+          register: _te7_pre_rollback_netbox
+          loop:
+            - mxl-videotest-view
+            - mxl-videotest-view-source-a
+            - mxl-videotest-view-source-b
+          loop_control:
+            label: "{{ item }}"
+
+        - name: "(7) assert all three pre-rollback records are present"
+          ansible.builtin.assert:
+            that:
+              - (item.json.results | default([])) | length == 1
+            fail_msg: "(7) FAIL — expected exactly 1 record for '{{ item.item }}' before rollback, got {{ item.json.results | default([]) }}"
+          loop: "{{ _te7_pre_rollback_netbox.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+
+        - name: "(7) ASSERT (via real HTTP against the stub): the coordinator
+            genuinely carries active-source=source-a (the coordinator
+            patch ran for real, before the fault fired)"
+          ansible.builtin.uri:
+            url: "{{ _te7_k8s_url }}/api/v1/namespaces/mxl/configmaps/mxl-coordinator"
+            method: GET
+            return_content: true
+            validate_certs: false
+          register: _te7_pre_rollback_coordinator
+
+        - name: "(7) assert pre-rollback coordinator state"
+          ansible.builtin.assert:
+            that:
+              - _te7_pre_rollback_coordinator.json.data['active-source'] == 'source-a'
+            fail_msg: >-
+              (7) FAIL — expected active-source=source-a before rollback,
+              got {{ _te7_pre_rollback_coordinator.json.data }}
+
+        - name: "(7) run the REAL playbooks/rollback-run.yml as a nested
+            ansible-playbook, SAME run_id, against the SAME stub servers
+            (state persists — this is the whole point of the round-trip)"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/rollback-run.yml"
+              - -e
+              - "l3_kube_api_url={{ _te7_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _te7_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - "l3_run_id={{ _te7_run_id }}"
+              - -e
+              - "l3_rollback_reason=(7) rollback round-trip probe"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-te-7-kubeconfig.yaml
+            PATH: "/tmp/l3-harness-bin:{{ lookup('env', 'PATH') }}"
+          register: _te7_rollback_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(7) ASSERT: the rollback run reports its own standard
+            terminal outcome (rollback_incomplete — R2a-7: ALWAYS, by
+            design, since monitoring drain can never be verified from this
+            tier; this is expected, not a test failure)"
+          ansible.builtin.assert:
+            that:
+              - _te7_rollback_run.rc != 0
+              - "'DMF_L3_OUTCOME: rollback_incomplete' in _te7_rollback_run.stdout"
+            fail_msg: "(7) FAIL — unexpected rollback outcome. stdout={{ _te7_rollback_run.stdout }}"
+
+        - name: "(7) read the netbox invocation log"
+          ansible.builtin.slurp:
+            src: /tmp/l3-te-7-netbox.log
+          register: _te7_netbox_log_raw
+
+        - name: "(7) ASSERT: rollback's own NetBox lookup queried ALL THREE
+            recovered topology service names (proves
+            _l3_snapshot_topology_service_names correctly recovered the N+1
+            name list from the snapshot, not just the scalar catalog key)"
+          ansible.builtin.assert:
+            that:
+              - "'GET services name=mxl-videotest-view' in (_te7_netbox_log_raw.content | b64decode)"
+              - "'GET services name=mxl-videotest-view-source-a' in (_te7_netbox_log_raw.content | b64decode)"
+              - "'GET services name=mxl-videotest-view-source-b' in (_te7_netbox_log_raw.content | b64decode)"
+            fail_msg: >-
+              (7) FAIL — expected rollback's own NetBox lookup to query all
+              three topology service names. Got:
+              {{ _te7_netbox_log_raw.content | b64decode }}
+
+        - name: "(7) ASSERT (via real HTTP against the stub): all THREE
+            topology NetBox records are GONE (finalised + deleted as
+            run-created — none of them were in the pre-run snapshot, which
+            was empty)"
+          ansible.builtin.uri:
+            url: "{{ _te7_netbox_url }}/api/ipam/services/?name={{ item | urlencode }}"
+            method: GET
+            return_content: true
+            validate_certs: false
+          register: _te7_post_rollback_netbox
+          loop:
+            - mxl-videotest-view
+            - mxl-videotest-view-source-a
+            - mxl-videotest-view-source-b
+          loop_control:
+            label: "{{ item }}"
+
+        - name: "(7) assert all three records are gone post-rollback"
+          ansible.builtin.assert:
+            that:
+              - (item.json.results | default([])) | length == 0
+            fail_msg: "(7) FAIL — expected '{{ item.item }}' to be deleted by rollback, still got {{ item.json.results | default([]) }}"
+          loop: "{{ _te7_post_rollback_netbox.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+
+        - name: "(7) ASSERT (via real HTTP against the stub): the coordinator's
+            active-source key is REMOVED entirely (D4 — it was ABSENT
+            pre-run, this run's own write must not survive a rollback)"
+          ansible.builtin.uri:
+            url: "{{ _te7_k8s_url }}/api/v1/namespaces/mxl/configmaps/mxl-coordinator"
+            method: GET
+            return_content: true
+            validate_certs: false
+          register: _te7_post_rollback_coordinator
+
+        - name: "(7) assert post-rollback coordinator state"
+          ansible.builtin.assert:
+            that:
+              - "'active-source' not in (_te7_post_rollback_coordinator.json.data | default({}))"
+            fail_msg: >-
+              (7) FAIL — expected active-source to be removed after
+              rollback (it was absent pre-run), got
+              {{ _te7_post_rollback_coordinator.json.data }}
+      always:
+        - name: "(7) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-te-7.json]
+          changed_when: false
+          failed_when: false
+
+    - name: ALL L3 TOPOLOGY EXECUTION TESTS PASSED
+      ansible.builtin.debug:
+        msg: >-
+          umbrella #201 WP3 (fix-round D1-D5 + finding 7): the REAL,
+          unmodified playbooks/launch-mxl-fabrics-demo.yml (and
+          rollback-run.yml, scenario 7), run as real ansible-playbook
+          subprocesses against the test harness stubs, correctly refuses
+          BEFORE lock acquisition (facility lock confirmed 404 via real
+          HTTP, no run snapshot ever created) for a malformed
+          topology_params (scenario 1), an ambiguous NetBox facility
+          (scenario 3), and a target_facility/NetBox-site mismatch
+          (scenario 4) — each with exactly one honest, correctly detailed
+          DMF_L3_OUTCOME marker. Scenarios 2 and 5 prove the complementary
+          happy paths: scenario 2 — topology_params ABSENT on a view-role
+          launch (D1/D3's fully legitimate scalar mode) — and scenario 5 —
+          topology_params VALID with an AGREEING NetBox site, deriving
+          l3_release_group with the REAL shipping names
+          (mxl-videotest-view-source-a/-b, D5) — both reach lock
+          acquisition cleanly and fail only at the SAME shared post-lock
+          boundary every other launcher's own execution-test scenario
+          uses, with scenario 2's own marker carrying NO topology-*
+          detail at all — proving topology_validate.yml is a genuine,
+          symmetric no-op for the scalar case and never blocks the
+          topology-mode happy path either. Scenario 6 proves
+          capacity.yml's group loop-and-sum actually renders every
+          release (scalar viewer + both group items, via
+          L3_STUB_HELM_LOG). Scenario 7 proves the full snapshot ->
+          separate rollback-run.yml round-trip: all THREE topology NetBox
+          records and the coordinator's own active-source write (both
+          genuinely created/set by this run, not merely snapshotted) are
+          correctly finalised+deleted / removed by a LATER, independent
+          rollback invocation recovering the persisted
+          topology_service_names + coordinator_state from the snapshot
+          alone — this coverage caught two real, pre-existing defects
+          along the way (fixed in the same fix round): the mxl role's
+          per-item NetBox identity override needed a dedicated
+          mxl_group_item_identity var (l3_catalog_key/l3_release
+          themselves are extra-var-pinned for the whole play and cannot
+          be overridden per loop iteration, R4a/P1-2's own lesson
+          generalized); and rollback_netbox_surface.yml's bare
+          `include_role: netbox_catalog_common` needed `public: true` —
+          without it, `_netbox_owned_namespace` never escaped that
+          include's own scope, so EVERY prior rollback of a genuinely
+          run-created NetBox record (any launcher, not just topology
+          mode) silently failed to finalise+delete it, undetected until
+          this scenario was the first test in this codebase to actually
+          reach that code path with a real record.

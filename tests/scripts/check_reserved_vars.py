@@ -17,10 +17,22 @@ drift IMPOSSIBLE to land unnoticed: it re-derives the full register:/
 set_fact: name set from the ACTUAL task files (not from memory) every time
 it runs, and fails loudly if anything in that set is not reserved.
 
+umbrella #201 WP3 fix round (codex D2): this script used to scan ONLY
+roles/l3_run_guard/tasks/*.yml — that scoping gap was itself a finding.
+_l3_effective_chart_set_values was originally a set_fact: TASK inside
+playbooks/launch-mxl-fabrics-demo.yml (an install-only alias never covered
+by the reserved-var blocklist at all, since nothing scanned playbooks/),
+and codex proved forging it directly made the real `helm upgrade --install`
+consume different --set values than capacity.yml's gate ever validated —
+a capacity/install divergence, the exact class of bug this whole mechanism
+exists to close. Every launch-*.yml/teardown-*.yml/rollback-run.yml
+playbook's own register:/set_fact: targets are now in scope too.
+
 Usage:  python3 tests/scripts/check_reserved_vars.py
 Exit 0 = every register:/set_fact: target in roles/l3_run_guard/tasks/*.yml
-is present in _assert_reserved_vars.yml's blocklist (or is one of the
-explicitly-documented, deliberately-excluded caller-input names).
+AND playbooks/*.yml is present in _assert_reserved_vars.yml's blocklist (or
+is one of the explicitly-documented, deliberately-excluded caller-input
+names).
 Exit 1 = something is missing — printed, with the exact names.
 """
 from __future__ import annotations
@@ -31,6 +43,7 @@ from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _TASKS_DIR = _REPO_ROOT / "roles" / "l3_run_guard" / "tasks"
+_PLAYBOOKS_DIR = _REPO_ROOT / "playbooks"
 _RESERVED_FILE = _TASKS_DIR / "_assert_reserved_vars.yml"
 
 _REGISTER_RE = re.compile(r"^\s*register:\s*([A-Za-z_][A-Za-z0-9_]*)\s*$")
@@ -64,7 +77,8 @@ _LEGITIMATE_CALLER_INPUTS = {
 def _find_register_and_setfact_names() -> tuple[set[str], set[str]]:
     register_names: set[str] = set()
     setfact_names: set[str] = set()
-    for path in sorted(_TASKS_DIR.glob("*.yml")):
+    paths = sorted(_TASKS_DIR.glob("*.yml")) + sorted(_PLAYBOOKS_DIR.glob("*.yml"))
+    for path in paths:
         lines = path.read_text().splitlines(keepends=True)
         for i, line in enumerate(lines):
             m = _REGISTER_RE.match(line)
@@ -106,7 +120,7 @@ def main() -> int:
     if missing:
         print(
             f"FAIL: {len(missing)} register:/set_fact: name(s) found in "
-            f"roles/l3_run_guard/tasks/*.yml are NOT in "
+            f"roles/l3_run_guard/tasks/*.yml or playbooks/*.yml are NOT in "
             f"_assert_reserved_vars.yml's blocklist:",
             file=sys.stderr,
         )

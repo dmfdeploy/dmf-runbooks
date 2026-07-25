@@ -29,6 +29,17 @@ touches ipam.services):
     for the provision stage's own "device exists" assert; not a real
     per-device store)
 
+Plus a minimal `dcim.sites` surface (umbrella #201 WP3 — topology_validate.yml's
+own live target_facility agreement check, the first caller of this route):
+  * GET  /api/dcim/sites/                   (list ALL stored sites, no
+    filtering — mirrors extras.tags' own "ignore query params, return
+    everything" shape; a test scenario seeds 0/1/2 sites via POST before
+    running the nested playbook to drive the ambiguous/matching/mismatched
+    cases)
+  * POST /api/dcim/sites/                   (create one, 201, echoes the
+    request body's own `slug` back with a fresh id — same shape as
+    _create_tag)
+
 umbrella #202 WP3 R6b (codex round-6, umbrella #267): optional request
 logging for the `ipam.services` collection surface only — set
 `L3_STUB_NETBOX_LOG=<path>` (as an env var on the process that starts
@@ -89,6 +100,13 @@ def _default_state() -> dict:
         # ?name= filter) and create.
         "tags": {},
         "_tags_next_id": 1,
+        # dcim.sites — umbrella #201 WP3 topology_validate.yml's own live
+        # target_facility agreement check. Empty by default (the
+        # 0-sites/ambiguous case is the DEFAULT state a scenario need not
+        # seed anything for); a scenario POSTs 1 or 2 sites to drive the
+        # matching/mismatched/ambiguous cases.
+        "sites": {},
+        "_sites_next_id": 1,
     }
 
 
@@ -111,6 +129,7 @@ _COLLECTION_RE = re.compile(r"^/api/ipam/services/?$")
 _ITEM_RE = re.compile(r"^/api/ipam/services/(?P<id>\d+)/?$")
 _TAGS_COLLECTION_RE = re.compile(r"^/api/extras/tags/?$")
 _DEVICES_COLLECTION_RE = re.compile(r"^/api/dcim/devices/?$")
+_SITES_COLLECTION_RE = re.compile(r"^/api/dcim/sites/?$")
 
 
 class StubNetBoxHandler(BaseHTTPRequestHandler):
@@ -166,6 +185,9 @@ class StubNetBoxHandler(BaseHTTPRequestHandler):
         if _DEVICES_COLLECTION_RE.match(parsed.path):
             return self._list_devices(query)
 
+        if _SITES_COLLECTION_RE.match(parsed.path):
+            return self._list_sites(query)
+
         self._write_json(404, {"detail": f"no route for GET {parsed.path}"})
 
     def do_POST(self):  # noqa: N802
@@ -174,6 +196,8 @@ class StubNetBoxHandler(BaseHTTPRequestHandler):
             return self._create_service()
         if _TAGS_COLLECTION_RE.match(parsed.path):
             return self._create_tag()
+        if _SITES_COLLECTION_RE.match(parsed.path):
+            return self._create_site()
         self._write_json(404, {"detail": f"no route for POST {parsed.path}"})
 
     def do_PATCH(self):  # noqa: N802
@@ -282,6 +306,22 @@ class StubNetBoxHandler(BaseHTTPRequestHandler):
         # per-device store.
         name = query.get("name", ["stub-device"])[0]
         self._write_json(200, {"count": 1, "results": [{"id": 1, "name": name}]})
+
+    def _list_sites(self, query: dict):
+        # dcim.Site — no filtering, mirrors extras.tags' own shape; a
+        # scenario seeds STATE["sites"] via POST before running the nested
+        # playbook to drive the 0/1/2-site cases topology_validate.yml's
+        # own live agreement check must distinguish.
+        self._write_json(200, {"count": len(STATE["sites"]), "results": list(STATE["sites"].values())})
+
+    def _create_site(self):
+        body = self._read_json_body() or {}
+        with _STATE_LOCK:
+            site_id = STATE["_sites_next_id"]
+            STATE["_sites_next_id"] += 1
+            site = {"id": site_id, "name": body.get("name", ""), "slug": body.get("slug", "")}
+            STATE["sites"][site_id] = site
+        self._write_json(201, site)
 
 
 # ---------------------------------------------------------------------------
