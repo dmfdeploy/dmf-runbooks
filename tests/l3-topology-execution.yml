@@ -1167,6 +1167,178 @@
           changed_when: false
           failed_when: false
 
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 8 (fix-round addendum, codex cross-WP FAIL): a SOURCE-role
+    # launch carrying topology_params — the exact shape today's live
+    # catalog wiring produces while topology_ref is still attached to the
+    # source entry too (dmf-media#22, pending) — must refuse BEFORE lock
+    # acquisition via l3_topology_forbidden_for_this_entry, never running
+    # topology_validate.yml's own structural validation/derivation at all
+    # (this is a coherence guard, not a further validation stage — it
+    # fires first and refuses outright, regardless of whether the
+    # topology_params object itself would otherwise be valid).
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(8) source-role launch carrying topology_params — start fresh stubs, run the REAL playbook"
+      vars:
+        _te8_run_id: "88888888888888888888888888888888"
+      block:
+        - name: "(8) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-te-8.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(8) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-te-8.json]
+          register: _te8_start
+          changed_when: false
+
+        - name: "(8) parse stub URLs"
+          ansible.builtin.set_fact:
+            _te8_k8s_url: "{{ _te8_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _te8_netbox_url: "{{ _te8_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(8) seed the ONE agreeing NetBox site (irrelevant to the
+            outcome — the coherence guard fires before the facility check
+            even runs — seeded anyway so a regression that removed the
+            guard would still exercise a realistic environment, not mask
+            itself behind an unrelated facility refusal)"
+          ansible.builtin.uri:
+            url: "{{ _te8_netbox_url }}/api/dcim/sites/"
+            method: POST
+            body_format: json
+            body: { name: dmf-example-site, slug: dmf-example-site }
+            status_code: [201]
+
+        - name: "(8) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-te-8-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _te8_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(8) run the REAL playbook, mxl_role=source (the source
+            entry's own identity), VALID topology_params (would otherwise
+            pass structural validation cleanly — proves the guard fires
+            BEFORE any further topology processing, not as a side effect
+            of the object being invalid)"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/launch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _te8_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _te8_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - mxl_role=source
+              - -e
+              - l3_release=mxl-videotestsrc
+              - -e
+              - l3_catalog_key=mxl-videotestsrc
+              - -e
+              - "{{ {'topology_params': _te_j1_topology_params} | to_json }}"
+              - -e
+              - "l3_request_id={{ _te8_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-te-8-kubeconfig.yaml
+          register: _te8_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(8) ASSERT: the REAL playbook run FAILED"
+          ansible.builtin.assert:
+            that:
+              - _te8_run.rc != 0
+            fail_msg: "(8) FAIL — exited 0 with topology_params on a source-role launch. stdout={{ _te8_run.stdout }}"
+
+        - name: "(8) ASSERT: no topology structural validation / derivation
+            ever ran — the guard fires FIRST, before
+            l3_validate_topology_params or l3_topology_release_group are
+            ever reached"
+          ansible.builtin.assert:
+            that:
+              - "'derived l3_release_group' not in _te8_run.stdout"
+            fail_msg: >-
+              (8) FAIL — topology derivation ran despite the source-entry
+              coherence guard. stdout={{ _te8_run.stdout }}
+
+        - name: "(8) ASSERT: exactly ONE DMF_L3_OUTCOME marker, preflight-error/topology-wrong-entry"
+          ansible.builtin.set_fact:
+            _te8_markers: "{{ (_te8_run.stdout_lines | select('match', '.*DMF_L3_OUTCOME:.*') | list) }}"
+
+        - name: "(8) assert marker-count + token + detail"
+          ansible.builtin.assert:
+            that:
+              - _te8_markers | length == 1
+              - "'preflight-error' in _te8_markers[0]"
+              - "'topology-wrong-entry' in _te8_markers[0]"
+            fail_msg: "(8) FAIL — expected exactly one preflight-error/topology-wrong-entry marker, got: {{ _te8_markers }}"
+
+        - name: "(8) ASSERT (via real HTTP against the stub): the facility
+            lock was NEVER created (pre-lock refusal — nothing to release)"
+          ansible.builtin.uri:
+            url: "{{ _te8_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+
+        - name: "(8) ASSERT (via real HTTP against the stub): no run
+            snapshot ConfigMap was ever created (no mutation at all)"
+          ansible.builtin.uri:
+            url: "{{ _te8_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-run-{{ _te8_run_id }}"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+
+        - name: "(8) ASSERT (via real HTTP against the stub): no NetBox
+            record was created for the source entry either (no group
+            provision, no scalar provision — the guard fires well before
+            the playbook's own mxl role provision task is ever reached)"
+          ansible.builtin.uri:
+            url: "{{ _te8_netbox_url }}/api/ipam/services/?name=mxl-videotestsrc"
+            method: GET
+            return_content: true
+            validate_certs: false
+          register: _te8_netbox_check
+
+        - name: "(8) assert no NetBox record exists"
+          ansible.builtin.assert:
+            that:
+              - (_te8_netbox_check.json.results | default([])) | length == 0
+            fail_msg: "(8) FAIL — expected no NetBox record, got {{ _te8_netbox_check.json.results }}"
+      always:
+        - name: "(8) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-te-8.json]
+          changed_when: false
+          failed_when: false
+
     - name: ALL L3 TOPOLOGY EXECUTION TESTS PASSED
       ansible.builtin.debug:
         msg: >-
@@ -1213,4 +1385,11 @@
           run-created NetBox record (any launcher, not just topology
           mode) silently failed to finalise+delete it, undetected until
           this scenario was the first test in this codebase to actually
-          reach that code path with a real record.
+          reach that code path with a real record. Scenario 8
+          (fix-round addendum, codex cross-WP FAIL): a source-role
+          launch carrying topology_params — today's live shape while
+          dmf-media#22's catalog cleanup is still pending — refuses via
+          l3_topology_forbidden_for_this_entry BEFORE lock acquisition,
+          with NO topology derivation, NO NetBox record, and NO lock
+          ever created, even though the topology_params object itself
+          would otherwise validate cleanly.

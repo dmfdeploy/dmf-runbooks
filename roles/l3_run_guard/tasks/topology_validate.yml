@@ -47,6 +47,43 @@
 # catalog's illustrative placeholder), so a mismatch here means either a
 # stale/forged extra_var or an env with the wrong NetBox site shape, not a
 # legitimate multi-facility choice (deferred to #231).
+#
+# umbrella #201 WP3 fix-round addendum (codex cross-WP FAIL): with
+# topology_ref still attached to the SOURCE catalog entry too
+# (dmf-media#22, pending cleanup — the ratified design is viewer-only),
+# WP3a's launch seam attaches topology_params to a SOURCE-entry console
+# deploy as well, and D1's own presence-keyed gate above would then
+# validate + derive a release group + patch active-source for that run —
+# a HALF-topology mutation with no paired viewer install. l3_topology_
+# forbidden_for_this_entry (role default false — a no-op for every
+# caller) is a GENERIC opt-in escape hatch: the calling playbook declares
+# what "wrong entry" means for ITSELF (this role has no opinion on
+# mxl_role or any other launcher-specific concept) — see
+# launch-mxl-fabrics-demo.yml's own comment for the concrete mxl meaning
+# and, importantly, why this is MISCONFIGURATION protection, not a
+# forgery barrier.
+- name: "L3 topology: caller-declared entry-coherence guard (never override-able, pre-lock)"
+  when:
+    - l3_topology_forbidden_for_this_entry | default(false)
+    - topology_params is defined
+  block:
+    - name: Report topology_params on a forbidden entry
+      ansible.builtin.debug:
+        msg: >-
+          L3 launcher refused: preflight-error (topology-wrong-entry).
+          topology_params was supplied but this entry declared itself
+          forbidden from carrying it (l3_topology_forbidden_for_this_entry)
+          — see the calling playbook's own comment for what this protects
+          against.
+
+    - name: "L3 topology-wrong-entry refusal cleanup (never override-able, pre-lock)"
+      ansible.builtin.include_tasks: _refuse_pre_mutation.yml
+      vars:
+        l3_outcome_token: preflight-error
+        l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }} detail=topology-wrong-entry"
+        l3_refusal_fail_msg: >-
+          L3 launcher refused: preflight-error (topology-wrong-entry).
+          Structural precondition — cannot be overridden.
 
 - name: "L3 topology: structural validation (pure — l3_validate_topology_params) + refusal"
   when: topology_params is defined
