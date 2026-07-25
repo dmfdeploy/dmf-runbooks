@@ -53,6 +53,29 @@
           register: _mxl_helm_list
           changed_when: false
 
+        - name: "Compute this viewer's own topology source releases (umbrella
+            #201 WP3b): a topology launch names every source release
+            '{{ mxl_release }}-<source.id>' (l3_topology_release_group's own
+            naming rule, roles/l3_run_guard/filter_plugins/l3_topology.py) —
+            discovered here by Helm release-name PREFIX match rather than
+            re-deriving topology_params (teardown carries no topology_params
+            extra_var, and adding that seam is out of this WO's scope). A
+            no-op empty list for a scalar (never topology-launched) viewer,
+            and for a plain source release torn down on its own (nothing is
+            ever named '{{ mxl_release }}-<x>-<y>', so the pattern matches
+            nothing). Known, accepted limitation: this trusts release-name
+            prefixing, not a cross-check against NetBox/catalog identity —
+            flagged in the WO11 report, not solved here (would need the
+            teardown seam noted above to do better)."
+          ansible.builtin.set_fact:
+            _mxl_topology_source_releases: >-
+              {{
+                _mxl_helm_list.stdout_lines
+                | default([])
+                | select('match', '^' ~ mxl_release ~ '-')
+                | list
+              }}
+
         - name: Compute other MXL releases still present
           ansible.builtin.set_fact:
             _mxl_other_releases: >-
@@ -60,6 +83,7 @@
                 _mxl_helm_list.stdout_lines
                 | default([])
                 | reject('equalto', mxl_release)
+                | reject('in', _mxl_topology_source_releases)
                 | select('match', '^mxl-')
                 | list
               }}
@@ -87,6 +111,35 @@
             tasks_from: fault_inject
           vars:
             l3_fault_inject_boundary: post-first-mutation
+
+        - name: "Remove each topology source Helm release (umbrella #201
+            WP3b — a no-op loop when _mxl_topology_source_releases is
+            empty, same 'tolerate already-gone' posture as the viewer's own
+            uninstall above)"
+          ansible.builtin.command:
+            argv:
+              - helm
+              - uninstall
+              - "{{ item }}"
+              - -n
+              - "{{ mxl_namespace }}"
+          register: _mxl_topology_source_uninstall
+          changed_when: "'release: not found' not in (_mxl_topology_source_uninstall.stderr | default(''))"
+          failed_when:
+            - _mxl_topology_source_uninstall.rc != 0
+            - "'release: not found' not in (_mxl_topology_source_uninstall.stderr | default(''))"
+          loop: "{{ _mxl_topology_source_releases }}"
+          loop_control:
+            label: "{{ item }}"
+
+        - name: "L3: test-only fault injection boundary (umbrella #201 WP3b —
+            no-op on every real run; see fault_inject.yml's own header for
+            post-topology-teardown-mutation)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: fault_inject
+          vars:
+            l3_fault_inject_boundary: post-topology-teardown-mutation
 
         - name: Remove shared coordinator ConfigMap when this was the last MXL release
           # kubernetes.core.k8s, NOT a kubectl shell-out — the catalog EE image
@@ -116,6 +169,28 @@
             name: mxl
           vars:
             mxl_stage: finalise
+
+        - name: "L3 lock checkpoint before topology source NetBox finalise (umbrella #201 WP3b)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: lock_checkpoint
+          when: _mxl_topology_source_releases | length > 0
+
+        - name: "Include mxl role (finalise stage) for each topology source
+            release (umbrella #201 WP3b — a topology source's own
+            netbox_service_name IS its release name, by the SAME naming
+            rule that discovered it above (l3_topology_release_group), so
+            the release name doubles directly as
+            mxl_group_item_identity with no extra NetBox lookup needed; a
+            no-op loop when _mxl_topology_source_releases is empty)"
+          ansible.builtin.include_role:
+            name: mxl
+          vars:
+            mxl_stage: finalise
+            mxl_group_item_identity: "{{ item }}"
+          loop: "{{ _mxl_topology_source_releases }}"
+          loop_control:
+            label: "{{ item }}"
 
         - name: "L3 teardown success — release the lock (no marker: a
             started teardown failure maps to RUN_STATUS_UNKNOWN/RUN_FAILED

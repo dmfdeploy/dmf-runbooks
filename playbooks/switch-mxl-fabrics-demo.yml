@@ -1,0 +1,280 @@
+---
+# MXL Fabrics demo - Switch: reconfigure an already-running viewer's active
+# source (umbrella #201 WP4b, spec §6.2's own quiesce -> re-point -> select
+# sequencing, `DMF v0.2b Multi-Source Switch Spec 2026-07-15.md`).
+#
+# Consumes dmf-cms's ReconnectViaAwxActuator extra_vars contract VERBATIM
+# (src/dmf_cms/switch_source.py's own "EXTRA_VARS PAYLOAD CONTRACT"
+# docstring is this playbook's input contract — read it there before
+# changing either side; a test asserts they stay in lock-step):
+#   topology_params   — the receiver's own topology_params object, with
+#                       viewer.source_selection ALREADY reassigned to the
+#                       switch target by dmf-cms (this playbook does not
+#                       repeat that reassignment, only re-derives from it).
+#   receiver_instance — the viewer's concrete Helm release / NetBox
+#                       identity (e.g. "mxl-videotest-view").
+#   source_instance   — the switch target's sources[].id, redundant with
+#                       topology_params.viewer.source_selection BY
+#                       CONSTRUCTION — validated to match below (defense
+#                       in depth, never trusted blindly from either side
+#                       alone).
+#   reason            — operator-supplied, for THIS job's own task
+#                       naming/traceability inside AWX only — never a
+#                       substitute for dmf-cms's own C5 audit.
+#
+# Unlike launch-mxl-fabrics-demo.yml / teardown-mxl-fabrics-demo.yml, this
+# playbook touches NEITHER NetBox NOR a fresh Helm install/uninstall — it
+# only reconfigures an ALREADY-DEPLOYED topology's coordinator ConfigMap +
+# re-points the viewer's EXISTING Helm release. It therefore rides a
+# deliberately narrower, SHORTER-held slice of the SAME shared facility
+# lock (roles/l3_run_guard/tasks/switch_lock.yml — see that file's own
+# header for the full design rationale) rather than main.yml's full launch
+# gate or lock_only.yml's teardown entry point.
+#
+# Failure posture (spec §6.2, claude1/#201 WP4 addendum condition 4): a
+# failure at ANY phase leaves active-source cleared (or never advanced) —
+# a clean, zero-transmitter quiesced state — and this playbook does NOT
+# attempt to restore the pre-switch active-source. dmf-cms's own
+# ReconnectViaAwxActuator reports failed_rollback_required and expects
+# OPERATOR retry/rollback, never an automatic one; this playbook's own
+# rescue: mirrors that on the ansible side (release the lock, re-raise,
+# nothing else). There is consequently no DMF_L3_OUTCOME marker emitted
+# here either — that vocabulary belongs to launch/teardown/rollback's own
+# snapshot-based outcome model (dmf-cms's OperationState), which a switch
+# does not use at all; the actuator reads the AWX job's own terminal
+# status directly (successful/failed/...), nothing else.
+- name: MXL fabrics demo switch - reconfigure viewer active source
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    l3_target_namespace: mxl
+    l3_switch_viewer_repoint_timeout: 90s
+  tasks:
+    - name: "L3 switch gate through terminal — ONE outer block/rescue/always
+        (mirrors launch/teardown's own R4a Backbone shape: this playbook's
+        own rescue: sees every failure in the whole span, and the always:
+        lock-release is an unconditional backstop)"
+      block:
+        - name: "Load l3_run_guard's filter_plugins (l3_validate_topology_params
+            / l3_topology_viewer_projection) WITHOUT running any of its
+            live-cluster tasks (roles/l3_run_guard/tasks/filters_only.yml —
+            same mechanism tests/l3-budget-logic.yml uses). Filter plugins
+            are role-scoped in Ansible: they only become available once the
+            role has been included at least once in the play, and
+            validation must run BEFORE switch_lock (condition 4), so this
+            has to be its own, tasks-free include first."
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: filters_only
+
+        - name: "Validate the received topology_params BEFORE any cluster
+            touch (umbrella #201 WP4b condition 4 — defense in depth,
+            mirrors every other seam: reuses l3_validate_topology_params
+            verbatim, WP3's own filter)"
+          ansible.builtin.set_fact:
+            _switch_validation: "{{ topology_params | l3_validate_topology_params }}"
+
+        - name: Refuse a structurally invalid topology_params (pre-lock, no mutation, nothing to release)
+          ansible.builtin.fail:
+            msg: >-
+              DMF_L3_SWITCH_REFUSED: detail=topology-invalid
+              request_id={{ l3_request_id | default('') }}
+              error={{ _switch_validation.error }}
+          when: not _switch_validation.ok
+
+        - name: "Assert source_instance agrees with topology_params.viewer.source_selection
+            (umbrella #201 WP4b condition 4 — the two must be IDENTICAL by
+            construction; a divergence means a forged/malformed extra_var
+            pair, refuse rather than silently trust either value alone)"
+          ansible.builtin.assert:
+            that:
+              - source_instance == topology_params.viewer.source_selection
+            fail_msg: >-
+              DMF_L3_SWITCH_REFUSED: detail=switch-source-instance-mismatch
+              request_id={{ l3_request_id | default('') }}
+              source_instance={{ source_instance }}
+              viewer.source_selection={{ topology_params.viewer.source_selection }}
+
+        - name: "Assert receiver_instance is a non-empty string (umbrella
+            #201 WP4b — the concrete Helm release this playbook re-points;
+            a blank value would silently target an undefined release name
+            below)"
+          ansible.builtin.assert:
+            that:
+              - (receiver_instance | default('') | trim) != ''
+            fail_msg: >-
+              DMF_L3_SWITCH_REFUSED: detail=switch-receiver-instance-missing
+              request_id={{ l3_request_id | default('') }}
+
+        - name: "Derive the viewer projection for the SWITCH TARGET
+            (umbrella #201 WP4b — reuses l3_topology_viewer_projection
+            verbatim, WP3's own filter; topology_params already carries the
+            reassigned selection, so this is exactly the pure re-derivation
+            tests/l3-topology-logic.yml scenario (m) already proves
+            correct offline)"
+          ansible.builtin.set_fact:
+            _switch_target_projection: "{{ topology_params | l3_topology_viewer_projection }}"
+
+        - name: "L3 switch-lock guard (identity + narrow facility lock
+            acquisition only — umbrella #201 WP4b, roles/l3_run_guard/tasks/switch_lock.yml)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: switch_lock
+
+        - name: "L3: test-only fault injection boundary (umbrella #201
+            WP4b — no-op on every real run; proves a pre-mutation switch
+            failure releases the lock with the coordinator untouched)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: fault_inject
+          vars:
+            l3_fault_inject_boundary: post-switch-lock
+
+        - name: "Read the coordinator ConfigMap's CURRENT state (a switch
+            targets an ALREADY-launched topology)"
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: ConfigMap
+            name: mxl-coordinator
+            namespace: "{{ l3_target_namespace }}"
+          register: _switch_coordinator_pre
+
+        - name: "Assert the coordinator ConfigMap exists (if absent, there
+            is nothing to switch — refuse rather than create one; this
+            playbook never provisions infrastructure, only reconfigures
+            an existing one)"
+          ansible.builtin.assert:
+            that:
+              - _switch_coordinator_pre.resources | length > 0
+            fail_msg: >-
+              DMF_L3_SWITCH_REFUSED: detail=switch-coordinator-missing
+              request_id={{ l3_request_id | default('') }}
+
+        # ── PHASE 1: QUIESCE — de-select ──────────────────────────────
+        - name: "PHASE 1 (quiesce): clear active-source — the WP2
+            supervisor's own continuous re-check sees this mismatch and
+            stops+parks the outgoing initiator (spec §6.2 step 1); THIS
+            field-clear is what an operator can observe, the actual halt
+            is the supervisor's own re-check, not this write itself"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata: { name: mxl-coordinator, namespace: "{{ l3_target_namespace }}" }
+              data:
+                active-source: null
+
+        - name: "PHASE 1 (quiesce): clear target-info/epoch — secondary
+            newcomer-block (spec §6.2 step 1); holds any not-yet-started
+            supervisor at wait_for_target_info until phase 2 republishes
+            a FRESH endpoint"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata: { name: mxl-coordinator, namespace: "{{ l3_target_namespace }}" }
+              data:
+                target-info: null
+                epoch: null
+
+        - name: "L3: test-only fault injection boundary (umbrella #201
+            WP4b — no-op on every real run; proves a quiesce-only failure
+            leaves zero transmitters — active-source cleared, viewer NOT
+            yet re-pointed — and releases the lock)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: fault_inject
+          vars:
+            l3_fault_inject_boundary: post-switch-quiesce
+
+        # ── PHASE 2: RE-POINT — restart the viewer at the new flow.id ──
+        - name: "PHASE 2 (re-point): re-point + restart the viewer — ATOMIC
+            (umbrella #201 WP4b condition 1): --atomic makes Helm roll
+            THIS release back to its PRE-switch values on any failure (bad
+            values, timeout, readiness failure) rather than leaving a
+            half-applied release. active-source is ALREADY cleared (phase
+            1), so a failed re-point still leaves a clean, zero-transmitter
+            state, never a half-switched one."
+          ansible.builtin.command:
+            argv:
+              - helm
+              - upgrade
+              - "{{ receiver_instance }}"
+              - --reuse-values
+              - -n
+              - "{{ l3_target_namespace }}"
+              - --set
+              - "flow.id={{ _switch_target_projection.flow_id }}"
+              - --atomic
+              - --wait
+              - --timeout
+              - "{{ l3_switch_viewer_repoint_timeout }}"
+          changed_when: true
+
+        - name: "L3: test-only fault injection boundary (umbrella #201
+            WP4b — no-op on every real run; proves a re-point failure
+            leaves active-source cleared and releases the lock even though
+            the viewer's own Helm release already re-pointed)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: fault_inject
+          vars:
+            l3_fault_inject_boundary: post-switch-repoint
+
+        # ── PHASE 3: SELECT — set active-source ───────────────────────
+        - name: "PHASE 3 (select): set active-source = the switch target —
+            only the matching supervisor un-parks, and because phase 1
+            cleared the endpoint it can ONLY start against phase 2's fresh
+            target-info/epoch (spec §6.2 step 3)"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata: { name: mxl-coordinator, namespace: "{{ l3_target_namespace }}" }
+              data:
+                active-source: "{{ _switch_target_projection.active_source }}"
+
+        - name: "L3 switch success — release the lock (no DMF_L3_OUTCOME
+            marker — see this playbook's own header for why: that
+            vocabulary is launch/teardown/rollback's own snapshot-based
+            outcome model, which a switch does not use)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: lock_release
+      rescue:
+        - name: "L3 switch rescue — UNCONDITIONAL lock release (umbrella
+            #201 WP4b condition 3): NO restore-old-active-source, no
+            rollback machinery — spec §6.2's own failure posture is
+            'active-source stays cleared, report failure, operator
+            retry/rollback' (claude1/#201 WP4 addendum condition 4: no new
+            rollback logic in the actuator; this playbook mirrors that on
+            the ansible side). Whatever phase failed, the coordinator is
+            already in its safe quiesced state (phase 1 ran first, or
+            never started at all); this rescue's ONLY job is making sure
+            the facility lock is never left held."
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: lock_release
+
+        - name: Re-raise (this rescue only releases the lock, never terminates the play itself)
+          ansible.builtin.fail:
+            msg: >-
+              MXL fabrics-demo switch failed for
+              receiver_instance={{ receiver_instance | default('<unknown>') }}
+              request_id={{ l3_request_id | default('<unknown>') }}. See the
+              task error above for the root cause; the facility lock has
+              already been released. active-source is cleared (or was
+              never advanced) — this is the spec's own safe quiesced
+              state; no automatic rollback runs here, operator
+              retry/rollback required.
+      always:
+        - name: "L3 switch release — idempotent lock-release backstop
+            (mirrors launch/teardown's own release.yml backstop; a no-op
+            if the block or rescue above already released it)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: release
