@@ -124,6 +124,16 @@ l3_chart_local: ""
 # guarantees they reach the SAME render+install path as everything else.
 l3_chart_extra_set_values: []
 
+# umbrella #201 WP3 fix-round addendum (codex cross-WP FAIL): GENERIC
+# opt-in coherence guard — false by default (a no-op for every launcher
+# that never sets it). The calling playbook declares, in its own terms,
+# when THIS entry must never legitimately carry topology_params; this
+# role has no opinion on what "wrong entry" means (mxl_role, or any
+# other launcher-specific concept, is never referenced here) — see
+# topology_validate.yml's own header and launch-mxl-fabrics-demo.yml's
+# comment for the concrete case this exists for.
+l3_topology_forbidden_for_this_entry: false
+
 # ── Capacity preflight (§3.2) ───────────────────────────────────────────────
 # ee_reserve is ALWAYS zero on both launcher entry paths — see l3_budget.py's
 # module docstring for the full no-double-count reasoning. Kept as an

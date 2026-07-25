@@ -75,16 +75,17 @@
     # stage activates PURELY on whether a topology_params extra_var was
     # supplied (fix-round D1 — no separate required-flag; see that file's
     # own header for the forgery a computed mxl_role-based flag was
-    # vulnerable to). In practice this means the VIEW-role invocation is the
-    # one that carries topology_params end-to-end (spec §3.2/§5): it stays
-    # the run's own scalar l3_release/l3_catalog_key identity ("+1 viewer
-    # release unchanged", the settled decision) AND additionally derives
-    # l3_release_group (the N source releases, umbrella #201 WP3) from
-    # topology_params.sources[]. The SOURCE-role invocation never receives
-    # topology_params at all — mxl-videotestsrc's own JT/catalog entry plays
-    # no further role once a topology launch is live (its sources are
-    # provisioned BY the view-role run instead); its own scalar path is
-    # untouched regardless of what any extra_var claims.
+    # vulnerable to). By ratified design (umbrella #201) the VIEW-role
+    # invocation is the one that carries topology_params end-to-end (spec
+    # §3.2/§5): it stays the run's own scalar l3_release/l3_catalog_key
+    # identity ("+1 viewer release unchanged", the settled decision) AND
+    # additionally derives l3_release_group (the N source releases) from
+    # topology_params.sources[]. mxl-videotestsrc's own JT/catalog entry
+    # plays no further role once a topology launch is live (its sources are
+    # provisioned BY the view-role run instead) — its own scalar path is
+    # untouched regardless of what any extra_var claims, UNLESS the source
+    # entry's own topology_ref is still live in the catalog, see
+    # l3_topology_forbidden_for_this_entry below.
     # The common per-source chart values EVERY topology source release
     # needs (mirrors this play's own l3_chart_set_values, minus role/flow.id/
     # pattern/sourceId — l3_topology_release_group derives those four from
@@ -118,6 +119,28 @@
     # sets this, to the SAME coordinator ConfigMap the launch tasks below
     # read/patch.
     l3_coordinator_configmap_name: mxl-coordinator
+    # umbrella #201 WP3 fix-round addendum (codex cross-WP FAIL, superseding
+    # the earlier WP3 pass): with topology_ref still attached to the SOURCE
+    # catalog entry too (dmf-media#22, pending cleanup — the ratified design
+    # is viewer-only), a source-role console deploy would ALSO carry
+    # topology_params today, and D1's own presence-keyed gate would then
+    # validate + derive a release group + patch active-source for it — a
+    # HALF-topology mutation (no paired viewer install). This declares the
+    # mxl-specific meaning of "wrong entry" for l3_run_guard's own GENERIC
+    # coherence guard (l3_run_guard/defaults/main.yml,
+    # l3_topology_forbidden_for_this_entry — false/no-op by default, this
+    # is the only caller that sets it): a source-role invocation must NEVER
+    # carry topology_params. MISCONFIGURATION protection, NOT a forgery
+    # barrier — mxl_role is itself an ordinary, extra-vars-shadowable input
+    # (same as l3_release/l3_catalog_key throughout this whole file), so
+    # this guard cannot be the adversarial anchor against a deliberate
+    # attacker; that anchor remains WP3a's own delivery guarantee (only a
+    # genuine viewer-entry deploy's launch seam attaches topology_params)
+    # plus the dmf-media#22 catalog cleanup that removes topology_ref from
+    # the source entry entirely. This guard's job is narrower and more
+    # honest: catch today's KNOWN stale catalog wiring before #22 lands,
+    # loudly and safely, rather than silently mutating the wrong entry.
+    l3_topology_forbidden_for_this_entry: "{{ mxl_role == 'source' }}"
   tasks:
     - name: "L3 gate through terminal — ONE outer block/rescue/always (R4a
         Backbone, codex round-3 P1-3/P1-11: main.yml's own stages
