@@ -1,0 +1,44 @@
+---
+# umbrella #201 WP4b (qwen1 gate fix round) — read + assert-exists the
+# mxl-coordinator ConfigMap. Role-owned (a proper task file, not a
+# playbook-level set_fact) for the SAME reason switch_validate.yml moved
+# in-role — the calling playbook should not own raw role-internal state —
+# but called SEPARATELY, from the PLAYBOOK, AFTER switch_lock.yml has
+# already returned (i.e. AFTER the facility lock is held), NOT folded into
+# switch_validate.yml's own pre-lock sequence.
+#
+# WHY POST-LOCK, DELIBERATELY (this is a real correctness concern, not just
+# a reserved-var technicality): reading "does the coordinator exist" BEFORE
+# acquiring the lock would be racy — a concurrent teardown could delete it
+# in the window between this unlocked read and this attempt actually
+# acquiring the lock, especially under contention (lock.yml's own TTL-
+# reclaim/retry path can genuinely wait). Any OTHER L3 op that touches the
+# coordinator does so only while holding this SAME facility lock, so once
+# THIS attempt's own lock acquisition succeeds, no such deletion can be
+# racing it any more — reading here, after switch_lock, is the only timing
+# that is actually safe to trust through phase 1's first mutation.
+#
+# The reserved-var forgery net is UNAFFECTED by this file running after
+# lock, not before: identity.yml's own _assert_reserved_vars.yml check is
+# always the FIRST task of the whole switch_lock sequence (before
+# switch_validate.yml, before lock.yml, before this file) — a genuine
+# externally-supplied `_switch_coordinator_pre` extra_var is already
+# defined from the very start of the play and gets caught there
+# regardless of where the LEGITIMATE set_fact for that name happens later.
+- name: "Read the coordinator ConfigMap's CURRENT state (a switch targets an ALREADY-launched topology)"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    name: mxl-coordinator
+    namespace: "{{ l3_target_namespace }}"
+  register: _switch_coordinator_pre
+
+- name: "Assert the coordinator ConfigMap exists (if absent, there is
+    nothing to switch — refuse rather than create one; this playbook never
+    provisions infrastructure, only reconfigures an existing one)"
+  ansible.builtin.assert:
+    that:
+      - _switch_coordinator_pre.resources | length > 0
+    fail_msg: >-
+      DMF_L3_SWITCH_REFUSED: detail=switch-coordinator-missing
+      request_id={{ l3_request_id | default('') }}

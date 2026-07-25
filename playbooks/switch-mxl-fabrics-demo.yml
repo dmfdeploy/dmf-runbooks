@@ -56,68 +56,18 @@
         own rescue: sees every failure in the whole span, and the always:
         lock-release is an unconditional backstop)"
       block:
-        - name: "Load l3_run_guard's filter_plugins (l3_validate_topology_params
-            / l3_topology_viewer_projection) WITHOUT running any of its
-            live-cluster tasks (roles/l3_run_guard/tasks/filters_only.yml —
-            same mechanism tests/l3-budget-logic.yml uses). Filter plugins
-            are role-scoped in Ansible: they only become available once the
-            role has been included at least once in the play, and
-            validation must run BEFORE switch_lock (condition 4), so this
-            has to be its own, tasks-free include first."
-          ansible.builtin.include_role:
-            name: l3_run_guard
-            tasks_from: filters_only
-
-        - name: "Validate the received topology_params BEFORE any cluster
-            touch (umbrella #201 WP4b condition 4 — defense in depth,
-            mirrors every other seam: reuses l3_validate_topology_params
-            verbatim, WP3's own filter)"
-          ansible.builtin.set_fact:
-            _switch_validation: "{{ topology_params | l3_validate_topology_params }}"
-
-        - name: Refuse a structurally invalid topology_params (pre-lock, no mutation, nothing to release)
-          ansible.builtin.fail:
-            msg: >-
-              DMF_L3_SWITCH_REFUSED: detail=topology-invalid
-              request_id={{ l3_request_id | default('') }}
-              error={{ _switch_validation.error }}
-          when: not _switch_validation.ok
-
-        - name: "Assert source_instance agrees with topology_params.viewer.source_selection
-            (umbrella #201 WP4b condition 4 — the two must be IDENTICAL by
-            construction; a divergence means a forged/malformed extra_var
-            pair, refuse rather than silently trust either value alone)"
-          ansible.builtin.assert:
-            that:
-              - source_instance == topology_params.viewer.source_selection
-            fail_msg: >-
-              DMF_L3_SWITCH_REFUSED: detail=switch-source-instance-mismatch
-              request_id={{ l3_request_id | default('') }}
-              source_instance={{ source_instance }}
-              viewer.source_selection={{ topology_params.viewer.source_selection }}
-
-        - name: "Assert receiver_instance is a non-empty string (umbrella
-            #201 WP4b — the concrete Helm release this playbook re-points;
-            a blank value would silently target an undefined release name
-            below)"
-          ansible.builtin.assert:
-            that:
-              - (receiver_instance | default('') | trim) != ''
-            fail_msg: >-
-              DMF_L3_SWITCH_REFUSED: detail=switch-receiver-instance-missing
-              request_id={{ l3_request_id | default('') }}
-
-        - name: "Derive the viewer projection for the SWITCH TARGET
-            (umbrella #201 WP4b — reuses l3_topology_viewer_projection
-            verbatim, WP3's own filter; topology_params already carries the
-            reassigned selection, so this is exactly the pure re-derivation
-            tests/l3-topology-logic.yml scenario (m) already proves
-            correct offline)"
-          ansible.builtin.set_fact:
-            _switch_target_projection: "{{ topology_params | l3_topology_viewer_projection }}"
-
-        - name: "L3 switch-lock guard (identity + narrow facility lock
-            acquisition only — umbrella #201 WP4b, roles/l3_run_guard/tasks/switch_lock.yml)"
+        - name: "L3 switch-lock guard (identity -> switch_validate ->
+            facility lock acquisition — umbrella #201 WP4b,
+            roles/l3_run_guard/tasks/switch_lock.yml). qwen1 gate fix
+            round: the topology_params structural check, the
+            source_instance/receiver_instance checks, and the viewer
+            projection all now live INSIDE this include (switch_validate.yml,
+            run after identity's reserved-var assert but before lock.yml) —
+            NOT as playbook-level set_fact tasks before this include, which
+            would make those facts already 'defined' by the time the
+            reserved-var assert runs and trip a forged-reserved-var
+            refusal on every legitimate run (see switch_validate.yml's own
+            header for the full story)."
           ansible.builtin.include_role:
             name: l3_run_guard
             tasks_from: switch_lock
@@ -131,25 +81,16 @@
           vars:
             l3_fault_inject_boundary: post-switch-lock
 
-        - name: "Read the coordinator ConfigMap's CURRENT state (a switch
-            targets an ALREADY-launched topology)"
-          kubernetes.core.k8s_info:
-            api_version: v1
-            kind: ConfigMap
-            name: mxl-coordinator
-            namespace: "{{ l3_target_namespace }}"
-          register: _switch_coordinator_pre
-
-        - name: "Assert the coordinator ConfigMap exists (if absent, there
-            is nothing to switch — refuse rather than create one; this
-            playbook never provisions infrastructure, only reconfigures
-            an existing one)"
-          ansible.builtin.assert:
-            that:
-              - _switch_coordinator_pre.resources | length > 0
-            fail_msg: >-
-              DMF_L3_SWITCH_REFUSED: detail=switch-coordinator-missing
-              request_id={{ l3_request_id | default('') }}
+        - name: "Read + assert-exists the coordinator ConfigMap (umbrella
+            #201 WP4b, roles/l3_run_guard/tasks/switch_read_coordinator.yml)
+            — role-owned, but called HERE (after switch_lock, i.e. after
+            the facility lock is held), not folded into switch_validate.yml's
+            own pre-lock sequence: see that file's own header for why this
+            read is deliberately POST-lock (a real race, not just a
+            reserved-var technicality)."
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: switch_read_coordinator
 
         # ── PHASE 1: QUIESCE — de-select ──────────────────────────────
         - name: "PHASE 1 (quiesce): clear active-source — the WP2
