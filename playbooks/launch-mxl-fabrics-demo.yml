@@ -21,7 +21,12 @@
     # (Was the full chart ref, which doubled the name in the pull URL and
     # could never resolve — latent since the chart was never published.)
     l3_chart_ref: "oci://zot.zot.svc.cluster.local:5000/dmf/charts"
-    l3_chart_version: "0.2.1"
+    # umbrella #201 WP3: bumped 0.2.1 -> 0.4.0 for the WP2 per-source
+    # flow.id/pattern/sourceId values + active-source supervisor gate this
+    # playbook's topology mode now depends on (charts/mxl-fabrics-demo,
+    # dmf-media). dmf-infra's own JT extra_vars pin (0.3.1) and the 630 seed
+    # digest are REPORT-ONLY — out of scope here, already reported.
+    l3_chart_version: "0.4.0"
     l3_chart_local: ""
     l3_chart_name: mxl-fabrics-demo
     mxl_role: source
@@ -66,6 +71,53 @@
       - "image.tag={{ mxl_image_tag }}"
       - "placementMode={{ mxl_placement_mode }}"
       - "nodeAccess.create={{ mxl_node_access_create | bool | lower }}"
+    # umbrella #201 WP3 — topology mode. l3_run_guard's topology_validate.yml
+    # stage activates PURELY on whether a topology_params extra_var was
+    # supplied (fix-round D1 — no separate required-flag; see that file's
+    # own header for the forgery a computed mxl_role-based flag was
+    # vulnerable to). In practice this means the VIEW-role invocation is the
+    # one that carries topology_params end-to-end (spec §3.2/§5): it stays
+    # the run's own scalar l3_release/l3_catalog_key identity ("+1 viewer
+    # release unchanged", the settled decision) AND additionally derives
+    # l3_release_group (the N source releases, umbrella #201 WP3) from
+    # topology_params.sources[]. The SOURCE-role invocation never receives
+    # topology_params at all — mxl-videotestsrc's own JT/catalog entry plays
+    # no further role once a topology launch is live (its sources are
+    # provisioned BY the view-role run instead); its own scalar path is
+    # untouched regardless of what any extra_var claims.
+    # The common per-source chart values EVERY topology source release
+    # needs (mirrors this play's own l3_chart_set_values, minus role/flow.id/
+    # pattern/sourceId — l3_topology_release_group derives those four from
+    # each sources[] entry itself, see roles/l3_run_guard/filter_plugins/
+    # l3_topology.py).
+    l3_topology_source_base_set_values:
+      - "createNamespace=false"
+      - "fabrics.interface={{ mxl_interface }}"
+      - "image.tag={{ mxl_image_tag }}"
+      - "placementMode={{ mxl_placement_mode }}"
+      - "nodeAccess.create={{ mxl_node_access_create | bool | lower }}"
+    # umbrella #201 WP3 fix-round D3 — scalar-source semantics: chart 0.4.0's
+    # source-handshake.yaml gates the initiator on
+    # `active-source == own sourceId` (WP2's new supervisor entry gate), so a
+    # SCALAR (non-topology) source launch — the pre-topology demo's own
+    # walked flow, runbook #203: deploy source, deploy viewer, preview works
+    # — would now park forever with no topology_params in sight, unless THIS
+    # release supplies its own sourceId and self-selects. sourceId=l3_release
+    # is the only sensible identity a scalar source has (there is no
+    # sources[].id to borrow from). Feeds l3_chart_extra_set_values, the
+    # role's own generic extension point (l3_run_guard/defaults/main.yml) —
+    # capacity.yml folds this into the SAME _l3_effective_chart_set_values
+    # every other value rides (D2), so capacity's render and the install
+    # step never diverge on this either. Empty (a no-op) for the view-role
+    # invocation, topology or scalar — sourceId is meaningless for role=view
+    # (chart values.yaml's own comment).
+    l3_chart_extra_set_values: "{{ ['sourceId=' ~ l3_release] if mxl_role == 'source' else [] }}"
+    # umbrella #201 WP3 fix-round D4: opts this launcher into
+    # snapshot.yml's coordinator-state capture + rollback's own restore/
+    # remove — l3_run_guard's role default is empty (a no-op); only mxl
+    # sets this, to the SAME coordinator ConfigMap the launch tasks below
+    # read/patch.
+    l3_coordinator_configmap_name: mxl-coordinator
   tasks:
     - name: "L3 gate through terminal — ONE outer block/rescue/always (R4a
         Backbone, codex round-3 P1-3/P1-11: main.yml's own stages
@@ -127,6 +179,37 @@
           vars:
             l3_fault_inject_boundary: post-first-mutation
 
+        - name: "L3 lock checkpoint before topology release-group provision (umbrella #201 WP3)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: lock_checkpoint
+          when: l3_release_group is defined
+
+        - name: "Include mxl role (provision stage - NetBox catalog entry) for
+            each topology release-group item (umbrella #201 WP3 — one
+            NetBox service per topology source, identity overridden per
+            item; a no-op loop over an undefined list on every non-topology
+            launch, including this same playbook's own source-role
+            invocation)"
+          ansible.builtin.include_role:
+            name: mxl
+          vars:
+            mxl_stage: provision
+            # umbrella #201 WP3 fix-round: NOT l3_catalog_key/l3_release —
+            # those are extra-var-pinned to the SCALAR viewer identity for
+            # this whole play's duration, and extra_vars outrank an
+            # include_role's own `vars:` identically to task vars, so
+            # overriding them per loop iteration is silently a no-op (this
+            # exact bug shipped once — an execution-harness scenario caught
+            # it live, see roles/mxl/defaults/main.yml's own header).
+            # mxl_group_item_identity is the role's OWN, dedicated
+            # per-call override — the only mechanism that actually works.
+            mxl_group_item_identity: "{{ item.netbox_service_name }}"
+          loop: "{{ l3_release_group | default([]) }}"
+          loop_control:
+            label: "{{ item.release }}"
+          when: l3_release_group is defined
+
         # The mxl namespace (and the launcher's RBAC inside it) is pre-created by
         # dmf-infra awx-integration — namespaces are cluster-scoped and the
         # namespaced catalog launcher can neither create nor read them.
@@ -155,6 +238,82 @@
               data: {}
             state: present
           when: _mxl_coordinator_cm.resources | length == 0
+
+        - name: "umbrella #201 WP3 fix-round D3/D4: this release's own
+            active-source candidate write — the topology viewer's SELECTED
+            source id (spec §5 step 3(a))"
+          ansible.builtin.set_fact:
+            _l3_coordinator_active_source_write: "{{ l3_topology_viewer_projection.active_source }}"
+          when: l3_topology_viewer_projection is defined
+
+        - name: "umbrella #201 WP3 fix-round D3: a scalar (non-topology)
+            source launch self-selects its OWN identity so chart 0.4.0's
+            new supervisor gate doesn't park it forever (runbook #203's
+            pre-topology walked flow: deploy source, deploy viewer, preview
+            works). Left UNDEFINED (no write at all, two tasks up above
+            never having matched either) for a scalar VIEW launch —
+            sourceId/active-source are meaningless for role=view."
+          ansible.builtin.set_fact:
+            _l3_coordinator_active_source_write: "{{ l3_release }}"
+          when:
+            - l3_topology_viewer_projection is not defined
+            - mxl_role == 'source'
+
+        - name: "umbrella #201 WP3 fix-round D4: cold-launch-only write
+            discipline — read the coordinator's CURRENT active-source
+            (captured by the read above, BEFORE this run's own mutation)
+            and only ever patch when that key is genuinely ABSENT. A
+            redeploy/relaunch after a live switch (WP4/WP5's
+            SwitchSourceCommand) must never reset the operator's own
+            selection back to this launch's default — the switch is the
+            only place a live active-source value may change once set."
+          ansible.builtin.set_fact:
+            _l3_coordinator_active_source_already_set: >-
+              {{
+                (_mxl_coordinator_cm.resources | length > 0)
+                and ((_mxl_coordinator_cm.resources[0].data['active-source'] | default('')) | trim != '')
+              }}
+
+        - name: "L3 lock checkpoint before mxl-coordinator active-source patch (umbrella #201 WP3)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: lock_checkpoint
+          when: _l3_coordinator_active_source_write is defined
+
+        - name: "Patch mxl-coordinator active-source (umbrella #201 WP3, spec §5
+            step 3(a) — the coordinator's own switch-intent field, keyed by
+            source id; a merge-patch of the SAME ConfigMap the viewer's own
+            sidecar patches target-info/epoch into, so this never clobbers
+            those fields. Only the initial COLD launch (D4 — never when the
+            key is already set, see above): this is NOT the 3-phase
+            quiesce/re-point/select sequencing spec §6.2 requires for a live
+            RECONFIGURE — that is WP4/WP5's SwitchSourceCommand (dmf-cms), a
+            separate concern. A cold launch has no prior selection to
+            quiesce; the source supervisors themselves wait-loop until
+            active-source/target-info/epoch are all present, regardless of
+            the order these launch tasks run in.)"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: mxl-coordinator
+                namespace: "{{ l3_target_namespace }}"
+              data:
+                active-source: "{{ _l3_coordinator_active_source_write }}"
+          when:
+            - _l3_coordinator_active_source_write is defined
+            - not _l3_coordinator_active_source_already_set
+
+        - name: "L3: test-only fault injection boundary (umbrella #201 WP3
+            fix-round finding 7 — no-op on every real run; see
+            fault_inject.yml's own header for post-topology-mutation)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: fault_inject
+          vars:
+            l3_fault_inject_boundary: post-topology-mutation
 
         - name: "L3 lock checkpoint before helm install (R3a-3b)"
           ansible.builtin.include_role:
@@ -196,15 +355,38 @@
             # a latent divergence risk if the two lists were ever edited
             # out of step, beyond the l3_chart_set_values-not-checked gap
             # codex round-5 named explicitly.
-            - name: Install or upgrade MXL Helm release
+            - name: "Install or upgrade MXL Helm release (umbrella #201 WP3 —
+                _l3_effective_chart_set_values, not l3_chart_set_values
+                directly: identical for every non-topology launch; on the
+                view-role topology invocation it also carries this
+                release's own overridden flow.id, see the set_fact above)"
               ansible.builtin.command:
                 argv: >-
                   {{
                     ['helm', 'upgrade', '--install', l3_release,
                      (l3_chart_local | trim if (l3_chart_local | trim) else _mxl_chart_tmp.path ~ '/' ~ l3_chart_name),
                      '-n', l3_target_namespace]
-                    + (l3_chart_set_values | l3_set_flag_argv)
+                    + (_l3_effective_chart_set_values | l3_set_flag_argv)
                   }}
+              changed_when: true
+
+            - name: "Install or upgrade each topology release-group item's MXL
+                Helm release (umbrella #201 WP3 — the SAME pulled/local
+                chart path as the scalar install above, one `helm
+                upgrade --install` per topology source; a no-op loop over
+                an undefined list on every non-topology launch)"
+              ansible.builtin.command:
+                argv: >-
+                  {{
+                    ['helm', 'upgrade', '--install', item.release,
+                     (l3_chart_local | trim if (l3_chart_local | trim) else _mxl_chart_tmp.path ~ '/' ~ l3_chart_name),
+                     '-n', l3_target_namespace]
+                    + (item.chart_set_values | l3_set_flag_argv)
+                  }}
+              loop: "{{ l3_release_group | default([]) }}"
+              loop_control:
+                label: "{{ item.release }}"
+              when: l3_release_group is defined
               changed_when: true
 
             - name: Wait for MXL workload to be Ready
@@ -219,6 +401,26 @@
                 - _mxl_workload.resources[0].status.readyReplicas | default(0) == (_mxl_workload.resources[0].spec.replicas | default(1))
               retries: 30
               delay: 10
+
+            - name: "Wait for each topology release-group item's MXL workload to
+                be Ready (umbrella #201 WP3 — every group item is always
+                role=source, so always an -initiator Deployment; a no-op
+                loop over an undefined list on every non-topology launch)"
+              kubernetes.core.k8s_info:
+                api_version: apps/v1
+                kind: Deployment
+                name: "{{ item.release }}-initiator"
+                namespace: "{{ l3_target_namespace }}"
+              register: _mxl_group_workload
+              until:
+                - _mxl_group_workload.resources | length > 0
+                - _mxl_group_workload.resources[0].status.readyReplicas | default(0) == (_mxl_group_workload.resources[0].spec.replicas | default(1))
+              retries: 30
+              delay: 10
+              loop: "{{ l3_release_group | default([]) }}"
+              loop_control:
+                label: "{{ item.release }}"
+              when: l3_release_group is defined
           always:
             - name: Remove temporary MXL chart directory
               ansible.builtin.file:
@@ -237,6 +439,34 @@
             name: mxl
           vars:
             mxl_stage: configure
+
+        - name: "L3 lock checkpoint before topology release-group configure (umbrella #201 WP3)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: lock_checkpoint
+          when: l3_release_group is defined
+
+        - name: "Include mxl role (configure stage - flip NetBox to active) for
+            each topology release-group item (umbrella #201 WP3 — a no-op
+            loop over an undefined list on every non-topology launch)"
+          ansible.builtin.include_role:
+            name: mxl
+          vars:
+            mxl_stage: configure
+            # umbrella #201 WP3 fix-round: NOT l3_catalog_key/l3_release —
+            # those are extra-var-pinned to the SCALAR viewer identity for
+            # this whole play's duration, and extra_vars outrank an
+            # include_role's own `vars:` identically to task vars, so
+            # overriding them per loop iteration is silently a no-op (this
+            # exact bug shipped once — an execution-harness scenario caught
+            # it live, see roles/mxl/defaults/main.yml's own header).
+            # mxl_group_item_identity is the role's OWN, dedicated
+            # per-call override — the only mechanism that actually works.
+            mxl_group_item_identity: "{{ item.netbox_service_name }}"
+          loop: "{{ l3_release_group | default([]) }}"
+          loop_control:
+            label: "{{ item.release }}"
+          when: l3_release_group is defined
 
         - name: L3 launch success — terminalize snapshot + release lock
           ansible.builtin.include_role:

@@ -49,15 +49,39 @@ netbox_service_parent_device: dmf-traefik
 # mxl_function_key has no effect at all on the NetBox identity while the L3
 # gate is in play, since these read l3_catalog_key directly, not the
 # playbook's own mxl_function_key alias.
-netbox_service_name: "{{ l3_catalog_key | default(mxl_function_key, true) }}"
+#
+# umbrella #201 WP3 fix-round (finding 7's own coverage caught this LIVE):
+# mxl_group_item_identity is the ONLY way a caller can retarget this role's
+# NetBox identity to something OTHER than l3_catalog_key/l3_release for a
+# single include_role call — setting l3_catalog_key/l3_release themselves
+# via that call's own `vars:` does NOT work, because Ansible's variable
+# precedence has extra_vars outrank BOTH task vars AND include_role params
+# identically; l3_catalog_key/l3_release are themselves ALWAYS extra-var-
+# supplied (the view JT's own prebound identity) for the whole play's
+# duration, so a per-iteration `vars: {l3_catalog_key: ...}` on a looped
+# include_role is silently a no-op — confirmed by an execution-harness
+# scenario that expected N NetBox records and got exactly 1. Empty by
+# default (a no-op — every existing caller keeps reading l3_catalog_key/
+# l3_release exactly as before); launch-mxl-fabrics-demo.yml's own
+# topology release-group loop is the only caller that sets it (to each
+# item's own release/netbox_service_name — identical values for a group
+# item, so one override var covers both netbox_service_name and
+# cluster_service below).
+mxl_group_item_identity: ""
+netbox_service_name: >-
+  {{
+    mxl_group_item_identity
+    if (mxl_group_item_identity | default('') | trim) != ''
+    else (l3_catalog_key | default(mxl_function_key, true))
+  }}
 netbox_service_tags:
   - name: "dmf-catalog"
-  - name: "app:{{ l3_catalog_key | default(mxl_function_key, true) }}"
+  - name: "app:{{ netbox_service_name }}"
   - name: "exposure:private"
   - name: "lifecycle:bootstrapped"
 netbox_service_active_tags:
   - name: "dmf-catalog"
-  - name: "app:{{ l3_catalog_key | default(mxl_function_key, true) }}"
+  - name: "app:{{ netbox_service_name }}"
   - name: "exposure:private"
   - name: "lifecycle:active"
 netbox_service_monitoring_tags: >-
@@ -65,15 +89,23 @@ netbox_service_monitoring_tags: >-
 # ADR-0038 Amendment A cluster coords + Amendment B probe_path: dmf-promsd
 # probes http://<cluster_service>.<cluster_namespace>:<cluster_port><probe_path>
 # — the chart's per-release status Service serving /status (JSON 200).
-# R6b: cluster_service/cluster_namespace read l3_release/l3_target_namespace
-# first (same single-source reasoning as netbox_service_name above), falling
-# back to mxl_release/mxl_namespace for standalone use.
+# R6b: cluster_service reads netbox_service_name (itself
+# mxl_group_item_identity-first, l3_release-second — same override as
+# above; a group item's own release name IS its cluster_service, since the
+# chart's per-release status Service is named after the Helm release).
+# cluster_namespace reads l3_target_namespace/mxl_namespace unchanged — the
+# topology group shares ONE namespace with the scalar viewer, never
+# overridden per item.
 netbox_service_monitoring_custom_fields: >-
   {{
     {
       'probe_module': 'http_2xx',
       'probe_path': mxl_probe_path,
-      'cluster_service': l3_release | default(mxl_release, true),
+      'cluster_service': (
+        mxl_group_item_identity
+        if (mxl_group_item_identity | default('') | trim) != ''
+        else (l3_release | default(mxl_release, true))
+      ),
       'cluster_namespace': l3_target_namespace | default(mxl_namespace, true),
       'cluster_port': mxl_cluster_port,
     } if mxl_monitoring_enabled else {}
