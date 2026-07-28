@@ -12,6 +12,12 @@
 # the N source releases + resetting their NetBox records a topology launch
 # created, not just the viewer's own scalar release).
 #
+# Scenario 10 (umbrella #296) covers the capacity gate's own chart-tempdir
+# LIFETIME: the pulled chart must still exist when the topology group-render
+# loop runs. It is the reason tests/harness/stub_helm.sh's `pull`/`template`
+# cases now model real helm's chart-path contract instead of ignoring it —
+# see that file's header and the scenario's own comment block.
+#
 # Unlike l3-playbook-execution.yml's own scenarios, NO l3_fault_inject is
 # needed for the refusal scenarios below — topology_validate.yml's own
 # refusals are DATA-driven (a malformed/missing topology_params, or a
@@ -1547,6 +1553,284 @@
           changed_when: false
           failed_when: false
 
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 10 (umbrella #296): the pulled capacity chart must SURVIVE
+    # until the topology group-render loop has finished. capacity.yml's
+    # chart block used to run its `always:` cleanup (rm -rf the pulled
+    # tempdir) BEFORE the group loop, which reuses the very same
+    # _l3_chart_render_path — invisible on every scalar launch (empty
+    # l3_release_group = no-op loop), fatal on every topology one (live AWX
+    # job 288: `Error: path "/tmp/ansible.XXXl3-capacity-chart/
+    # mxl-fabrics-demo" not found`).
+    #
+    # This scenario differs from scenario 6 in the ONE way that matters:
+    # scenario 6 asserts the group `helm template` calls were ATTEMPTED
+    # (via L3_STUB_HELM_LOG, which stub_helm.sh writes before dispatch, so
+    # a FAILING render is logged identically to a passing one). Here the
+    # subject is that they SUCCEEDED — proved by the run reaching the
+    # post-capacity fault boundary, which is strictly after the whole
+    # capacity stage, and by the absence of helm's own path-not-found
+    # signature anywhere in stdout.
+    #
+    # It only discriminates because stub_helm.sh now models real helm's
+    # chart-path contract (`pull` creates <untardir>/<chart-name>/,
+    # `template` fails closed on a missing path) — with the old
+    # path-blind stub this scenario would pass on the BROKEN capacity.yml
+    # too. Do not relax either stub case (see stub_helm.sh's header).
+    #
+    # l3_override=true for the same reason scenario 6 needs it: the stub
+    # renders an empty manifest, a genuine missing-budget refusal.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(10) capacity chart survives the group render (#296) — start fresh stubs, seed 1 agreeing site, run the REAL playbook with the helm PATH shim"
+      vars:
+        _te10_run_id: "10101010101010101010101010101010"
+      block:
+        - name: "(10) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-te-10.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(10) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-te-10.json]
+          register: _te10_start
+          changed_when: false
+
+        - name: "(10) parse stub URLs"
+          ansible.builtin.set_fact:
+            _te10_k8s_url: "{{ _te10_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _te10_netbox_url: "{{ _te10_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(10) seed the ONE agreeing NetBox site"
+          ansible.builtin.uri:
+            url: "{{ _te10_netbox_url }}/api/dcim/sites/"
+            method: POST
+            body_format: json
+            body: { name: dmf-example-site, slug: dmf-example-site }
+            status_code: [201]
+
+        - name: "(10) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-te-10-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _te10_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(10) create the helm PATH shim dir"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin
+            state: directory
+
+        - name: "(10) symlink helm -> stub_helm.sh"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin/helm
+            src: "{{ l3_harness_dir }}/stub_helm.sh"
+            state: link
+            force: true
+
+        - name: "(10) remove any stale helm invocation log from a prior run"
+          ansible.builtin.file:
+            path: /tmp/l3-te-10-helm.log
+            state: absent
+
+        - name: "(10) run the REAL playbook, mxl_role=view, VALID topology_params,
+            agreeing NetBox site, l3_override for the stub's empty-render,
+            fault at post-capacity (the FIRST boundary strictly after the
+            whole capacity stage — chart pull, scalar render, group render
+            loop, cleanup, budget/fit — and still before any mutation)"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/launch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _te10_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _te10_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - mxl_role=view
+              - -e
+              - l3_release=mxl-videotest-view
+              - -e
+              - l3_catalog_key=mxl-videotest-view
+              - -e
+              - "{{ {'topology_params': _te_j1_topology_params} | to_json }}"
+              - -e
+              - l3_override=true
+              - -e
+              - "l3_override_reason=(10) #296 chart-survival probe - stub helm template always renders empty, expected"
+              - -e
+              - l3_fault_inject=post-capacity
+              - -e
+              - "l3_request_id={{ _te10_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-te-10-kubeconfig.yaml
+            PATH: "/tmp/l3-harness-bin:{{ lookup('env', 'PATH') }}"
+            L3_STUB_HELM_LOG: /tmp/l3-te-10-helm.log
+          register: _te10_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(10) ASSERT: helm's own path-not-found error appears NOWHERE in
+            the run — THE #296 regression signature. On the unfixed
+            capacity.yml this is the first assertion to blow, quoting the
+            exact stderr the live AWX job 288 failed with"
+          ansible.builtin.assert:
+            that:
+              - "'Error: path' not in _te10_run.stdout"
+              # Quoted in full: an unquoted plain scalar containing ": "
+              # is a YAML mapping, not a string, and ansible-core rejects
+              # a non-string conditional outright.
+              - "_te10_run.stdout_lines | select('search', 'Error: path .* not found') | list | length == 0"
+            fail_msg: >-
+              (10) FAIL — umbrella #296 regression: a capacity `helm
+              template` was handed a chart path that no longer exists,
+              i.e. the pulled chart tempdir was cleaned up before the
+              topology group-render loop ran. stdout={{ _te10_run.stdout }}
+
+        - name: "(10) ASSERT: the run reached the post-capacity fault boundary —
+            the whole capacity stage (scalar render AND the group render
+            loop AND cleanup AND the budget/fit evaluation) completed
+            first. This is the positive form of the assertion above: on the
+            unfixed capacity.yml the group render aborts the run before
+            this boundary is ever reached"
+          ansible.builtin.assert:
+            that:
+              - _te10_run.rc != 0
+              - "\"L3_FAULT_INJECT: deliberately raised at boundary 'post-capacity'\" in _te10_run.stdout"
+            fail_msg: >-
+              (10) FAIL — expected the run to fail at the injected
+              post-capacity boundary, proving capacity completed in full.
+              rc={{ _te10_run.rc }} stdout={{ _te10_run.stdout }}
+
+        - name: "(10) read the helm invocation log"
+          ansible.builtin.slurp:
+            src: /tmp/l3-te-10-helm.log
+          register: _te10_helm_log_raw
+
+        - name: "(10) parse helm invocation log lines"
+          ansible.builtin.set_fact:
+            _te10_helm_log_lines: "{{ (_te10_helm_log_raw.content | b64decode).splitlines() }}"
+
+        - name: "(10) ASSERT: the chart was pulled, and `helm template` ran for
+            the scalar viewer AND both topology group items"
+          ansible.builtin.assert:
+            that:
+              - _te10_helm_log_lines | select('match', '^pull ') | list | length == 1
+              - _te10_helm_log_lines | select('match', '^template mxl-videotest-view ') | list | length >= 1
+              - _te10_helm_log_lines | select('match', '^template mxl-videotest-view-source-a ') | list | length >= 1
+              - _te10_helm_log_lines | select('match', '^template mxl-videotest-view-source-b ') | list | length >= 1
+            fail_msg: >-
+              (10) FAIL — expected one `helm pull` and `helm template`
+              calls for the scalar viewer AND both group items; got:
+              {{ _te10_helm_log_lines }}
+
+        - name: "(10) extract the chart path argv element of each capacity render
+            (`template <release> <chart-path> -n <ns> ...`)"
+          ansible.builtin.set_fact:
+            _te10_scalar_path: "{{ (_te10_helm_log_lines | select('match', '^template mxl-videotest-view ') | first).split(' ')[2] }}"
+            _te10_group_a_path: "{{ (_te10_helm_log_lines | select('match', '^template mxl-videotest-view-source-a ') | first).split(' ')[2] }}"
+            _te10_group_b_path: "{{ (_te10_helm_log_lines | select('match', '^template mxl-videotest-view-source-b ') | first).split(' ')[2] }}"
+
+        - name: "(10) ASSERT: every group item rendered from the SAME pulled
+            tempdir the scalar render used (this is the exact resource
+            whose lifetime #296 got wrong — a group render pointed
+            anywhere else, or at a path outside the capacity tempdir,
+            would mean the reuse contract itself had changed)"
+          ansible.builtin.assert:
+            that:
+              - "'l3-capacity-chart' in _te10_scalar_path"
+              - _te10_group_a_path == _te10_scalar_path
+              - _te10_group_b_path == _te10_scalar_path
+            fail_msg: >-
+              (10) FAIL — expected all three capacity renders to share the
+              one pulled chart path. scalar={{ _te10_scalar_path }}
+              source-a={{ _te10_group_a_path }} source-b={{ _te10_group_b_path }}
+
+        - name: "(10) ASSERT: exactly ONE DMF_L3_OUTCOME marker, preflight-error
+            (post-capacity is still strictly PRE-mutation — l3_mutation_started
+            is set by the playbook only after the whole gate returns)"
+          ansible.builtin.set_fact:
+            _te10_markers: "{{ (_te10_run.stdout_lines | select('match', '.*DMF_L3_OUTCOME:.*') | list) }}"
+
+        - name: "(10) assert marker-count + token"
+          ansible.builtin.assert:
+            that:
+              - _te10_markers | length == 1
+              - "'preflight-error' in _te10_markers[0]"
+            fail_msg: "(10) FAIL — expected exactly one preflight-error marker, got: {{ _te10_markers }}"
+
+        - name: "(10) ASSERT: no helm upgrade/install ever ran (the gate refused
+            before any mutation — capacity's own renders are the only helm
+            calls a #296 regression could have been masked behind)"
+          ansible.builtin.assert:
+            that:
+              - _te10_helm_log_lines | select('match', '^upgrade ') | list | length == 0
+            fail_msg: >-
+              (10) FAIL — an upgrade/install call was logged; the fault
+              should have fired before any install. Got: {{ _te10_helm_log_lines }}
+
+        - name: "(10) ASSERT (via real HTTP against the stub): the facility lock was released"
+          ansible.builtin.uri:
+            url: "{{ _te10_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+
+        - name: "(10) ASSERT (via real HTTP against the stub): no NetBox record
+            was created for the viewer or either source (pre-mutation refusal)"
+          ansible.builtin.uri:
+            url: "{{ _te10_netbox_url }}/api/ipam/services/?name={{ item | urlencode }}"
+            method: GET
+            return_content: true
+            validate_certs: false
+          register: _te10_netbox_check
+          loop:
+            - mxl-videotest-view
+            - mxl-videotest-view-source-a
+            - mxl-videotest-view-source-b
+          loop_control:
+            label: "{{ item }}"
+
+        - name: "(10) assert no NetBox records exist"
+          ansible.builtin.assert:
+            that:
+              - (item.json.results | default([])) | length == 0
+            fail_msg: "(10) FAIL — expected no NetBox record for '{{ item.item }}', got {{ item.json.results | default([]) }}"
+          loop: "{{ _te10_netbox_check.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+      always:
+        - name: "(10) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-te-10.json]
+          changed_when: false
+          failed_when: false
+
     - name: ALL L3 TOPOLOGY EXECUTION TESTS PASSED
       ansible.builtin.debug:
         msg: >-
@@ -1600,4 +1884,14 @@
           l3_topology_forbidden_for_this_entry BEFORE lock acquisition,
           with NO topology derivation, NO NetBox record, and NO lock
           ever created, even though the topology_params object itself
-          would otherwise validate cleanly.
+          would otherwise validate cleanly. Scenario 10 (umbrella #296)
+          proves the capacity gate's pulled chart tempdir SURVIVES until
+          the group-render loop has finished: all three renders share the
+          one pulled path, helm's own `Error: path ... not found` appears
+          nowhere, and the run reaches the post-capacity fault boundary —
+          i.e. the whole capacity stage completed. Where scenario 6
+          asserts the group renders were ATTEMPTED (the stub logs argv
+          before dispatch, so a failing render logs identically), this one
+          asserts they SUCCEEDED — the distinction that let every live
+          topology launch fail in the gate while CI stayed green, until
+          stub_helm.sh was taught real helm's chart-path contract.
