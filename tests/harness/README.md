@@ -248,13 +248,25 @@ NetBox service get), and `ansible.builtin.command` (`helm list` via
 
 ## Known gaps / TODOs
 
-- **`helm pull` / `helm template` stubbing is minimal** (`stub_helm.sh`'s
-  `pull` case just creates the requested `--untardir`; `template` echoes an
-  empty YAML document). This is intentional per the harness's own priority
-  order — `capacity.yml`'s chart-fetch-and-render path is lower priority
-  than the lock/snapshot/rollback control flow this harness primarily exists
-  to exercise. A future test playbook driving `capacity.yml` for real will
-  need real fixture chart(s) here.
+- **`helm pull` / `helm template` model the chart PATH contract, not chart
+  CONTENT.** `pull` creates `<untardir>/<chart-name>/Chart.yaml` (chart name
+  from the last path segment of the chart ref) exactly like real
+  `helm pull --untar --untardir`, and `template` **fails closed** with real
+  helm's own `Error: path "<path>" not found` when handed a path that isn't
+  on disk. What it renders is still an empty YAML document — so any scenario
+  reaching a capacity render still needs `l3_override=true` for the
+  resulting (genuine) missing-budget refusal, and a test that needs real
+  demand numbers out of `l3_render_demand` still needs a real fixture chart
+  here.
+
+  These two cases are **paired and must stay paired** — relaxing `template`
+  back to path-blind, or dropping `pull`'s chart subdirectory, re-opens the
+  gap that hid umbrella #296: `capacity.yml` deleted the pulled chart dir
+  before its topology group-render loop ran, and the old path-blind
+  `template` happily "rendered" a directory that no longer existed, so CI
+  stayed green while **every** live topology deploy failed in the gate.
+  `tests/l3-topology-execution.yml` scenario 10 is the regression test and
+  only discriminates because of this hardening.
 - **`stub_k8s_api.py`'s PATCH support is a bonus**, not part of the original
   spec for this harness — added because `_supersede_sweep.yml` (and other
   `kubernetes.core.k8s: state: present` call sites) issue merge-style

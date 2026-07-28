@@ -42,10 +42,27 @@
 #                                       `upgrade`/`install` call each
 #                                       actually received, in call order.
 #
-# TODO: `helm pull`/`helm template` stubbing is intentionally minimal (empty
-# untar dir / empty YAML doc) — capacity.yml's chart-fetch-and-render path is
-# lower priority per the harness spec; flesh out with real fixture charts if
-# capacity.yml control flow needs exercising later.
+# `helm pull`/`helm template` model REAL helm's own chart-path contract
+# (umbrella #296 — this stubbing used to be "intentionally minimal": `pull`
+# only mkdir'd the --untardir, and `template` ignored its chart-path argument
+# entirely and always echoed an empty doc). That minimality is exactly why CI
+# stayed green while EVERY live topology launch failed in the capacity gate:
+# capacity.yml deleted the pulled chart dir before its topology group-render
+# loop ran, and the old `template` case happily "rendered" a directory that no
+# longer existed. The two cases are now paired and must stay paired:
+#   pull     — creates <untardir>/<chart-name>/Chart.yaml, like real
+#              `helm pull --untar --untardir DIR` (chart name derived from the
+#              last path segment of the chart ref).
+#   template — FAILS CLOSED with real helm's own
+#              `Error: path "<path>" not found` on stderr when the chart path
+#              does not exist on disk; empty-manifest stdout on the happy path.
+# Hardening `template` alone would break every scenario that reaches a
+# capacity render (nothing would ever have created the chart subdir); relaxing
+# `template` back to path-blind would silently re-blind the harness to #296.
+# The rendered manifest itself is still an empty YAML doc — a scenario that
+# reaches a capacity render therefore still needs `l3_override=true` for the
+# resulting (genuine) missing-budget refusal; only the chart PATH contract is
+# modelled here, not chart CONTENT.
 
 set -euo pipefail
 
@@ -175,26 +192,61 @@ for item in items:
     ;;
 
   pull)
-    # TODO (low priority, see file header): minimal stub — just create the
-    # requested --untardir so the caller's own cleanup `file: state: absent`
-    # has something real to remove, without producing an actual chart.
+    # `helm pull <ref> --version <v> --untar --untardir <dir> --plain-http`.
+    # Real helm untars the chart into <untardir>/<chart-name>/ — that
+    # subdirectory (NOT the untardir itself) is what every caller then feeds
+    # to `helm template`/`helm upgrade`, so the stub must create it too, or
+    # the hardened `template` case below would reject every render. The
+    # chart name comes from the LAST path segment of the chart ref, which is
+    # how the real registry layout works and exactly what the callers
+    # themselves assume (`<untardir>/{{ l3_chart_name }}`).
     untardir=""
+    chart_ref=""
     shift
     while [ $# -gt 0 ]; do
       case "$1" in
         --untardir) untardir="$2"; shift 2 ;;
-        *) shift ;;
+        --version) shift 2 ;;
+        -*) shift ;;
+        *)
+          if [ -z "$chart_ref" ]; then
+            chart_ref="$1"
+          fi
+          shift
+          ;;
       esac
     done
     if [ -n "$untardir" ]; then
-      mkdir -p "$untardir"
+      chart_name="${chart_ref##*/}"
+      if [ -z "$chart_name" ]; then
+        echo "stub_helm.sh: 'helm pull' could not derive a chart name from ref '$chart_ref'" >&2
+        exit 1
+      fi
+      mkdir -p "$untardir/$chart_name"
+      cat >"$untardir/$chart_name/Chart.yaml" <<EOF
+apiVersion: v2
+name: $chart_name
+description: stub_helm.sh fixture chart (see this script's header)
+type: application
+version: 0.0.0-stub
+appVersion: "0.0.0-stub"
+EOF
     fi
     exit 0
     ;;
 
   template)
-    # TODO (low priority, see file header): echoes a minimal empty YAML
-    # document rather than actually rendering a chart.
+    # `helm template <release> <chart-path> -n <ns> [--set k=v ...]` — so the
+    # chart path is always argv[2] (argv[0] is `template`, argv[1] the release
+    # name). Fail CLOSED when it doesn't exist, byte-for-byte like real helm:
+    # a stub that renders a chart directory that isn't there cannot catch an
+    # ordering bug that deletes it (umbrella #296).
+    chart_path="${3:-}"
+    if [ ! -e "$chart_path" ]; then
+      echo "Error: path \"$chart_path\" not found" >&2
+      exit 1
+    fi
+    # Content is still not modelled — an empty document, see file header.
     echo "# stub_helm.sh: empty rendered manifest"
     exit 0
     ;;

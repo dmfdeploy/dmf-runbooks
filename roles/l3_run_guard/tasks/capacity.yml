@@ -151,7 +151,32 @@
           }}
       register: _l3_helm_template
       changed_when: false
+
+    # umbrella #296: this loop MUST stay INSIDE this block, not after it.
+    # It reuses _l3_chart_render_path — the very directory this block's
+    # own `always` deletes. It originally sat AFTER the block, which was
+    # invisible for every scalar launch (empty l3_release_group = a no-op
+    # loop) and fatal for every topology one: `helm template <group-item>
+    # /tmp/ansible.XXXl3-capacity-chart/<chart>` against an
+    # already-removed directory → `Error: path "..." not found`, refusing
+    # the run in the gate (live AWX job 288, env v5on-r8aw, 2026-07-28).
+    # Cleanup stays in the `always` below so a FAILED scalar render still
+    # removes the tempdir — that fail-safe is why the loop moved to the
+    # cleanup rather than the cleanup moving past the loop.
+    - name: "L3 capacity: render + compute demand for each topology release-group
+        item (umbrella #201 WP3 — reuses the SAME resolved chart path/version
+        the scalar render above just used; a no-op loop over an
+        empty/undefined list for every non-topology launch)"
+      ansible.builtin.include_tasks: _capacity_render_group_item.yml
+      loop: "{{ l3_release_group | default([]) }}"
+      loop_control:
+        loop_var: l3_capacity_group_item
+        label: "{{ l3_capacity_group_item.release }}"
   always:
+    # umbrella #296: everything that reads _l3_chart_render_path must run
+    # ABOVE this line, inside the block — this `always` is the one and only
+    # place the pulled chart is removed, and it fires the moment the block
+    # ends (successfully or not). Do not add chart-consuming tasks after it.
     - name: Remove temporary chart directory (only when one was created)
       ansible.builtin.file:
         path: "{{ _l3_chart_tmp.path | default('') }}"
@@ -166,6 +191,14 @@
 - name: "L3 capacity: run demand from the rendered chart (pure — l3_render_demand, R2a-6a fail-closed)"
   ansible.builtin.set_fact:
     _l3_run_demand_result: "{{ _l3_rendered_manifests | l3_render_demand }}"
+
+- name: "L3 capacity: combine scalar + group demand into one budget total
+    (pure — l3_sum_demand; l3_release_group undefined degrades this to a
+    single-element list, which l3_sum_demand's own docstring guarantees
+    returns the scalar result completely unchanged — byte-identical)"
+  ansible.builtin.set_fact:
+    _l3_combined_demand_result: >-
+      {{ ([_l3_run_demand_result] + (_l3_group_demand_accum | default([]))) | l3_sum_demand }}
 
 # umbrella #275: THIS is the fact identified as the live str-ifying site
 # (job 147, `'>=' not supported between instances of 'int' and 'str'` in
@@ -186,24 +219,6 @@
 # re-hop) — l3_evaluate_fit ALSO now boundary-coerces this input
 # defensively regardless (see l3_budget.py's _coerce_capacity_int), so
 # this is defense-in-depth, not the only fix.
-- name: "L3 capacity: render + compute demand for each topology release-group
-    item (umbrella #201 WP3 — reuses the SAME resolved chart path/version
-    the scalar render above just used; a no-op loop over an
-    empty/undefined list for every non-topology launch)"
-  ansible.builtin.include_tasks: _capacity_render_group_item.yml
-  loop: "{{ l3_release_group | default([]) }}"
-  loop_control:
-    loop_var: l3_capacity_group_item
-    label: "{{ l3_capacity_group_item.release }}"
-
-- name: "L3 capacity: combine scalar + group demand into one budget total
-    (pure — l3_sum_demand; l3_release_group undefined degrades this to a
-    single-element list, which l3_sum_demand's own docstring guarantees
-    returns the scalar result completely unchanged — byte-identical)"
-  ansible.builtin.set_fact:
-    _l3_combined_demand_result: >-
-      {{ ([_l3_run_demand_result] + (_l3_group_demand_accum | default([]))) | l3_sum_demand }}
-
 - name: "L3 capacity: run demand (cpu_m/mem_b pair for l3_evaluate_fit; umbrella
     #201 WP3 — now the COMBINED scalar+group total, see above)"
   ansible.builtin.set_fact:
