@@ -246,6 +246,27 @@
           - _switch_validation is not defined
           - _switch_target_projection is not defined
           - _switch_coordinator_pre is not defined
+          # umbrella #306: switch-mxl-fabrics-demo.yml's own PHASE 2 chart
+          # resolution (roles/l3_run_guard/tasks/switch_resolve_chart.yml)
+          # — the chart ref/name constants, the live-release metadata read
+          # + its parsed form + the version pinned off it, the
+          # --rollback-on-failure/--atomic feature-detect, and the pulled
+          # chart's own tempdir. None of these have a legitimate
+          # caller-input case (unlike l3_chart_ref/l3_chart_name/
+          # l3_chart_version, which ARE legitimate launch/teardown role
+          # params) — a caller extra_var of any of these names could
+          # otherwise forge which registry/chart this pull targets, fake
+          # the version read from the live release, or fake the rollback
+          # flag, since extra_vars outrank set_fact/register identically
+          # to every other name in this file.
+          - _switch_chart_ref is not defined
+          - _switch_chart_name is not defined
+          - _switch_helm_metadata is not defined
+          - _switch_receiver_metadata is not defined
+          - _switch_receiver_chart_version is not defined
+          - _switch_helm_upgrade_help is not defined
+          - _switch_rollback_flag is not defined
+          - _switch_chart_tmp is not defined
         fail_msg: >-
           L3 launcher refused: preflight-error (reserved-var). One or more
           reserved internal variables were supplied as extra_vars — these

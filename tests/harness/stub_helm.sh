@@ -12,15 +12,19 @@
 #   helm list -n <ns> -o json
 #   helm list -n <ns> -q
 #   helm get values <release> -n <ns> -o json
+#   helm get metadata <release> -n <ns> -o json          (umbrella #306)
 #   helm rollback <release> <revision> -n <ns> --wait --timeout 2m
 #   helm uninstall <release> [-n <ns>] [--wait] [--timeout ...] ...   (kubernetes.core.helm module)
 #   helm pull <ref> --version <v> --untar --untardir <dir> --plain-http
 #   helm template <release> <path> -n <ns> [--set k=v ...]
-#   helm upgrade --install <release> <path> -n <ns> [--set k=v ...] ...
-#     (both the raw `ansible.builtin.command` form the mxl launch playbook
-#     uses, and whatever argv `kubernetes.core.helm`'s module invocation
-#     itself shells out to for nmos-cpp/nmos-crosspoint — tolerant of any
-#     flag set/order, always succeeds)
+#   helm upgrade --help                                   (umbrella #306 — feature-detect probe)
+#   helm upgrade [--install] <release> <chart> [-n <ns>] [--set k=v ...] ...
+#     (both the raw `ansible.builtin.command` form the mxl launch/switch
+#     playbooks use, and whatever argv `kubernetes.core.helm`'s module
+#     invocation itself shells out to for nmos-cpp/nmos-crosspoint —
+#     tolerant of flag order and any RECOGNIZED flag, but umbrella #306
+#     hardened this to enforce Helm's own real `[RELEASE] [CHART]`
+#     two-positional contract; see the `upgrade` case below for why)
 #
 # Fixture sourcing (all via environment variables, set by the calling
 # playbook's `environment:` block or shell export before ansible-playbook):
@@ -28,6 +32,15 @@
 #   L3_STUB_HELM_VALUES_<RELEASE>       JSON object, release name upper +
 #                                       dashes->underscores; "__FAIL__" to
 #                                       simulate a fetch failure
+#   L3_STUB_HELM_METADATA_<RELEASE>     JSON object (umbrella #306), same
+#                                       name-derivation as VALUES above;
+#                                       "__FAIL__" to simulate a fetch
+#                                       failure. Unset defaults to
+#                                       {name: <release>, namespace: mxl,
+#                                       chart: mxl-fabrics-demo,
+#                                       version: 0.4.0, revision: 1,
+#                                       status: deployed} — the switch
+#                                       playbook's own expected shape.
 #   L3_STUB_HELM_ROLLBACK_FAIL=1        simulate `helm rollback` failure
 #   L3_STUB_HELM_UNINSTALL_FAIL=1       simulate `helm uninstall` failure
 #   L3_STUB_HELM_UPGRADE_FAIL=1         simulate `helm upgrade` failure (umbrella #201 WP4b)
@@ -63,6 +76,22 @@
 # reaches a capacity render therefore still needs `l3_override=true` for the
 # resulting (genuine) missing-budget refusal; only the chart PATH contract is
 # modelled here, not chart CONTENT.
+#
+# `helm upgrade` models REAL helm's own `[RELEASE] [CHART]` two-positional
+# contract (umbrella #306 — this case used to accept ANY argv with `upgrade`
+# in it, never checking a chart positional was present at all). That
+# permissiveness is exactly why CI stayed green while the live switch
+# playbook's PHASE 2 (a `helm upgrade` call missing the chart argument
+# entirely) failed on every single real invocation, AWX job 321 included —
+# see switch-mxl-fabrics-demo.yml's own PHASE 2 comment. The case below
+# skips every RECOGNIZED flag (and its value, for value-taking flags) and
+# requires at least two positionals to remain; anything else exits 1 with
+# real helm's own `Error: "helm upgrade" requires 2 arguments` message —
+# the exact failure the old stub could never produce. A flag this repo adds
+# later that isn't in either list falls through to the default (assumed to
+# take a value) — most real Helm flags do — so a genuinely boolean addition
+# needs adding to the no-value list below, the same explicit-enumeration
+# discipline _assert_reserved_vars.yml already uses.
 
 set -euo pipefail
 
@@ -123,10 +152,6 @@ for item in items:
 
   get)
     resource="${2:-}"
-    if [ "$resource" != "values" ]; then
-      echo "stub_helm.sh: unsupported 'helm get $resource'" >&2
-      exit 1
-    fi
     release="${3:-}"
     shift 3
     ns=""
@@ -137,14 +162,40 @@ for item in items:
         *) shift ;;
       esac
     done
-    envvar="L3_STUB_HELM_VALUES_$(_envname "$release")"
-    values_json="${!envvar:-{\}}"
-    if [ "$values_json" = "__FAIL__" ]; then
-      echo "stub_helm.sh: simulated 'helm get values' failure for release '$release'" >&2
-      exit 1
-    fi
-    printf '%s\n' "$values_json"
-    exit 0
+    case "$resource" in
+      values)
+        envvar="L3_STUB_HELM_VALUES_$(_envname "$release")"
+        values_json="${!envvar:-{\}}"
+        if [ "$values_json" = "__FAIL__" ]; then
+          echo "stub_helm.sh: simulated 'helm get values' failure for release '$release'" >&2
+          exit 1
+        fi
+        printf '%s\n' "$values_json"
+        exit 0
+        ;;
+      metadata)
+        # umbrella #306 — L3_STUB_HELM_METADATA_<RELEASE>, same
+        # name-derivation as VALUES above. Defaults to the switch
+        # playbook's own expected fixture shape (see this file's header)
+        # so every switch scenario gets a working metadata read for free
+        # without needing to seed one explicitly.
+        envvar="L3_STUB_HELM_METADATA_$(_envname "$release")"
+        metadata_json="${!envvar:-}"
+        if [ "$metadata_json" = "__FAIL__" ]; then
+          echo "stub_helm.sh: simulated 'helm get metadata' failure for release '$release'" >&2
+          exit 1
+        fi
+        if [ -z "$metadata_json" ]; then
+          metadata_json=$(printf '{"name":"%s","namespace":"mxl","chart":"mxl-fabrics-demo","version":"0.4.0","appVersion":"0.4.0-stub","revision":1,"status":"deployed"}' "$release")
+        fi
+        printf '%s\n' "$metadata_json"
+        exit 0
+        ;;
+      *)
+        echo "stub_helm.sh: unsupported 'helm get $resource'" >&2
+        exit 1
+        ;;
+    esac
     ;;
 
   rollback)
@@ -169,25 +220,88 @@ for item in items:
     ;;
 
   upgrade)
-    # `helm upgrade --install <release> <chart> -n <ns> [--set k=v ...]`
+    # `helm upgrade [--install] <release> <chart> -n <ns> [--set k=v ...]`
     # (raw command form) or whatever kubernetes.core.helm's module itself
-    # shells out to. Same tolerant style as `uninstall` above — not strict
-    # about exact flags/order, always succeeds unless
-    # L3_STUB_HELM_UPGRADE_FAIL=1 (umbrella #201 WP4b — the switch
-    # playbook's own re-point step needs to prove a FAILED
-    # `helm upgrade --atomic` propagates correctly; this stub cannot
-    # itself model Helm's own --atomic rollback-to-pre-values behavior,
-    # only that the surrounding playbook correctly requests atomicity
-    # (via L3_STUB_HELM_LOG) and correctly treats a failure as a
-    # failure). $2 is often `--install` rather than the release name, so
-    # this doesn't try to parse it out; callers that need the concrete
-    # argv (e.g. to compare --set/--atomic values against a `template`
-    # call) read it back via L3_STUB_HELM_LOG instead.
+    # shells out to — hardened umbrella #306, see this file's header for
+    # why. `helm upgrade --help` is a separate feature-detection probe
+    # (roles/l3_run_guard/tasks/switch_resolve_chart.yml), handled first
+    # since it carries no positionals at all.
+    shift
+    if [ "${1:-}" = "--help" ]; then
+      # Mirrors a modern Helm advertising --rollback-on-failure (matches
+      # the live EE's own Helm version per umbrella #306's issue), so the
+      # role's feature-detect selects the SAME flag it would against the
+      # real cluster.
+      cat <<'EOF'
+      --rollback-on-failure         if set, will roll back changes made in
+                                     case of failed upgrade. The --wait flag
+                                     will be set automatically if
+                                     --rollback-on-failure is set
+      --atomic                      (deprecated) use --rollback-on-failure
+                                     instead
+EOF
+      exit 0
+    fi
+
+    _l3_stub_upgrade_positionals=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --install|--reuse-values|--reset-values|--reset-then-reuse-values| \
+        --atomic|--rollback-on-failure|--wait|--wait-for-jobs|--force| \
+        --dry-run|--debug|--dependency-update|--disable-openapi-validation| \
+        --skip-crds|--create-namespace|--devel)
+          shift
+          ;;
+        -n|--namespace|--set|--set-string|--set-json|--set-file|-f|--values| \
+        --timeout|--version|--history-max|--description|--kube-context|--kubeconfig)
+          shift 2
+          ;;
+        -*)
+          # An unrecognized flag: assumed to take a value, matching most
+          # real Helm flags. A genuinely boolean addition needs adding to
+          # the no-value list above (see this file's header).
+          shift 2
+          ;;
+        *)
+          _l3_stub_upgrade_positionals+=("$1")
+          shift
+          ;;
+      esac
+    done
+
+    if [ "${#_l3_stub_upgrade_positionals[@]}" -ne 2 ]; then
+      # Real Helm requires EXACTLY two positionals — too few (the umbrella
+      # #306 bug: no chart at all) and too many (a stray extra positional,
+      # e.g. a flag this stub misclassified as taking no value and thus
+      # left a real value token stranded as a positional) both hit the
+      # SAME Cobra-generated error real Helm emits either way.
+      echo 'Error: "helm upgrade" requires 2 arguments' >&2
+      echo '' >&2
+      echo 'Usage:  helm upgrade [RELEASE] [CHART] [flags]' >&2
+      exit 1
+    fi
+
+    _l3_stub_upgrade_release="${_l3_stub_upgrade_positionals[0]}"
+    _l3_stub_upgrade_chart="${_l3_stub_upgrade_positionals[1]}"
+
+    # Local chart path contract (mirrors `template`'s own hardening,
+    # umbrella #296) — only enforced for what is unambiguously a
+    # filesystem path (absolute or relative-dot), never a bare chart
+    # name/OCI ref, which this stub cannot resolve against a registry.
+    case "$_l3_stub_upgrade_chart" in
+      /*|./*|../*)
+        if [ ! -e "$_l3_stub_upgrade_chart" ]; then
+          echo "Error: path \"$_l3_stub_upgrade_chart\" not found" >&2
+          exit 1
+        fi
+        ;;
+    esac
+
     if [ "${L3_STUB_HELM_UPGRADE_FAIL:-0}" = "1" ]; then
       echo "stub_helm.sh: simulated 'helm upgrade' failure" >&2
       exit 1
     fi
-    echo "Release \"${2:-unknown}\" has been upgraded. Happy Helming! (stub)"
+    echo "Release \"$_l3_stub_upgrade_release\" has been upgraded. Happy Helming! (stub)"
     exit 0
     ;;
 

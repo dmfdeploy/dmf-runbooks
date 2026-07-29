@@ -1,0 +1,104 @@
+---
+# umbrella #306 — resolve + pull the receiver's own currently-installed
+# chart. Called from the playbook AFTER switch_lock.yml (facility lock
+# held) and switch_read_coordinator.yml, but BEFORE PHASE 1 (quiesce): a
+# metadata/pull failure here fails through the existing rescue path with
+# the coordinator completely untouched, the same "refuse before mutating
+# anything" posture every other pre-mutation check in this playbook
+# already has.
+#
+# THE BUG THIS REPLACES (umbrella #306): PHASE 2's `helm upgrade` used to
+# omit the CHART positional entirely (`helm upgrade RELEASE --reuse-values
+# ...`) — Helm requires `[RELEASE] [CHART]`, so it failed immediately,
+# every time, before ever reaching the cluster (AWX job 321). This file
+# mirrors the install path's own pull-to-temp-dir pattern (capacity.yml,
+# launch-mxl-fabrics-demo.yml) rather than inlining an `oci://` ref
+# directly into `helm upgrade` — a bare ref selects "latest" unless
+# --version is given, and pulling first here means a registry/pull
+# failure is caught before the coordinator is quiesced.
+#
+# Chart identity is READ FROM THE LIVE RELEASE (`helm get metadata`),
+# NEVER from the l3_chart_version pin: that pin can move independently of
+# this specific release (e.g. umbrella #301's CPU-limit removal in
+# flight), and reusing it here would let an unrelated pin bump silently
+# turn a flow.id-only source switch into a full chart upgrade —
+# re-introducing or removing resource limits nobody asked this operation
+# to touch. `.version` is used, never `.appVersion`.
+#
+# _switch_chart_ref/_switch_chart_name are switch-owned CONSTANTS (not
+# l3_chart_ref/l3_chart_name — those are launch/teardown's own
+# caller-supplied role params, out of this playbook's scope). Reserved in
+# _assert_reserved_vars.yml like every other _switch_* fact below, so a
+# caller extra_var can never forge which registry/chart this pull targets
+# or fake the version/rollback-flag this switch actually uses.
+- name: "L3 switch: switch-owned chart coordinates (constants, reserved — never caller-supplied)"
+  ansible.builtin.set_fact:
+    _switch_chart_ref: "oci://zot.zot.svc.cluster.local:5000/dmf/charts"
+    _switch_chart_name: mxl-fabrics-demo
+
+- name: "L3 switch: read the receiver's OWN currently-installed chart metadata (never the l3_chart_version pin)"
+  ansible.builtin.command:
+    argv:
+      - helm
+      - get
+      - metadata
+      - "{{ receiver_instance }}"
+      - -n
+      - "{{ l3_target_namespace }}"
+      - -o
+      - json
+  changed_when: false
+  register: _switch_helm_metadata
+
+- name: "L3 switch: parse the receiver's chart metadata"
+  ansible.builtin.set_fact:
+    _switch_receiver_metadata: "{{ _switch_helm_metadata.stdout | from_json }}"
+
+- name: "L3 switch: assert the receiver's live metadata identifies the EXPECTED release/chart before pulling anything (a mismatch means receiver_instance does not point at what this playbook thinks it owns)"
+  ansible.builtin.assert:
+    that:
+      - _switch_receiver_metadata.name == receiver_instance
+      - _switch_receiver_metadata.namespace == l3_target_namespace
+      - _switch_receiver_metadata.chart == _switch_chart_name
+      - _switch_receiver_metadata.status == 'deployed'
+      - (_switch_receiver_metadata.version | default('') | trim) != ''
+    fail_msg: >-
+      DMF_L3_SWITCH_REFUSED: detail=switch-chart-metadata-mismatch
+      request_id={{ l3_request_id | default('') }}
+      receiver_instance={{ receiver_instance }}
+      got={{ _switch_receiver_metadata }}
+
+- name: "L3 switch: the receiver's OWN installed chart version — pins this switch's pull + upgrade, never l3_chart_version"
+  ansible.builtin.set_fact:
+    _switch_receiver_chart_version: "{{ _switch_receiver_metadata.version }}"
+
+- name: "L3 switch: feature-detect --rollback-on-failure vs --atomic (Helm 4 deprecates --atomic in favor of --rollback-on-failure, warning-only for now; an older Helm binary lacks the new flag)"
+  ansible.builtin.command:
+    argv: [helm, upgrade, --help]
+  changed_when: false
+  register: _switch_helm_upgrade_help
+
+- name: "L3 switch: select the rollback flag"
+  ansible.builtin.set_fact:
+    _switch_rollback_flag: "{{ '--rollback-on-failure' if '--rollback-on-failure' in _switch_helm_upgrade_help.stdout else '--atomic' }}"
+
+- name: "L3 switch: temporary chart directory for the pulled receiver chart — NOT cleaned up here; its lifetime spans PHASE 2's re-point, well past this task file, so removal lives in the playbook's own outer always: (mirrors umbrella #296's own tempdir-lifetime lesson: whatever consumes the path must run before it is ever removed)"
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: l3-switch-chart
+  register: _switch_chart_tmp
+  changed_when: false
+
+- name: "L3 switch: pull the receiver's own installed chart version to the temp dir (same pull-before-mutation ordering as capacity.yml's install-time gate — a registry/pull failure is caught here, before ANY coordinator mutation)"
+  ansible.builtin.command:
+    argv:
+      - helm
+      - pull
+      - "{{ _switch_chart_ref }}/{{ _switch_chart_name }}"
+      - --version
+      - "{{ _switch_receiver_chart_version }}"
+      - --untar
+      - --untardir
+      - "{{ _switch_chart_tmp.path }}"
+      - --plain-http
+  changed_when: false

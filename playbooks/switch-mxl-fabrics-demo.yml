@@ -92,6 +92,17 @@
             name: l3_run_guard
             tasks_from: switch_read_coordinator
 
+        - name: "L3 switch: resolve + pull the receiver's own installed chart
+            (umbrella #306, roles/l3_run_guard/tasks/switch_resolve_chart.yml)
+            — under the held facility lock, but BEFORE any coordinator
+            mutation, so a metadata/pull failure fails through the rescue
+            path below with the coordinator completely untouched. See that
+            file's own header for why chart identity is read from the live
+            release rather than the l3_chart_version pin."
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: switch_resolve_chart
+
         # ── PHASE 1: QUIESCE — de-select ──────────────────────────────
         - name: "PHASE 1 (quiesce): clear active-source — the WP2
             supervisor's own continuous re-check sees this mismatch and
@@ -132,24 +143,34 @@
             l3_fault_inject_boundary: post-switch-quiesce
 
         # ── PHASE 2: RE-POINT — restart the viewer at the new flow.id ──
-        - name: "PHASE 2 (re-point): re-point + restart the viewer — ATOMIC
-            (umbrella #201 WP4b condition 1): --atomic makes Helm roll
-            THIS release back to its PRE-switch values on any failure (bad
-            values, timeout, readiness failure) rather than leaving a
-            half-applied release. active-source is ALREADY cleared (phase
-            1), so a failed re-point still leaves a clean, zero-transmitter
-            state, never a half-switched one."
+        - name: "PHASE 2 (re-point): re-point + restart the viewer — atomic
+            rollback on failure (umbrella #201 WP4b condition 1, chart arg
+            fixed by umbrella #306): the selected rollback flag
+            (_switch_rollback_flag) makes Helm roll THIS release back to
+            its PRE-switch values on any failure (bad values, timeout,
+            readiness failure) rather than leaving a half-applied release.
+            active-source is ALREADY cleared (phase 1), so a failed
+            re-point still leaves a clean, zero-transmitter state, never a
+            half-switched one. The chart positional is the LOCAL path
+            switch_resolve_chart.yml already pulled (same installed
+            version the release is on, never l3_chart_version) — Helm's
+            own `[RELEASE] [CHART]` contract requires it; omitting it was
+            umbrella #306's entire bug. --reuse-values (never
+            --reset-values/--reset-then-reuse-values) preserves every
+            value the L3 launcher injected at install time; only flow.id
+            is overridden here."
           ansible.builtin.command:
             argv:
               - helm
               - upgrade
               - "{{ receiver_instance }}"
-              - --reuse-values
+              - "{{ _switch_chart_tmp.path }}/{{ _switch_chart_name }}"
               - -n
               - "{{ l3_target_namespace }}"
+              - --reuse-values
               - --set
               - "flow.id={{ _switch_target_projection.flow_id }}"
-              - --atomic
+              - "{{ _switch_rollback_flag }}"
               - --wait
               - --timeout
               - "{{ l3_switch_viewer_repoint_timeout }}"
@@ -213,6 +234,20 @@
               state; no automatic rollback runs here, operator
               retry/rollback required.
       always:
+        - name: "L3 switch: remove the temporary chart directory (umbrella
+            #306) — idempotent, a no-op when switch_resolve_chart.yml never
+            ran (e.g. a pre-lock refusal in scenarios 1-3). Lives in this
+            outer always:, not switch_resolve_chart.yml's own task file,
+            because the pulled chart's lifetime spans PHASE 2's re-point,
+            well past that file — removing it any earlier would delete the
+            chart PHASE 2 still needs (umbrella #296's own lesson, applied
+            here)."
+          ansible.builtin.file:
+            path: "{{ _switch_chart_tmp.path | default('') }}"
+            state: absent
+          changed_when: false
+          when: _switch_chart_tmp is defined
+
         - name: "L3 switch release — idempotent lock-release backstop
             (mirrors launch/teardown's own release.yml backstop; a no-op
             if the block or rescue above already released it)"

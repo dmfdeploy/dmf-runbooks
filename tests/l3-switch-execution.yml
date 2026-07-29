@@ -20,11 +20,32 @@
 #
 # Atomic re-point (claude1's own condition 1): scenario 5 simulates a
 # `helm upgrade` failure via L3_STUB_HELM_UPGRADE_FAIL — the stub cannot
-# itself model Helm's OWN --atomic rollback-to-pre-values guarantee (that
-# is Helm's own tested behavior, not code this repo owns); what IS proven
-# here is that the playbook genuinely REQUESTS atomicity (via the logged
-# argv) and correctly treats a failed re-point as a failure — never
-# advancing to phase 3, never masking it as success.
+# itself model Helm's OWN --atomic/--rollback-on-failure rollback-to-pre-
+# values guarantee (that is Helm's own tested behavior, not code this repo
+# owns); what IS proven here is that the playbook genuinely REQUESTS a
+# rollback-on-failure mode (via the logged argv) and correctly treats a
+# failed re-point as a failure — never advancing to phase 3, never masking
+# it as success.
+#
+# umbrella #306 (chart-argument fix): PHASE 2's `helm upgrade` used to omit
+# the CHART positional entirely — a structurally invalid command that
+# stub_helm.sh's OLD, permissive `upgrade` case could never catch (it never
+# checked for a chart positional at all), which is exactly how AWX job 321
+# became this playbook's first-ever, and first-ever FAILED, live
+# invocation. The fix adds a chart-resolution step
+# (switch_resolve_chart.yml) between switch_read_coordinator and PHASE 1:
+# `helm get metadata` (never the l3_chart_version pin) followed by
+# `helm pull` to a temp dir, both now visible in the helm invocation log
+# BEFORE phase 1 ever runs. Scenario 4b's own assertions below had to
+# change for exactly this reason — "no helm log exists" stopped being true
+# the moment resolution moved before quiesce, even though phase 2 (the
+# actual re-point) still hasn't run at that boundary. stub_helm.sh's own
+# `upgrade` case is now hardened to enforce Helm's real `[RELEASE] [CHART]`
+# two-positional contract (rejecting exactly the shape that broke AWX job
+# 321) and its `--help` output now feature-detects to
+# --rollback-on-failure — scenarios 4c/5/6 assert the resulting argv
+# carries the pulled tempdir chart path, --reuse-values, no reset-mode
+# flag, and --rollback-on-failure.
 #
 # Run:  ansible-playbook tests/l3-switch-execution.yml
 
@@ -49,6 +70,114 @@
         source_selection: source-b
 
   tasks:
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 0: stub_helm.sh's own `upgrade` argv contract (umbrella #306
+    # fix-round 1, codex MAJOR) — a direct probe against the stub script
+    # itself, no stub K8s/NetBox servers needed. Real Helm's `helm upgrade`
+    # requires EXACTLY two positionals (RELEASE, CHART); stub_helm.sh must
+    # reject both too few (the original umbrella #306 bug shape — no chart
+    # at all) and too many (a stray extra positional — e.g. a flag this
+    # stub misclassifies as taking no value, stranding its real value as
+    # an extra positional; codex's own adversarial probe evidence: real
+    # Helm rc=1 on a 3-positional argv, the pre-fix-round-1 stub rc=0'd
+    # it) with the SAME real-Helm error, and accept exactly two.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(0) stub_helm.sh upgrade argv contract — too few positionals (the original umbrella #306 bug shape) rejected rc=1"
+      ansible.builtin.command:
+        argv:
+          - "{{ l3_harness_dir }}/stub_helm.sh"
+          - upgrade
+          - mxl-videotest-view
+          - --reuse-values
+          - -n
+          - mxl
+          - --set
+          - flow.id=b0ae9cba-a989-4568-ac96-8bd19272c966
+          - --rollback-on-failure
+          - --wait
+          - --timeout
+          - 90s
+      register: _se0_too_few
+      changed_when: false
+      failed_when: false
+
+    - name: "(0) assert too-few positionals rejected"
+      ansible.builtin.assert:
+        that:
+          - _se0_too_few.rc == 1
+          - "'requires 2 arguments' in _se0_too_few.stderr"
+        fail_msg: "(0) FAIL — expected stub_helm.sh to reject a no-chart upgrade argv with rc=1. rc={{ _se0_too_few.rc }} stderr={{ _se0_too_few.stderr }}"
+
+    - name: "(0) create a real local chart dir for the two probes below (stub_helm.sh's own path-existence check needs a real path)"
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: l3-se0-chart
+      register: _se0_chart_tmp
+
+    - name: "(0) create the chart subdirectory"
+      ansible.builtin.file:
+        path: "{{ _se0_chart_tmp.path }}/mxl-fabrics-demo"
+        state: directory
+
+    - name: "(0) stub_helm.sh upgrade argv contract — a STRAY THIRD positional (codex fix-round-1 MAJOR adversarial finding) rejected rc=1"
+      ansible.builtin.command:
+        argv:
+          - "{{ l3_harness_dir }}/stub_helm.sh"
+          - upgrade
+          - mxl-videotest-view
+          - "{{ _se0_chart_tmp.path }}/mxl-fabrics-demo"
+          - --reuse-values
+          - stray-positional
+          - -n
+          - mxl
+          - --set
+          - flow.id=b0ae9cba-a989-4568-ac96-8bd19272c966
+          - --rollback-on-failure
+          - --wait
+          - --timeout
+          - 90s
+      register: _se0_too_many
+      changed_when: false
+      failed_when: false
+
+    - name: "(0) assert stray-third-positional rejected"
+      ansible.builtin.assert:
+        that:
+          - _se0_too_many.rc == 1
+          - "'requires 2 arguments' in _se0_too_many.stderr"
+        fail_msg: "(0) FAIL — expected stub_helm.sh to reject a 3-positional upgrade argv with rc=1. rc={{ _se0_too_many.rc }} stderr={{ _se0_too_many.stderr }}"
+
+    - name: "(0) stub_helm.sh upgrade argv contract — the CORRECT two-positional shape accepted rc=0"
+      ansible.builtin.command:
+        argv:
+          - "{{ l3_harness_dir }}/stub_helm.sh"
+          - upgrade
+          - mxl-videotest-view
+          - "{{ _se0_chart_tmp.path }}/mxl-fabrics-demo"
+          - -n
+          - mxl
+          - --reuse-values
+          - --set
+          - flow.id=b0ae9cba-a989-4568-ac96-8bd19272c966
+          - --rollback-on-failure
+          - --wait
+          - --timeout
+          - 90s
+      register: _se0_correct
+      changed_when: false
+      failed_when: false
+
+    - name: "(0) assert the correct two-positional shape is accepted"
+      ansible.builtin.assert:
+        that:
+          - _se0_correct.rc == 0
+        fail_msg: "(0) FAIL — expected the correct two-positional upgrade argv to succeed. rc={{ _se0_correct.rc }} stdout={{ _se0_correct.stdout }} stderr={{ _se0_correct.stderr }}"
+
+    - name: "(0) remove the probe chart tempdir"
+      ansible.builtin.file:
+        path: "{{ _se0_chart_tmp.path }}"
+        state: absent
+
     # ════════════════════════════════════════════════════════════════════
     # Scenario 1: malformed topology_params (bad schema_version) -> refused
     # BEFORE any lock acquisition (no mutation, nothing to release).
@@ -421,6 +550,19 @@
             state: link
             force: true
 
+        - name: "(4) remove any stale helm invocation logs from a prior run
+            (umbrella #306 — 4b/4c now write real helm calls before their
+            own fault fires, so a leftover log from an earlier LOCAL run
+            would silently accumulate across invocations; L3_STUB_HELM_LOG
+            is always appended, never truncated)"
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /tmp/l3-se-4a-helm.log
+            - /tmp/l3-se-4b-helm.log
+            - /tmp/l3-se-4c-helm.log
+
         # ── 4a: fault at post-switch-lock (before ANY coordinator mutation)
         - name: "(4a) run the REAL switch playbook, fault at post-switch-lock"
           ansible.builtin.command:
@@ -551,16 +693,25 @@
               - "'epoch' not in (_se4b_coordinator.json.data | default({}))"
             fail_msg: "(4b) FAIL — expected a fully quiesced coordinator (phase 1 complete). got={{ _se4b_coordinator.json.data }}"
 
-        - name: "(4b) ASSERT: no helm upgrade call was made (phase 2 never reached)"
-          ansible.builtin.stat:
-            path: /tmp/l3-se-4b-helm.log
-          register: _se4b_helm_log_stat
+        - name: "(4b) ASSERT: chart resolution (umbrella #306's switch_resolve_chart.yml)
+            ran — it sits BEFORE phase 1 quiesce, so a fault at
+            post-switch-quiesce fires strictly after it — but NO helm
+            upgrade call was made (phase 2 never reached)"
+          ansible.builtin.slurp:
+            src: /tmp/l3-se-4b-helm.log
+          register: _se4b_helm_log_raw
 
-        - name: "(4b) assert no helm log exists"
+        - name: "(4b) parse helm invocation log lines"
+          ansible.builtin.set_fact:
+            _se4b_helm_log_lines: "{{ (_se4b_helm_log_raw.content | b64decode).split('\n') | select('!=', '') | list }}"
+
+        - name: "(4b) assert exactly one metadata read, one pull, and ZERO upgrade calls"
           ansible.builtin.assert:
             that:
-              - not _se4b_helm_log_stat.stat.exists
-            fail_msg: "(4b) FAIL — expected zero helm invocations before phase 2, got a log file"
+              - (_se4b_helm_log_lines | select('match', '^get metadata ') | list | length) == 1
+              - (_se4b_helm_log_lines | select('match', '^pull ') | list | length) == 1
+              - (_se4b_helm_log_lines | select('match', '^upgrade ') | reject('equalto', 'upgrade --help') | list | length) == 0
+            fail_msg: "(4b) FAIL — expected exactly one metadata read + one pull and zero upgrade calls before phase 2. got={{ _se4b_helm_log_lines }}"
 
         - name: "(4b) ASSERT (via real HTTP against the stub): the facility lock was released"
           ansible.builtin.uri:
@@ -635,22 +786,60 @@
               - _se4c_run.rc != 0
             fail_msg: "(4c) FAIL — exited 0. stdout={{ _se4c_run.stdout }}"
 
-        - name: "(4c) ASSERT: the viewer's helm release WAS re-pointed
-            (phase 2 ran), with --atomic and the target source's flow.id
-            (proves both the re-point AND its atomicity request happened
-            before the fault, not after)"
+        - name: "(4c) ASSERT: the receiver's chart was resolved (umbrella #306
+            — get metadata + pull, BEFORE the re-point) and the viewer's
+            helm release WAS re-pointed (phase 2 ran) with the pulled
+            tempdir chart arg, --reuse-values, no reset-mode flag, the
+            selected rollback flag, and the target source's flow.id
+            (proves resolution + re-point + its rollback-on-failure
+            request all happened before the fault, not after)"
           ansible.builtin.slurp:
             src: /tmp/l3-se-4c-helm.log
           register: _se4c_helm_log_raw
 
-        - name: "(4c) assert helm upgrade argv"
+        - name: "(4c) parse + isolate the metadata/pull/upgrade invocation lines"
+          ansible.builtin.set_fact:
+            _se4c_helm_log_lines: "{{ (_se4c_helm_log_raw.content | b64decode).split('\n') | select('!=', '') | list }}"
+
+        - name: "(4c) split by invocation kind"
+          ansible.builtin.set_fact:
+            _se4c_metadata_lines: "{{ _se4c_helm_log_lines | select('match', '^get metadata ') | list }}"
+            _se4c_pull_lines: "{{ _se4c_helm_log_lines | select('match', '^pull ') | list }}"
+            _se4c_upgrade_lines: "{{ _se4c_helm_log_lines | select('match', '^upgrade ') | reject('equalto', 'upgrade --help') | list }}"
+
+        - name: "(4c) assert exactly one metadata read, one pull, one upgrade"
           ansible.builtin.assert:
             that:
-              - "'upgrade mxl-videotest-view --reuse-values -n mxl --set flow.id=b0ae9cba-a989-4568-ac96-8bd19272c966 --atomic' in (_se4c_helm_log_raw.content | b64decode)"
+              - _se4c_metadata_lines | length == 1
+              - _se4c_pull_lines | length == 1
+              - _se4c_upgrade_lines | length == 1
+            fail_msg: "(4c) FAIL — expected exactly one metadata/pull/upgrade call each. got={{ _se4c_helm_log_lines }}"
+
+        - name: "(4c) assert the metadata read targeted the receiver (never l3_chart_version)"
+          ansible.builtin.assert:
+            that:
+              - _se4c_metadata_lines[0] == 'get metadata mxl-videotest-view -n mxl -o json'
+            fail_msg: "(4c) FAIL — unexpected 'helm get metadata' argv: {{ _se4c_metadata_lines[0] }}"
+
+        - name: "(4c) assert the pull used the receiver's OWN installed version (the default stub fixture, 0.4.0)"
+          ansible.builtin.assert:
+            that:
+              - _se4c_pull_lines[0] is match('^pull oci://zot\.zot\.svc\.cluster\.local:5000/dmf/charts/mxl-fabrics-demo --version 0\.4\.0 --untar --untardir \S+ --plain-http$')
+            fail_msg: "(4c) FAIL — unexpected 'helm pull' argv: {{ _se4c_pull_lines[0] }}"
+
+        - name: "(4c) extract the pulled tempdir path (random per run — read back from the pull argv itself, not hardcoded)"
+          ansible.builtin.set_fact:
+            _se4c_chart_tmp: "{{ (_se4c_pull_lines[0] | regex_search('--untardir (\\S+)', '\\1')) | first }}"
+
+        - name: "(4c) assert the upgrade argv carries the pulled tempdir chart path, --reuse-values, no reset-mode flag, --rollback-on-failure, and the target source's flow.id"
+          ansible.builtin.assert:
+            that:
+              - _se4c_upgrade_lines[0] == ('upgrade mxl-videotest-view ' ~ _se4c_chart_tmp ~ '/mxl-fabrics-demo -n mxl --reuse-values --set flow.id=b0ae9cba-a989-4568-ac96-8bd19272c966 --rollback-on-failure --wait --timeout 90s')
             fail_msg: >-
-              (4c) FAIL — expected the viewer's helm upgrade with --atomic
-              and the target source's own flow.id. Got:
-              {{ _se4c_helm_log_raw.content | b64decode }}
+              (4c) FAIL — expected the viewer's helm upgrade to carry the
+              pulled tempdir chart path, --reuse-values,
+              --rollback-on-failure, and the target source's own flow.id,
+              with no reset-mode flag. Got: {{ _se4c_upgrade_lines[0] }}
 
         - name: "(4c) ASSERT (via real HTTP against the stub): active-source
             is STILL absent (phase 3/select never ran — proves select is
@@ -682,14 +871,14 @@
           failed_when: false
 
     # ════════════════════════════════════════════════════════════════════
-    # Scenario 5: a genuinely FAILED helm upgrade (--atomic requested,
-    # simulated failure) — proves the failure propagates, active-source
-    # stays cleared (never selected), and the lock is released. This
-    # cannot itself prove Helm's own --atomic rollback-to-pre-values
+    # Scenario 5: a genuinely FAILED helm upgrade (--rollback-on-failure
+    # requested, simulated failure) — proves the failure propagates,
+    # active-source stays cleared (never selected), and the lock is
+    # released. This cannot itself prove Helm's own rollback-on-failure
     # behavior (see this file's own header) — only that this playbook
     # correctly requests it and correctly treats a failure as a failure.
     # ════════════════════════════════════════════════════════════════════
-    - name: "(5) failed helm re-point (--atomic requested, simulated failure) — start fresh stubs, seed an already-running topology, run the REAL switch playbook"
+    - name: "(5) failed helm re-point (--rollback-on-failure requested, simulated failure) — start fresh stubs, seed an already-running topology, run the REAL switch playbook"
       vars:
         _se5_run_id: "55555555555555555555555555555555"
       block:
@@ -759,6 +948,11 @@
             state: link
             force: true
 
+        - name: "(5) remove any stale helm invocation log from a prior run"
+          ansible.builtin.file:
+            path: /tmp/l3-se-5-helm.log
+            state: absent
+
         - name: "(5) run the REAL switch playbook, helm upgrade fixtured to fail"
           ansible.builtin.command:
             argv:
@@ -797,16 +991,45 @@
               - _se5_run.rc != 0
             fail_msg: "(5) FAIL — exited 0 despite a fixtured helm upgrade failure. stdout={{ _se5_run.stdout }}"
 
-        - name: "(5) ASSERT: helm upgrade WAS attempted with --atomic (the playbook genuinely requests atomicity, even though this attempt failed)"
+        - name: "(5) ASSERT: chart resolution (umbrella #306) ran and helm
+            upgrade WAS attempted with the pulled tempdir chart arg,
+            --reuse-values, no reset-mode flag, and the selected rollback
+            flag (the playbook genuinely requests a rollback-on-failure
+            mode, even though this attempt failed)"
           ansible.builtin.slurp:
             src: /tmp/l3-se-5-helm.log
           register: _se5_helm_log_raw
 
-        - name: "(5) assert --atomic was requested"
+        - name: "(5) parse + isolate the metadata/pull/upgrade invocation lines"
+          ansible.builtin.set_fact:
+            _se5_helm_log_lines: "{{ (_se5_helm_log_raw.content | b64decode).split('\n') | select('!=', '') | list }}"
+
+        - name: "(5) split by invocation kind"
+          ansible.builtin.set_fact:
+            _se5_metadata_lines: "{{ _se5_helm_log_lines | select('match', '^get metadata ') | list }}"
+            _se5_pull_lines: "{{ _se5_helm_log_lines | select('match', '^pull ') | list }}"
+            _se5_upgrade_lines: "{{ _se5_helm_log_lines | select('match', '^upgrade ') | reject('equalto', 'upgrade --help') | list }}"
+
+        - name: "(5) assert exactly one metadata read, one pull, one (failed) upgrade attempt"
           ansible.builtin.assert:
             that:
-              - "'upgrade mxl-videotest-view --reuse-values -n mxl --set flow.id=b0ae9cba-a989-4568-ac96-8bd19272c966 --atomic' in (_se5_helm_log_raw.content | b64decode)"
-            fail_msg: "(5) FAIL — expected the failed upgrade attempt to have requested --atomic. Got: {{ _se5_helm_log_raw.content | b64decode }}"
+              - _se5_metadata_lines | length == 1
+              - _se5_pull_lines | length == 1
+              - _se5_upgrade_lines | length == 1
+            fail_msg: "(5) FAIL — expected exactly one metadata/pull/upgrade call each. got={{ _se5_helm_log_lines }}"
+
+        - name: "(5) extract the pulled tempdir path (random per run — read back from the pull argv itself, not hardcoded)"
+          ansible.builtin.set_fact:
+            _se5_chart_tmp: "{{ (_se5_pull_lines[0] | regex_search('--untardir (\\S+)', '\\1')) | first }}"
+
+        - name: "(5) assert the failed upgrade attempt still carried the pulled tempdir chart path, --reuse-values, no reset-mode flag, and --rollback-on-failure"
+          ansible.builtin.assert:
+            that:
+              - _se5_upgrade_lines[0] == ('upgrade mxl-videotest-view ' ~ _se5_chart_tmp ~ '/mxl-fabrics-demo -n mxl --reuse-values --set flow.id=b0ae9cba-a989-4568-ac96-8bd19272c966 --rollback-on-failure --wait --timeout 90s')
+            fail_msg: >-
+              (5) FAIL — expected the failed upgrade attempt to have
+              requested the pulled tempdir chart path, --reuse-values, and
+              --rollback-on-failure. Got: {{ _se5_upgrade_lines[0] }}
 
         - name: "(5) ASSERT (via real HTTP against the stub): active-source
             is STILL absent (phase 1 quiesced it, the failed phase 2 never
@@ -913,6 +1136,11 @@
             state: link
             force: true
 
+        - name: "(6) remove any stale helm invocation log from a prior run"
+          ansible.builtin.file:
+            path: /tmp/l3-se-6-helm.log
+            state: absent
+
         - name: "(6) run the REAL switch playbook to completion (no faults, no failures)"
           ansible.builtin.command:
             argv:
@@ -950,16 +1178,67 @@
               - _se6_run.rc == 0
             fail_msg: "(6) FAIL — expected a clean success. stdout={{ _se6_run.stdout }}"
 
-        - name: "(6) ASSERT: helm upgrade ran with --atomic and the target source's own flow.id"
+        - name: "(6) ASSERT: chart resolution ran (umbrella #306 — get metadata
+            + pull) and helm upgrade ran with the pulled tempdir chart
+            arg, --reuse-values, no reset-mode flag, the selected rollback
+            flag, and the target source's own flow.id"
           ansible.builtin.slurp:
             src: /tmp/l3-se-6-helm.log
           register: _se6_helm_log_raw
 
+        - name: "(6) parse + isolate the metadata/pull/upgrade invocation lines"
+          ansible.builtin.set_fact:
+            _se6_helm_log_lines: "{{ (_se6_helm_log_raw.content | b64decode).split('\n') | select('!=', '') | list }}"
+
+        - name: "(6) split by invocation kind"
+          ansible.builtin.set_fact:
+            _se6_metadata_lines: "{{ _se6_helm_log_lines | select('match', '^get metadata ') | list }}"
+            _se6_pull_lines: "{{ _se6_helm_log_lines | select('match', '^pull ') | list }}"
+            _se6_upgrade_lines: "{{ _se6_helm_log_lines | select('match', '^upgrade ') | reject('equalto', 'upgrade --help') | list }}"
+
+        - name: "(6) assert exactly one metadata read, one pull, one upgrade"
+          ansible.builtin.assert:
+            that:
+              - _se6_metadata_lines | length == 1
+              - _se6_pull_lines | length == 1
+              - _se6_upgrade_lines | length == 1
+            fail_msg: "(6) FAIL — expected exactly one metadata/pull/upgrade call each. got={{ _se6_helm_log_lines }}"
+
+        - name: "(6) assert the metadata read targeted the receiver (never l3_chart_version)"
+          ansible.builtin.assert:
+            that:
+              - _se6_metadata_lines[0] == 'get metadata mxl-videotest-view -n mxl -o json'
+            fail_msg: "(6) FAIL — unexpected 'helm get metadata' argv: {{ _se6_metadata_lines[0] }}"
+
+        - name: "(6) assert the pull used the receiver's OWN installed version (the default stub fixture, 0.4.0)"
+          ansible.builtin.assert:
+            that:
+              - _se6_pull_lines[0] is match('^pull oci://zot\.zot\.svc\.cluster\.local:5000/dmf/charts/mxl-fabrics-demo --version 0\.4\.0 --untar --untardir \S+ --plain-http$')
+            fail_msg: "(6) FAIL — unexpected 'helm pull' argv: {{ _se6_pull_lines[0] }}"
+
+        - name: "(6) extract the pulled tempdir path (random per run — read back from the pull argv itself, not hardcoded)"
+          ansible.builtin.set_fact:
+            _se6_chart_tmp: "{{ (_se6_pull_lines[0] | regex_search('--untardir (\\S+)', '\\1')) | first }}"
+
         - name: "(6) assert helm upgrade argv"
           ansible.builtin.assert:
             that:
-              - "'upgrade mxl-videotest-view --reuse-values -n mxl --set flow.id=b0ae9cba-a989-4568-ac96-8bd19272c966 --atomic' in (_se6_helm_log_raw.content | b64decode)"
-            fail_msg: "(6) FAIL — expected the viewer's helm upgrade with --atomic. Got: {{ _se6_helm_log_raw.content | b64decode }}"
+              - _se6_upgrade_lines[0] == ('upgrade mxl-videotest-view ' ~ _se6_chart_tmp ~ '/mxl-fabrics-demo -n mxl --reuse-values --set flow.id=b0ae9cba-a989-4568-ac96-8bd19272c966 --rollback-on-failure --wait --timeout 90s')
+            fail_msg: >-
+              (6) FAIL — expected the viewer's helm upgrade to carry the
+              pulled tempdir chart path, --reuse-values, and
+              --rollback-on-failure. Got: {{ _se6_upgrade_lines[0] }}
+
+        - name: "(6) ASSERT: the pulled chart tempdir was removed after the run (the playbook's own outer always: cleanup, umbrella #306)"
+          ansible.builtin.stat:
+            path: "{{ _se6_chart_tmp }}"
+          register: _se6_chart_tmp_stat
+
+        - name: "(6) assert chart tempdir cleaned up"
+          ansible.builtin.assert:
+            that:
+              - not _se6_chart_tmp_stat.stat.exists
+            fail_msg: "(6) FAIL — expected the pulled chart tempdir to be removed after the run, still present at {{ _se6_chart_tmp }}"
 
         - name: "(6) ASSERT (via real HTTP against the stub): active-source now reflects the switch target"
           ansible.builtin.uri:
@@ -1004,12 +1283,24 @@
           mutant (select-before-repoint, repoint-before-quiesce, or any
           skipped phase) fails at least one of these three assertions, and the
           facility lock is confirmed released after every one. Scenario 5
-          proves a genuinely failed helm re-point (--atomic requested) never
-          advances to phase 3 (active-source stays cleared) and still releases
-          the lock — this cannot itself verify Helm's own --atomic
-          rollback-to-pre-values guarantee (that is Helm's tested behavior, not
-          code this repo owns), only that this playbook correctly requests
-          atomicity and correctly treats a failure as a failure. Scenario 6
+          proves a genuinely failed helm re-point (--rollback-on-failure
+          requested) never advances to phase 3 (active-source stays cleared)
+          and still releases the lock — this cannot itself verify Helm's own
+          rollback-on-failure guarantee (that is Helm's tested behavior, not
+          code this repo owns),
+          only that this playbook correctly requests a rollback-on-failure
+          mode and correctly treats a failure as a failure. Scenario 6
           proves the full, unfaulted sequence reaches the correct final state
           (active-source = the switch target) and releases the lock on the
-          SUCCESS path too.
+          SUCCESS path too. Scenarios 4c, 5, and 6 (umbrella #306) also assert
+          the FULL helm invocation sequence — get metadata (never the
+          l3_chart_version pin), pull to a tempdir, then upgrade carrying that
+          exact tempdir chart path, --reuse-values, no reset-mode flag, and
+          the feature-detected --rollback-on-failure flag — against
+          stub_helm.sh's own hardened `[RELEASE] [CHART]` two-positional
+          contract, the enforcement that was missing when AWX job 321 became
+          this playbook's first, and first FAILED, live invocation. Scenario
+          4b additionally proves chart resolution now runs (and is visible in
+          the helm log) BEFORE phase 1 quiesce, while phase 2 has genuinely
+          not run yet. Scenario 6 also proves the pulled chart tempdir is
+          removed after the run.
