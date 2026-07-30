@@ -1478,8 +1478,10 @@
     # overrides (l3_switch_quiesce_settle_seconds=1,
     # l3_switch_upgrade_verify_timeout_seconds=1,
     # l3_switch_verify_poll_delay_seconds=1 — so PHASE 2 verify always
-    # exhausts in exactly ONE fast attempt, since none of these three
-    # scenarios ever wants the UPGRADE itself to succeed) and differ only
+    # exhausts in exactly TWO fast attempts ((1 // 1) + 1 = 2 — see the
+    # playbook's own TIMING CONTRACT comment for why +1), since none of
+    # these three scenarios ever wants the UPGRADE itself to succeed) and
+    # differ only
     # in l3_switch_rollback_verify_timeout_seconds and their Deployment/
     # coordinator GET-time patch-queue fixtures (STATE["get_patch_queues"]
     # — see stub_k8s_api.py's own _apply_get_patch_queue docstring).
@@ -1490,7 +1492,7 @@
     # interleaved with anything else) — so entries are queued in the EXACT
     # chronological order those two pollers will consume them: one
     # "still not ready" filler per PHASE 2 verify attempt (always exactly
-    # 1, given the override above), then whatever the rollback side needs.
+    # 2, given the override above), then whatever the rollback side needs.
     # The coordinator ConfigMap queue, by contrast, uses the CONDITIONAL
     # (when_absent) form throughout — switch_read_coordinator.yml's own
     # PRE-quiesce read of the SAME ConfigMap would otherwise silently
@@ -2370,10 +2372,14 @@
           skipped phase) fails at least one of these three assertions, and the
           facility lock is confirmed released after every one. Scenario 5
           proves the PHASE 2 helm upgrade COMMAND ITSELF failing outright
-          (rc!=0, never reaching PHASE 2 verify at all since nothing was
-          re-pointed) never advances to phase 3 (active-source stays
-          cleared) and still releases the lock, through the SAME generic
-          rescue as any other pre-mutation failure. Scenario 6 proves the
+          (rc!=0) is diagnostic-only, not a bypass — it still flows into
+          PHASE 2 verify exactly like a rc=0 upgrade whose Deployment never
+          converges (scenario 7), so verification decides the outcome,
+          never the bare rc: the play rolls back, verifies the rollback,
+          restores the previous active-source (source-a, never the switch
+          target), and still fails the job (rollback_verified
+          previous_source_restored), with the facility lock released
+          through the SAME generic rescue as any other failure. Scenario 6 proves the
           full, unfaulted sequence reaches the correct final state
           (active-source = the switch target, WITH fresh post-switch
           target-info/epoch, never the stale pre-switch values) and
