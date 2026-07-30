@@ -31,7 +31,20 @@
 #   L3_STUB_HELM_LIST_<NS>              JSON array, e.g. L3_STUB_HELM_LIST_MXL
 #   L3_STUB_HELM_VALUES_<RELEASE>       JSON object, release name upper +
 #                                       dashes->underscores; "__FAIL__" to
-#                                       simulate a fetch failure
+#                                       simulate a fetch failure. Unset
+#                                       defaults to {flow: {id:
+#                                       5fbec3b1-1b0f-417d-9059-8b94a47197ed}}
+#                                       (umbrella #306 design round #2 —
+#                                       switch_capture_baseline.yml's own
+#                                       `helm get values` is now an
+#                                       UNCONDITIONAL pre-switch read on
+#                                       every switch run, same tier as
+#                                       METADATA below; this default is the
+#                                       switch test suite's own consistent
+#                                       pre-switch source-a flow.id, so
+#                                       every scenario gets a working
+#                                       values read for free without
+#                                       needing to seed one explicitly)
 #   L3_STUB_HELM_METADATA_<RELEASE>     JSON object (umbrella #306), same
 #                                       name-derivation as VALUES above;
 #                                       "__FAIL__" to simulate a fetch
@@ -164,11 +177,23 @@ for item in items:
     done
     case "$resource" in
       values)
+        # umbrella #306 design round #2: the previous default expansion
+        # ("${!envvar:-{\}}") did not actually produce "{}" — bash does not
+        # unescape "\}" inside a parameter-expansion default the way that
+        # looked intended, so an unseeded release got the literal 3-byte
+        # string "{\}", invalid JSON (confirmed against bash 3.2/5.x: `x="${FOO:-{\}}"`
+        # yields the literal characters `{`, `\`, `}`). Never caught before
+        # switch_capture_baseline.yml became this switch playbook's own
+        # FIRST unconditional (never previously seeded) caller. Two-step
+        # form below mirrors METADATA's own already-correct pattern.
         envvar="L3_STUB_HELM_VALUES_$(_envname "$release")"
-        values_json="${!envvar:-{\}}"
+        values_json="${!envvar:-}"
         if [ "$values_json" = "__FAIL__" ]; then
           echo "stub_helm.sh: simulated 'helm get values' failure for release '$release'" >&2
           exit 1
+        fi
+        if [ -z "$values_json" ]; then
+          values_json='{"flow":{"id":"5fbec3b1-1b0f-417d-9059-8b94a47197ed"}}'
         fi
         printf '%s\n' "$values_json"
         exit 0
