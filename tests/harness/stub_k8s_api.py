@@ -9,6 +9,12 @@ Implements just the REST surface roles/l3_run_guard's tasks actually call:
   * Namespace get-one under /api/v1/namespaces/{name}
   * Pod list under /api/v1/pods (cluster-wide, empty by default; a
     "forbidden" mode simulates a missing RBAC ClusterRole)
+  * Deployment create / get (umbrella #306 design round #2) under
+    /apis/apps/v1/namespaces/{ns}/deployments — added for
+    switch_poll_upgrade_ready.yml / switch_poll_rollback_verify.yml's own
+    kubernetes.core.k8s_info rollout-status polling (helm --wait is gone;
+    see those files' own headers). No LIST — every real caller polls a
+    single named Deployment.
 
 No third-party dependencies (http.server / json / uuid / threading only) so
 this runs inside a bare `python3` in an Ansible execution environment with
@@ -81,6 +87,8 @@ def _default_state() -> dict:
     return {
         # (namespace, name) -> stored ConfigMap object (dict)
         "configmaps": {},
+        # (namespace, name) -> stored Deployment object (dict) — umbrella #306
+        "deployments": {},
         # shared incrementing resourceVersion counter
         "resource_version": 0,
         # list of Node objects (dicts) — mutate before start_server() to
@@ -102,6 +110,19 @@ def _default_state() -> dict:
         # Never touched by any real role task — only a control-flow test's
         # own seeding.
         "phantom_conflicts": {},
+        # TEST-ONLY (umbrella #306 design round #2): (kind, namespace, name)
+        # -> list[dict]. Simulates state that changes OUT OF BAND while an
+        # ansible task polls (a Deployment's rollout converging over
+        # several GETs; a coordinator ConfigMap a restored pod republishes
+        # target-info/epoch into) — generalizes phantom_conflicts's own
+        # "consumed on access, TEST-ONLY" idiom from a bare counter to a
+        # queue of deep-merge patches. One entry is popped and merged into
+        # the stored object on each GET of that (kind, ns, name); once a
+        # key's queue is empty, GETs simply keep returning whatever the
+        # last merge left behind (steady state). Never touched by any real
+        # role task — only a scenario's own seeding. See
+        # _apply_get_patch_queue / _deep_merge below.
+        "get_patch_queues": {},
     }
 
 
@@ -119,6 +140,74 @@ def reset_state() -> None:
 def _next_resource_version() -> str:
     STATE["resource_version"] += 1
     return str(STATE["resource_version"])
+
+
+def _deep_merge(base: dict, patch: dict) -> dict:
+    """Recursive merge-patch: a `None` value deletes the key, a dict value
+    recurses, anything else overwrites — the same null-deletes-key idiom
+    _patch_configmap already applies to its (flat) `data` map, generalized
+    to arbitrary nesting for status/spec fields (umbrella #306 design
+    round #2's own GET-time patch queue, see STATE["get_patch_queues"]).
+    """
+    merged = json.loads(json.dumps(base))
+    for k, v in (patch or {}).items():
+        if v is None:
+            merged.pop(k, None)
+        elif isinstance(v, dict) and isinstance(merged.get(k), dict):
+            merged[k] = _deep_merge(merged[k], v)
+        else:
+            merged[k] = v
+    return merged
+
+
+def _get_data_path(obj: dict, dotted_path: str):
+    cur = obj
+    for part in dotted_path.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def _apply_get_patch_queue(kind: str, ns: str, name: str, store: dict, key: tuple) -> dict:
+    """TEST-ONLY (umbrella #306 design round #2): apply the FRONT queued
+    GET-time patch for (kind, ns, name), if any is queued and its
+    condition (if any) currently holds, deep-merging it into the STORED
+    object (mutates `store[key]` in place, so the merge persists across
+    subsequent GETs — an exhausted queue simply means later GETs keep
+    returning whatever the last merge left behind, no separate "steady
+    state" bookkeeping needed). Returns the (possibly just-merged) current
+    object. A no-op when no queue is seeded for this key, once the queue
+    is empty, or while the front entry's condition does not yet hold.
+
+    Each queue entry is EITHER a bare patch dict (applied unconditionally
+    on the next GET — fine for a resource with exactly one reader, e.g.
+    the Deployment polls) OR {"when_absent": "<dotted.path>", "patch":
+    {...}} — applied (and popped) only once that dotted path is currently
+    absent/empty on the CURRENT stored object, otherwise left in place for
+    a later GET. REQUIRED for a resource multiple DIFFERENT tasks read at
+    different points in a real play (the coordinator ConfigMap: read
+    pre-quiesce by switch_read_coordinator.yml, written by PHASE 1, then
+    polled by PHASE 2 verify) — a bare FIFO-always-consume queue would let
+    an EARLIER, unrelated read (e.g. the pre-quiesce one, which still sees
+    the PRE-switch target-info/epoch) silently steal the entry meant to
+    simulate the POST-switch republish, long before PHASE 1 has even
+    cleared anything.
+    """
+    queue_key = (kind, ns, name)
+    with _STATE_LOCK:
+        queue = STATE["get_patch_queues"].get(queue_key)
+        if queue:
+            entry = queue[0]
+            if isinstance(entry, dict) and "when_absent" in entry:
+                current = _get_data_path(store[key], entry["when_absent"])
+                if current is None or current == "":
+                    queue.pop(0)
+                    store[key] = _deep_merge(store[key], entry["patch"])
+            else:
+                queue.pop(0)
+                store[key] = _deep_merge(store[key], entry)
+        return store[key]
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +268,58 @@ def _namespace_body(name: str) -> dict:
     }
 
 
+def _default_deployment(ns: str, name: str) -> dict:
+    """A steady-state, fully-ready, single-replica Deployment (umbrella
+    #306 design round #2) — the shape switch_poll_upgrade_ready.yml /
+    switch_poll_rollback_verify.yml actually read: rollout-status fields
+    (observedGeneration/generation, updated/ready/available/unavailable
+    Replicas) plus a pod template carrying a `status` container with an
+    MXL_FLOW_ID env var (dmf-media's charts/mxl-fabrics-demo/templates/
+    target.yaml — the real chart's own naming). A scenario POSTs this (or
+    a variant) to seed a receiver's Deployment, then optionally queues
+    GET-time patches (STATE["get_patch_queues"]) to simulate a rollout
+    converging over several polls.
+    """
+    return {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+            "name": name,
+            "namespace": ns,
+            "uid": str(uuid.uuid4()),
+            "resourceVersion": "1",
+            "generation": 1,
+            "labels": {},
+            "annotations": {},
+        },
+        "spec": {
+            "replicas": 1,
+            "template": {
+                "spec": {
+                    "containers": [
+                        {
+                            "name": "status",
+                            "env": [{"name": "MXL_FLOW_ID", "value": ""}],
+                        }
+                    ]
+                }
+            },
+        },
+        "status": {
+            "observedGeneration": 1,
+            "replicas": 1,
+            "updatedReplicas": 1,
+            "readyReplicas": 1,
+            "availableReplicas": 1,
+            "unavailableReplicas": 0,
+            "conditions": [
+                {"type": "Available", "status": "True", "reason": "MinimumReplicasAvailable"},
+                {"type": "Progressing", "status": "True", "reason": "NewReplicaSetAvailable"},
+            ],
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
 # Label selector matching (only the subset this role's tasks send)
 # ---------------------------------------------------------------------------
@@ -214,6 +355,13 @@ _CM_ITEM_RE = re.compile(r"^/api/v1/namespaces/(?P<ns>[^/]+)/configmaps/(?P<name
 _NODES_RE = re.compile(r"^/api/v1/nodes/?$")
 _PODS_RE = re.compile(r"^/api/v1/pods/?$")
 _NAMESPACE_ITEM_RE = re.compile(r"^/api/v1/namespaces/(?P<name>[^/]+)/?$")
+# umbrella #306 design round #2 — apps/v1 Deployment (get/create only, no list).
+_DEPLOY_COLLECTION_RE = re.compile(
+    r"^/apis/apps/v1/namespaces/(?P<ns>[^/]+)/deployments/?$"
+)
+_DEPLOY_ITEM_RE = re.compile(
+    r"^/apis/apps/v1/namespaces/(?P<ns>[^/]+)/deployments/(?P<name>[^/]+)/?$"
+)
 
 
 class StubK8sHandler(BaseHTTPRequestHandler):
@@ -268,6 +416,8 @@ class StubK8sHandler(BaseHTTPRequestHandler):
             return self._get_api_v1_resources()
         if path == "/apis":
             return self._get_api_groups()
+        if path == "/apis/apps/v1":
+            return self._get_apps_v1_resources()
 
         m = _CM_ITEM_RE.match(path)
         if m:
@@ -276,6 +426,10 @@ class StubK8sHandler(BaseHTTPRequestHandler):
         m = _CM_COLLECTION_RE.match(path)
         if m:
             return self._list_configmaps(m.group("ns"), query)
+
+        m = _DEPLOY_ITEM_RE.match(path)
+        if m:
+            return self._get_deployment(m.group("ns"), m.group("name"))
 
         if _NODES_RE.match(path):
             return self._list_nodes()
@@ -294,6 +448,11 @@ class StubK8sHandler(BaseHTTPRequestHandler):
         m = _CM_COLLECTION_RE.match(parsed.path)
         if m:
             return self._create_configmap(m.group("ns"))
+        m = _DEPLOY_COLLECTION_RE.match(parsed.path)
+        if m:
+            return self._create_deployment(m.group("ns"))
+        if parsed.path == "/test-only/get-patch-queue":
+            return self._queue_get_patch()
         self._write_json(404, _status_body(404, "NotFound", f"no route for POST {parsed.path}"))
 
     def do_PUT(self):  # noqa: N802
@@ -388,11 +547,43 @@ class StubK8sHandler(BaseHTTPRequestHandler):
         )
 
     def _get_api_groups(self):
-        # This role only ever touches core/v1 kinds (Node, Namespace, Pod,
-        # ConfigMap) — no named API group has any resources this stub needs
-        # to serve, but the DynamicClient still probes /apis unconditionally
-        # during discovery, so an empty-but-valid APIGroupList is required.
-        self._write_json(200, {"kind": "APIGroupList", "apiVersion": "v1", "groups": []})
+        # Core/v1 kinds (Node, Namespace, Pod, ConfigMap) need no named API
+        # group. umbrella #306 design round #2 adds the FIRST named-group
+        # resource this stub serves (apps/v1 Deployment) — the DynamicClient
+        # resolves apiVersion: apps/v1 via THIS list before it will ever GET
+        # /apis/apps/v1 itself.
+        self._write_json(
+            200,
+            {
+                "kind": "APIGroupList",
+                "apiVersion": "v1",
+                "groups": [
+                    {
+                        "name": "apps",
+                        "versions": [{"groupVersion": "apps/v1", "version": "v1"}],
+                        "preferredVersion": {"groupVersion": "apps/v1", "version": "v1"},
+                    }
+                ],
+            },
+        )
+
+    def _get_apps_v1_resources(self):
+        self._write_json(
+            200,
+            {
+                "kind": "APIResourceList",
+                "groupVersion": "apps/v1",
+                "resources": [
+                    {
+                        "name": "deployments",
+                        "singularName": "deployment",
+                        "namespaced": True,
+                        "kind": "Deployment",
+                        "verbs": ["get", "create"],
+                    },
+                ],
+            },
+        )
 
     # -- ConfigMap handlers --------------------------------------------
 
@@ -436,12 +627,14 @@ class StubK8sHandler(BaseHTTPRequestHandler):
         self._write_json(201, stored)
 
     def _get_configmap(self, ns: str, name: str):
-        stored = STATE["configmaps"].get((ns, name))
+        key = (ns, name)
+        stored = STATE["configmaps"].get(key)
         if stored is None:
             return self._write_json(
                 404, _status_body(404, "NotFound", f"configmaps \"{name}\" not found")
             )
-        self._write_json(200, stored)
+        current = _apply_get_patch_queue("ConfigMap", ns, name, STATE["configmaps"], key)
+        self._write_json(200, current)
 
     def _list_configmaps(self, ns: str, query: dict):
         selector = ""
@@ -549,6 +742,73 @@ class StubK8sHandler(BaseHTTPRequestHandler):
                     )
             del STATE["configmaps"][key]
         self._write_json(200, _status_body(200, "", "configmap deleted", status="Success"))
+
+    # -- Deployment handlers (umbrella #306 design round #2) ------------
+
+    def _create_deployment(self, ns: str):
+        # Mirrors _create_configmap's own shape: a scenario POSTs a full
+        # Deployment body (typically _default_deployment(), possibly
+        # combine()'d with overrides) to seed "an already-running viewer's
+        # Deployment" before the real playbook run starts polling it.
+        body = self._read_json_body() or {}
+        name = (body.get("metadata") or {}).get("name")
+        if not name:
+            return self._write_json(
+                400, _status_body(400, "BadRequest", "metadata.name is required")
+            )
+        key = (ns, name)
+        with _STATE_LOCK:
+            if key in STATE["deployments"]:
+                return self._write_json(
+                    409,
+                    _status_body(409, "AlreadyExists", f"deployments.apps \"{name}\" already exists"),
+                )
+            stored = json.loads(json.dumps(body))  # deep copy
+            stored.setdefault("apiVersion", "apps/v1")
+            stored.setdefault("kind", "Deployment")
+            stored.setdefault("metadata", {})
+            stored["metadata"]["namespace"] = ns
+            stored["metadata"]["uid"] = str(uuid.uuid4())
+            stored["metadata"]["resourceVersion"] = _next_resource_version()
+            STATE["deployments"][key] = stored
+        self._write_json(201, stored)
+
+    def _get_deployment(self, ns: str, name: str):
+        key = (ns, name)
+        stored = STATE["deployments"].get(key)
+        if stored is None:
+            return self._write_json(
+                404, _status_body(404, "NotFound", f"deployments.apps \"{name}\" not found")
+            )
+        current = _apply_get_patch_queue("Deployment", ns, name, STATE["deployments"], key)
+        self._write_json(200, current)
+
+    # -- TEST-ONLY seeding endpoint (umbrella #306 design round #2) -----
+
+    def _queue_get_patch(self):
+        # TEST-ONLY: {"kind": "ConfigMap"|"Deployment", "namespace": ns,
+        # "name": name, "patches": [ {...deep-merge patch...}, ... ]} —
+        # appends to STATE["get_patch_queues"][(kind, ns, name)], consumed
+        # FIFO by _apply_get_patch_queue on each matching GET. Lets a
+        # scenario simulate state that changes OUT OF BAND across several
+        # polls (a Deployment's rollout converging; a coordinator ConfigMap
+        # a restored pod republishes target-info/epoch into) via ordinary
+        # HTTP seeding, the SAME pattern every other scenario fixture
+        # already uses (a real POST/PUT after the server starts) — never
+        # touched by any real role task.
+        body = self._read_json_body() or {}
+        kind = body.get("kind")
+        ns = body.get("namespace")
+        name = body.get("name")
+        patches = body.get("patches") or []
+        if not kind or not ns or not name:
+            return self._write_json(
+                400, _status_body(400, "BadRequest", "kind, namespace, and name are required")
+            )
+        queue_key = (kind, ns, name)
+        with _STATE_LOCK:
+            STATE["get_patch_queues"].setdefault(queue_key, []).extend(patches)
+        self._write_json(200, {"queued": len(patches)})
 
     # -- Node / Namespace / Pod handlers --------------------------------
 
