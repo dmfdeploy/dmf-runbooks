@@ -32,9 +32,18 @@
 # with the outcome (restore the previous active-source + fail
 # rollback_verified, or fail rollback_verification_failed — see that
 # block's own comments).
+#
+# Criterion 1's own `helm get values` read carries failed_when: false —
+# helm rc is diagnostic only throughout this file, not just for the
+# rollback command itself (switch_rollback_and_verify.yml). A values-read
+# failure on any given attempt simply leaves criterion 1 unsatisfied FOR
+# THAT ATTEMPT (parsed as {}, never a from_json template error) — the poll
+# keeps running to budget exactly like a Deployment that stays not-ready,
+# rather than aborting into the generic rescue and skipping the other
+# three criteria's own verdict.
 - name: "L3 switch: post-rollback verify attempt {{ _switch_rollback_poll_attempt | default(1) }}/{{ _switch_rollback_poll_max_attempts }}"
   block:
-    - name: "L3 switch: read the receiver's CURRENT Helm values (criterion 1 — flow.id restored)"
+    - name: "L3 switch: read the receiver's CURRENT Helm values (criterion 1 — flow.id restored; rc is diagnostic only — a failed read just leaves criterion 1 unsatisfied for THIS attempt, never aborts the poll into the generic rescue)"
       ansible.builtin.command:
         argv:
           - helm
@@ -46,6 +55,7 @@
           - -o
           - json
       changed_when: false
+      failed_when: false
       register: _switch_rollback_values_poll
 
     - name: "L3 switch: read the target Deployment's current status + pod template (criteria 2 + 3)"
@@ -64,9 +74,9 @@
         namespace: "{{ l3_target_namespace }}"
       register: _switch_rollback_coord_poll
 
-    - name: "L3 switch: parse the receiver's CURRENT Helm values"
+    - name: "L3 switch: parse the receiver's CURRENT Helm values (a failed/non-JSON read — rc!=0 — parses to {}, safely leaving criterion 1 unsatisfied via the .flow.id | default('') chain below, never raising a from_json template error that would abort the poll)"
       ansible.builtin.set_fact:
-        _switch_rollback_current_values: "{{ _switch_rollback_values_poll.stdout | from_json }}"
+        _switch_rollback_current_values: "{{ (_switch_rollback_values_poll.stdout | from_json) if _switch_rollback_values_poll.rc == 0 else {} }}"
 
     - name: "L3 switch: evaluate ALL FOUR post-rollback pass criteria (single combined condition, one shared budget)"
       ansible.builtin.set_fact:
@@ -97,10 +107,16 @@
     - name: "L3 switch: post-rollback verify poll delay (standard Ansible sleep idiom)"
       ansible.builtin.wait_for:
         timeout: "{{ l3_switch_verify_poll_delay_seconds }}"
-      when: not _switch_rollback_verified and _switch_rollback_poll_attempt_done < _switch_rollback_poll_max_attempts
+      when: not _switch_rollback_verified and (_switch_rollback_poll_attempt_done | int) < (_switch_rollback_poll_max_attempts | int)
 
     - name: "L3 switch: post-rollback verify — recurse (next attempt)"
       ansible.builtin.include_tasks: switch_poll_rollback_verify.yml
       vars:
-        _switch_rollback_poll_attempt: "{{ _switch_rollback_poll_attempt_done + 1 }}"
-      when: not _switch_rollback_verified and _switch_rollback_poll_attempt_done < _switch_rollback_poll_max_attempts
+        # ansible-core < ~2.19 does not default to Jinja2 native types —
+        # a `| int`-filtered set_fact can still round-trip as a STRING
+        # through this recursive include's own vars: boundary (confirmed
+        # against ansible-core 2.15: "can only concatenate str (not int)
+        # to str" on the bare `+ 1` below). Re-cast defensively at the
+        # point of use rather than trust the type set_fact left it in.
+        _switch_rollback_poll_attempt: "{{ (_switch_rollback_poll_attempt_done | int) + 1 }}"
+      when: not _switch_rollback_verified and (_switch_rollback_poll_attempt_done | int) < (_switch_rollback_poll_max_attempts | int)
