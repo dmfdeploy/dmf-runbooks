@@ -1,0 +1,19 @@
+---
+# umbrella #306 (design round #2, frozen 2026-07-30) — entry point for
+# PHASE 2's post-upgrade verification. Converts the play's own budget/delay
+# vars (l3_switch_upgrade_verify_timeout_seconds,
+# l3_switch_verify_poll_delay_seconds — the console watch budget formula's
+# own "upgrade" term) into a bounded attempt count, then runs the recursive
+# poll (switch_poll_upgrade_ready.yml — see that file's own header for why
+# a recursive include, not until:/retries:).
+#
+# Leaves _switch_upgrade_verify_ready set for the caller (the playbook) to
+# branch on — this file never fails the play itself; a not-ready outcome is
+# the caller's own decision (roll back + verify + conditionally restore,
+# never a bare re-raise — see the playbook's own PHASE 2 verify block).
+- name: "L3 switch: PHASE 2 verify — compute the bounded attempt count from the timeout/delay budget"
+  ansible.builtin.set_fact:
+    _switch_upgrade_poll_max_attempts: "{{ (l3_switch_upgrade_verify_timeout_seconds | int) // (l3_switch_verify_poll_delay_seconds | int) }}"
+
+- name: "L3 switch: PHASE 2 verify — poll until ready or the budget is exhausted"
+  ansible.builtin.include_tasks: switch_poll_upgrade_ready.yml

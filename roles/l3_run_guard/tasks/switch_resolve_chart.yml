@@ -30,7 +30,15 @@
 # caller-supplied role params, out of this playbook's scope). Reserved in
 # _assert_reserved_vars.yml like every other _switch_* fact below, so a
 # caller extra_var can never forge which registry/chart this pull targets
-# or fake the version/rollback-flag this switch actually uses.
+# or fake the version this switch actually uses.
+#
+# umbrella #306 design round #2 (frozen 2026-07-30): this file no longer
+# feature-detects --rollback-on-failure vs --atomic — PHASE 2's own
+# `helm upgrade` carries NO wait/rollback flags at all now (helm-as-oracle
+# is gone; see the playbook's own PHASE 2 comments and
+# switch_verify_upgrade.yml). The feature-detect probe + _switch_rollback_flag
+# this file used to compute here were removed as dead code, not kept
+# around unused.
 - name: "L3 switch: switch-owned chart coordinates (constants, reserved — never caller-supplied)"
   ansible.builtin.set_fact:
     _switch_chart_ref: "oci://zot.zot.svc.cluster.local:5000/dmf/charts"
@@ -71,16 +79,6 @@
 - name: "L3 switch: the receiver's OWN installed chart version — pins this switch's pull + upgrade, never l3_chart_version"
   ansible.builtin.set_fact:
     _switch_receiver_chart_version: "{{ _switch_receiver_metadata.version }}"
-
-- name: "L3 switch: feature-detect --rollback-on-failure vs --atomic (Helm 4 deprecates --atomic in favor of --rollback-on-failure, warning-only for now; an older Helm binary lacks the new flag)"
-  ansible.builtin.command:
-    argv: [helm, upgrade, --help]
-  changed_when: false
-  register: _switch_helm_upgrade_help
-
-- name: "L3 switch: select the rollback flag"
-  ansible.builtin.set_fact:
-    _switch_rollback_flag: "{{ '--rollback-on-failure' if '--rollback-on-failure' in _switch_helm_upgrade_help.stdout else '--atomic' }}"
 
 - name: "L3 switch: temporary chart directory for the pulled receiver chart — NOT cleaned up here; its lifetime spans PHASE 2's re-point, well past this task file, so removal lives in the playbook's own outer always: (mirrors umbrella #296's own tempdir-lifetime lesson: whatever consumes the path must run before it is ever removed)"
   ansible.builtin.tempfile:
