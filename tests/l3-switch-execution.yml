@@ -694,8 +694,10 @@
             fail_msg: "(4b) FAIL — expected a fully quiesced coordinator (phase 1 complete). got={{ _se4b_coordinator.json.data }}"
 
         - name: "(4b) ASSERT: chart resolution (umbrella #306's switch_resolve_chart.yml)
-            ran — it sits BEFORE phase 1 quiesce, so a fault at
-            post-switch-quiesce fires strictly after it — but NO helm
+            AND the pre-switch baseline capture (umbrella #306 design round
+            #2's own switch_capture_baseline.yml — a 'get values' read) both
+            ran — they sit BEFORE phase 1 quiesce, so a fault at
+            post-switch-quiesce fires strictly after them — but NO helm
             upgrade call was made (phase 2 never reached)"
           ansible.builtin.slurp:
             src: /tmp/l3-se-4b-helm.log
@@ -705,13 +707,14 @@
           ansible.builtin.set_fact:
             _se4b_helm_log_lines: "{{ (_se4b_helm_log_raw.content | b64decode).split('\n') | select('!=', '') | list }}"
 
-        - name: "(4b) assert exactly one metadata read, one pull, and ZERO upgrade calls"
+        - name: "(4b) assert exactly one metadata read, one values read, one pull, and ZERO upgrade calls"
           ansible.builtin.assert:
             that:
               - (_se4b_helm_log_lines | select('match', '^get metadata ') | list | length) == 1
+              - (_se4b_helm_log_lines | select('match', '^get values ') | list | length) == 1
               - (_se4b_helm_log_lines | select('match', '^pull ') | list | length) == 1
               - (_se4b_helm_log_lines | select('match', '^upgrade ') | reject('equalto', 'upgrade --help') | list | length) == 0
-            fail_msg: "(4b) FAIL — expected exactly one metadata read + one pull and zero upgrade calls before phase 2. got={{ _se4b_helm_log_lines }}"
+            fail_msg: "(4b) FAIL — expected exactly one metadata read + one values read + one pull and zero upgrade calls before phase 2. got={{ _se4b_helm_log_lines }}"
 
         - name: "(4b) ASSERT (via real HTTP against the stub): the facility lock was released"
           ansible.builtin.uri:
@@ -770,6 +773,8 @@
               - "l3_request_id={{ _se4_run_id }}"
               - -e
               - l3_fault_inject=post-switch-repoint
+              - -e
+              - l3_switch_quiesce_settle_seconds=1
             chdir: "{{ playbook_dir }}/.."
           environment:
             L3_TESTMODE: "1"
@@ -787,39 +792,49 @@
             fail_msg: "(4c) FAIL — exited 0. stdout={{ _se4c_run.stdout }}"
 
         - name: "(4c) ASSERT: the receiver's chart was resolved (umbrella #306
-            — get metadata + pull, BEFORE the re-point) and the viewer's
-            helm release WAS re-pointed (phase 2 ran) with the pulled
-            tempdir chart arg, --reuse-values, no reset-mode flag, the
-            selected rollback flag, and the target source's flow.id
-            (proves resolution + re-point + its rollback-on-failure
-            request all happened before the fault, not after)"
+            — get metadata + pull, BEFORE the re-point), the pre-switch
+            baseline was captured (umbrella #306 design round #2 — get
+            values), and the viewer's helm release WAS re-pointed (phase 2
+            ran) with the pulled tempdir chart arg, --reuse-values, no
+            reset-mode flag, and the target source's flow.id — and NONE of
+            --wait/--timeout/--rollback-on-failure/--atomic (helm-as-oracle
+            is gone; PHASE 2 verify — not helm's own wait — is what would
+            have decided readiness, had the fault not fired first)"
           ansible.builtin.slurp:
             src: /tmp/l3-se-4c-helm.log
           register: _se4c_helm_log_raw
 
-        - name: "(4c) parse + isolate the metadata/pull/upgrade invocation lines"
+        - name: "(4c) parse + isolate the metadata/values/pull/upgrade invocation lines"
           ansible.builtin.set_fact:
             _se4c_helm_log_lines: "{{ (_se4c_helm_log_raw.content | b64decode).split('\n') | select('!=', '') | list }}"
 
         - name: "(4c) split by invocation kind"
           ansible.builtin.set_fact:
             _se4c_metadata_lines: "{{ _se4c_helm_log_lines | select('match', '^get metadata ') | list }}"
+            _se4c_values_lines: "{{ _se4c_helm_log_lines | select('match', '^get values ') | list }}"
             _se4c_pull_lines: "{{ _se4c_helm_log_lines | select('match', '^pull ') | list }}"
             _se4c_upgrade_lines: "{{ _se4c_helm_log_lines | select('match', '^upgrade ') | reject('equalto', 'upgrade --help') | list }}"
 
-        - name: "(4c) assert exactly one metadata read, one pull, one upgrade"
+        - name: "(4c) assert exactly one metadata read, one values read, one pull, one upgrade"
           ansible.builtin.assert:
             that:
               - _se4c_metadata_lines | length == 1
+              - _se4c_values_lines | length == 1
               - _se4c_pull_lines | length == 1
               - _se4c_upgrade_lines | length == 1
-            fail_msg: "(4c) FAIL — expected exactly one metadata/pull/upgrade call each. got={{ _se4c_helm_log_lines }}"
+            fail_msg: "(4c) FAIL — expected exactly one metadata/values/pull/upgrade call each. got={{ _se4c_helm_log_lines }}"
 
         - name: "(4c) assert the metadata read targeted the receiver (never l3_chart_version)"
           ansible.builtin.assert:
             that:
               - _se4c_metadata_lines[0] == 'get metadata mxl-videotest-view -n mxl -o json'
             fail_msg: "(4c) FAIL — unexpected 'helm get metadata' argv: {{ _se4c_metadata_lines[0] }}"
+
+        - name: "(4c) assert the pre-switch baseline values read targeted the receiver (umbrella #306 design round #2)"
+          ansible.builtin.assert:
+            that:
+              - _se4c_values_lines[0] == 'get values mxl-videotest-view -n mxl -o json'
+            fail_msg: "(4c) FAIL — unexpected 'helm get values' argv: {{ _se4c_values_lines[0] }}"
 
         - name: "(4c) assert the pull used the receiver's OWN installed version (the default stub fixture, 0.4.0)"
           ansible.builtin.assert:
@@ -831,15 +846,19 @@
           ansible.builtin.set_fact:
             _se4c_chart_tmp: "{{ (_se4c_pull_lines[0] | regex_search('--untardir (\\S+)', '\\1')) | first }}"
 
-        - name: "(4c) assert the upgrade argv carries the pulled tempdir chart path, --reuse-values, no reset-mode flag, --rollback-on-failure, and the target source's flow.id"
+        - name: "(4c) assert the upgrade argv carries the pulled tempdir chart path, --reuse-values, the target source's flow.id, and NONE of the removed wait/rollback flags (umbrella #306 design round #2)"
           ansible.builtin.assert:
             that:
-              - _se4c_upgrade_lines[0] == ('upgrade mxl-videotest-view ' ~ _se4c_chart_tmp ~ '/mxl-fabrics-demo -n mxl --reuse-values --set flow.id=b0ae9cba-a989-4568-ac96-8bd19272c966 --rollback-on-failure --wait --timeout 90s')
+              - _se4c_upgrade_lines[0] == ('upgrade mxl-videotest-view ' ~ _se4c_chart_tmp ~ '/mxl-fabrics-demo -n mxl --reuse-values --set flow.id=b0ae9cba-a989-4568-ac96-8bd19272c966')
+              - "'--wait' not in _se4c_upgrade_lines[0]"
+              - "'--timeout' not in _se4c_upgrade_lines[0]"
+              - "'--rollback-on-failure' not in _se4c_upgrade_lines[0]"
+              - "'--atomic' not in _se4c_upgrade_lines[0]"
             fail_msg: >-
               (4c) FAIL — expected the viewer's helm upgrade to carry the
-              pulled tempdir chart path, --reuse-values,
-              --rollback-on-failure, and the target source's own flow.id,
-              with no reset-mode flag. Got: {{ _se4c_upgrade_lines[0] }}
+              pulled tempdir chart path, --reuse-values, and the target
+              source's own flow.id, with NO wait/timeout/rollback-on-
+              failure/atomic flags. Got: {{ _se4c_upgrade_lines[0] }}
 
         - name: "(4c) ASSERT (via real HTTP against the stub): active-source
             is STILL absent (phase 3/select never ran — proves select is
@@ -871,14 +890,17 @@
           failed_when: false
 
     # ════════════════════════════════════════════════════════════════════
-    # Scenario 5: a genuinely FAILED helm upgrade (--rollback-on-failure
-    # requested, simulated failure) — proves the failure propagates,
-    # active-source stays cleared (never selected), and the lock is
-    # released. This cannot itself prove Helm's own rollback-on-failure
-    # behavior (see this file's own header) — only that this playbook
-    # correctly requests it and correctly treats a failure as a failure.
+    # Scenario 5: the PHASE 2 helm upgrade COMMAND ITSELF fails outright
+    # (rc != 0, e.g. a bad values/registry error — never reaches PHASE 2
+    # verify at all, since nothing was ever re-pointed to verify) — proves
+    # the failure propagates through the SAME generic rescue as any other
+    # pre-mutation failure, active-source stays cleared (never selected),
+    # and the lock is released. Distinct from the two NEW discriminating
+    # scenarios (helm rc=0 but Deployment never converges; a late-
+    # converging rollback) below, which exercise PHASE 2 verify and the
+    # rollback-and-verify machinery specifically.
     # ════════════════════════════════════════════════════════════════════
-    - name: "(5) failed helm re-point (--rollback-on-failure requested, simulated failure) — start fresh stubs, seed an already-running topology, run the REAL switch playbook"
+    - name: "(5) failed helm upgrade command (simulated failure, rc!=0 — never reaches PHASE 2 verify) — start fresh stubs, seed an already-running topology, run the REAL switch playbook"
       vars:
         _se5_run_id: "55555555555555555555555555555555"
       block:
@@ -974,6 +996,8 @@
               - "{{ {'topology_params': _se_j1_topology_params_switched_to_b} | to_json }}"
               - -e
               - "l3_request_id={{ _se5_run_id }}"
+              - -e
+              - l3_switch_quiesce_settle_seconds=1
             chdir: "{{ playbook_dir }}/.."
           environment:
             L3_TESTMODE: "1"
@@ -991,45 +1015,54 @@
               - _se5_run.rc != 0
             fail_msg: "(5) FAIL — exited 0 despite a fixtured helm upgrade failure. stdout={{ _se5_run.stdout }}"
 
-        - name: "(5) ASSERT: chart resolution (umbrella #306) ran and helm
+        - name: "(5) ASSERT: chart resolution (umbrella #306) + the pre-switch
+            baseline capture (umbrella #306 design round #2) ran and helm
             upgrade WAS attempted with the pulled tempdir chart arg,
-            --reuse-values, no reset-mode flag, and the selected rollback
-            flag (the playbook genuinely requests a rollback-on-failure
-            mode, even though this attempt failed)"
+            --reuse-values, no reset-mode flag, and NONE of the removed
+            wait/rollback flags (helm-as-oracle is gone — this command's
+            own rc failing IS what fails the play here, no verify/rollback
+            machinery ever runs since nothing was re-pointed)"
           ansible.builtin.slurp:
             src: /tmp/l3-se-5-helm.log
           register: _se5_helm_log_raw
 
-        - name: "(5) parse + isolate the metadata/pull/upgrade invocation lines"
+        - name: "(5) parse + isolate the metadata/values/pull/upgrade invocation lines"
           ansible.builtin.set_fact:
             _se5_helm_log_lines: "{{ (_se5_helm_log_raw.content | b64decode).split('\n') | select('!=', '') | list }}"
 
         - name: "(5) split by invocation kind"
           ansible.builtin.set_fact:
             _se5_metadata_lines: "{{ _se5_helm_log_lines | select('match', '^get metadata ') | list }}"
+            _se5_values_lines: "{{ _se5_helm_log_lines | select('match', '^get values ') | list }}"
             _se5_pull_lines: "{{ _se5_helm_log_lines | select('match', '^pull ') | list }}"
             _se5_upgrade_lines: "{{ _se5_helm_log_lines | select('match', '^upgrade ') | reject('equalto', 'upgrade --help') | list }}"
 
-        - name: "(5) assert exactly one metadata read, one pull, one (failed) upgrade attempt"
+        - name: "(5) assert exactly one metadata read, one values read, one pull, one (failed) upgrade attempt"
           ansible.builtin.assert:
             that:
               - _se5_metadata_lines | length == 1
+              - _se5_values_lines | length == 1
               - _se5_pull_lines | length == 1
               - _se5_upgrade_lines | length == 1
-            fail_msg: "(5) FAIL — expected exactly one metadata/pull/upgrade call each. got={{ _se5_helm_log_lines }}"
+            fail_msg: "(5) FAIL — expected exactly one metadata/values/pull/upgrade call each. got={{ _se5_helm_log_lines }}"
 
         - name: "(5) extract the pulled tempdir path (random per run — read back from the pull argv itself, not hardcoded)"
           ansible.builtin.set_fact:
             _se5_chart_tmp: "{{ (_se5_pull_lines[0] | regex_search('--untardir (\\S+)', '\\1')) | first }}"
 
-        - name: "(5) assert the failed upgrade attempt still carried the pulled tempdir chart path, --reuse-values, no reset-mode flag, and --rollback-on-failure"
+        - name: "(5) assert the failed upgrade attempt still carried the pulled tempdir chart path, --reuse-values, the target flow.id, and NONE of the removed wait/rollback flags"
           ansible.builtin.assert:
             that:
-              - _se5_upgrade_lines[0] == ('upgrade mxl-videotest-view ' ~ _se5_chart_tmp ~ '/mxl-fabrics-demo -n mxl --reuse-values --set flow.id=b0ae9cba-a989-4568-ac96-8bd19272c966 --rollback-on-failure --wait --timeout 90s')
+              - _se5_upgrade_lines[0] == ('upgrade mxl-videotest-view ' ~ _se5_chart_tmp ~ '/mxl-fabrics-demo -n mxl --reuse-values --set flow.id=b0ae9cba-a989-4568-ac96-8bd19272c966')
+              - "'--wait' not in _se5_upgrade_lines[0]"
+              - "'--timeout' not in _se5_upgrade_lines[0]"
+              - "'--rollback-on-failure' not in _se5_upgrade_lines[0]"
+              - "'--atomic' not in _se5_upgrade_lines[0]"
             fail_msg: >-
               (5) FAIL — expected the failed upgrade attempt to have
               requested the pulled tempdir chart path, --reuse-values, and
-              --rollback-on-failure. Got: {{ _se5_upgrade_lines[0] }}
+              the target flow.id, with NO wait/timeout/rollback-on-failure/
+              atomic flags. Got: {{ _se5_upgrade_lines[0] }}
 
         - name: "(5) ASSERT (via real HTTP against the stub): active-source
             is STILL absent (phase 1 quiesced it, the failed phase 2 never
@@ -1124,6 +1157,64 @@
                 epoch: "pre-switch-uid:1000"
             status_code: [201]
 
+        - name: "(6) seed the receiver's target Deployment, ALREADY at rollout-status
+            readiness (umbrella #306 design round #2 — PHASE 2 verify polls
+            kubernetes.core.k8s_info for this exact resource;
+            receiver_instance-target is the real chart's own Deployment
+            name, dmf-media's charts/mxl-fabrics-demo/templates/target.yaml)"
+          ansible.builtin.uri:
+            url: "{{ _se6_k8s_url }}/apis/apps/v1/namespaces/mxl/deployments/"
+            method: POST
+            body_format: json
+            body:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata: { name: mxl-videotest-view-target, namespace: mxl, generation: 1 }
+              spec:
+                replicas: 1
+                template:
+                  spec:
+                    containers:
+                      - name: status
+                        env:
+                          - { name: MXL_FLOW_ID, value: b0ae9cba-a989-4568-ac96-8bd19272c966 }
+              status:
+                observedGeneration: 1
+                replicas: 1
+                updatedReplicas: 1
+                readyReplicas: 1
+                availableReplicas: 1
+                unavailableReplicas: 0
+            status_code: [201]
+
+        - name: "(6) queue the coordinator's target-info/epoch republish (umbrella
+            #306 design round #2 — simulates the restarted viewer pod's OWN
+            runtime republish, which PHASE 1 clears and only an external
+            actor — not this playbook — ever sets again. CONDITIONAL
+            (when_absent) on data['target-info'], not a bare FIFO entry —
+            switch_read_coordinator.yml's own PRE-quiesce read of this SAME
+            ConfigMap sees target-info still SET (the pre-switch value), so
+            a bare next-GET-consumes-it queue would let that unrelated
+            earlier read silently steal this entry before PHASE 1 ever
+            clears anything. The condition only fires once target-info is
+            genuinely absent, which happens for the first time on PHASE 2
+            verify's own first poll attempt."
+          ansible.builtin.uri:
+            url: "{{ _se6_k8s_url }}/test-only/get-patch-queue"
+            method: POST
+            body_format: json
+            body:
+              kind: ConfigMap
+              namespace: mxl
+              name: mxl-coordinator
+              patches:
+                - when_absent: "data.target-info"
+                  patch:
+                    data:
+                      target-info: '{"pod_uid": "post-switch-uid", "start_ts": "2000"}'
+                      epoch: "post-switch-uid:2000"
+            status_code: [200]
+
         - name: "(6) create the helm PATH shim dir"
           ansible.builtin.file:
             path: /tmp/l3-harness-bin
@@ -1141,7 +1232,13 @@
             path: /tmp/l3-se-6-helm.log
             state: absent
 
-        - name: "(6) run the REAL switch playbook to completion (no faults, no failures)"
+        - name: "(6) run the REAL switch playbook to completion (no faults, no
+            failures) — l3_switch_quiesce_settle_seconds overridden small
+            (still a REAL wait_for sleep, just not the full 10s default) to
+            keep this scenario fast; the upgrade/rollback verify budgets
+            are left at their real defaults since this run converges on
+            PHASE 2 verify's own FIRST poll attempt (both fixtures above
+            are already-ready)"
           ansible.builtin.command:
             argv:
               - ansible-playbook
@@ -1162,6 +1259,8 @@
               - "{{ {'topology_params': _se_j1_topology_params_switched_to_b} | to_json }}"
               - -e
               - "l3_request_id={{ _se6_run_id }}"
+              - -e
+              - l3_switch_quiesce_settle_seconds=1
             chdir: "{{ playbook_dir }}/.."
           environment:
             L3_TESTMODE: "1"
@@ -1179,36 +1278,47 @@
             fail_msg: "(6) FAIL — expected a clean success. stdout={{ _se6_run.stdout }}"
 
         - name: "(6) ASSERT: chart resolution ran (umbrella #306 — get metadata
-            + pull) and helm upgrade ran with the pulled tempdir chart
-            arg, --reuse-values, no reset-mode flag, the selected rollback
-            flag, and the target source's own flow.id"
+            + pull), the pre-switch baseline was captured (umbrella #306
+            design round #2 — get values), and helm upgrade ran with the
+            pulled tempdir chart arg, --reuse-values, the target source's
+            own flow.id, and NONE of the removed wait/rollback flags
+            (helm-as-oracle is gone — PHASE 2 verify, asserted below via
+            real HTTP, is what actually decided readiness here)"
           ansible.builtin.slurp:
             src: /tmp/l3-se-6-helm.log
           register: _se6_helm_log_raw
 
-        - name: "(6) parse + isolate the metadata/pull/upgrade invocation lines"
+        - name: "(6) parse + isolate the metadata/values/pull/upgrade invocation lines"
           ansible.builtin.set_fact:
             _se6_helm_log_lines: "{{ (_se6_helm_log_raw.content | b64decode).split('\n') | select('!=', '') | list }}"
 
         - name: "(6) split by invocation kind"
           ansible.builtin.set_fact:
             _se6_metadata_lines: "{{ _se6_helm_log_lines | select('match', '^get metadata ') | list }}"
+            _se6_values_lines: "{{ _se6_helm_log_lines | select('match', '^get values ') | list }}"
             _se6_pull_lines: "{{ _se6_helm_log_lines | select('match', '^pull ') | list }}"
             _se6_upgrade_lines: "{{ _se6_helm_log_lines | select('match', '^upgrade ') | reject('equalto', 'upgrade --help') | list }}"
 
-        - name: "(6) assert exactly one metadata read, one pull, one upgrade"
+        - name: "(6) assert exactly one metadata read, one values read, one pull, one upgrade"
           ansible.builtin.assert:
             that:
               - _se6_metadata_lines | length == 1
+              - _se6_values_lines | length == 1
               - _se6_pull_lines | length == 1
               - _se6_upgrade_lines | length == 1
-            fail_msg: "(6) FAIL — expected exactly one metadata/pull/upgrade call each. got={{ _se6_helm_log_lines }}"
+            fail_msg: "(6) FAIL — expected exactly one metadata/values/pull/upgrade call each. got={{ _se6_helm_log_lines }}"
 
         - name: "(6) assert the metadata read targeted the receiver (never l3_chart_version)"
           ansible.builtin.assert:
             that:
               - _se6_metadata_lines[0] == 'get metadata mxl-videotest-view -n mxl -o json'
             fail_msg: "(6) FAIL — unexpected 'helm get metadata' argv: {{ _se6_metadata_lines[0] }}"
+
+        - name: "(6) assert the pre-switch baseline values read targeted the receiver (umbrella #306 design round #2)"
+          ansible.builtin.assert:
+            that:
+              - _se6_values_lines[0] == 'get values mxl-videotest-view -n mxl -o json'
+            fail_msg: "(6) FAIL — unexpected 'helm get values' argv: {{ _se6_values_lines[0] }}"
 
         - name: "(6) assert the pull used the receiver's OWN installed version (the default stub fixture, 0.4.0)"
           ansible.builtin.assert:
@@ -1220,14 +1330,19 @@
           ansible.builtin.set_fact:
             _se6_chart_tmp: "{{ (_se6_pull_lines[0] | regex_search('--untardir (\\S+)', '\\1')) | first }}"
 
-        - name: "(6) assert helm upgrade argv"
+        - name: "(6) assert helm upgrade argv carries NONE of the removed wait/rollback flags"
           ansible.builtin.assert:
             that:
-              - _se6_upgrade_lines[0] == ('upgrade mxl-videotest-view ' ~ _se6_chart_tmp ~ '/mxl-fabrics-demo -n mxl --reuse-values --set flow.id=b0ae9cba-a989-4568-ac96-8bd19272c966 --rollback-on-failure --wait --timeout 90s')
+              - _se6_upgrade_lines[0] == ('upgrade mxl-videotest-view ' ~ _se6_chart_tmp ~ '/mxl-fabrics-demo -n mxl --reuse-values --set flow.id=b0ae9cba-a989-4568-ac96-8bd19272c966')
+              - "'--wait' not in _se6_upgrade_lines[0]"
+              - "'--timeout' not in _se6_upgrade_lines[0]"
+              - "'--rollback-on-failure' not in _se6_upgrade_lines[0]"
+              - "'--atomic' not in _se6_upgrade_lines[0]"
             fail_msg: >-
               (6) FAIL — expected the viewer's helm upgrade to carry the
-              pulled tempdir chart path, --reuse-values, and
-              --rollback-on-failure. Got: {{ _se6_upgrade_lines[0] }}
+              pulled tempdir chart path, --reuse-values, and the target
+              flow.id, with NO wait/timeout/rollback-on-failure/atomic
+              flags. Got: {{ _se6_upgrade_lines[0] }}
 
         - name: "(6) ASSERT: the pulled chart tempdir was removed after the run (the playbook's own outer always: cleanup, umbrella #306)"
           ansible.builtin.stat:
@@ -1240,7 +1355,7 @@
               - not _se6_chart_tmp_stat.stat.exists
             fail_msg: "(6) FAIL — expected the pulled chart tempdir to be removed after the run, still present at {{ _se6_chart_tmp }}"
 
-        - name: "(6) ASSERT (via real HTTP against the stub): active-source now reflects the switch target"
+        - name: "(6) ASSERT (via real HTTP against the stub): active-source now reflects the switch target, AND target-info/epoch are the FRESH (post-switch) values PHASE 2 verify polled for — never the stale pre-switch ones (umbrella #306 design round #2's own step 8 final readback, proved here via an independent HTTP read)"
           ansible.builtin.uri:
             url: "{{ _se6_k8s_url }}/api/v1/namespaces/mxl/configmaps/mxl-coordinator"
             method: GET
@@ -1252,7 +1367,9 @@
           ansible.builtin.assert:
             that:
               - _se6_coordinator.json.data['active-source'] == 'source-b'
-            fail_msg: "(6) FAIL — expected active-source=source-b, got {{ _se6_coordinator.json.data }}"
+              - "_se6_coordinator.json.data['target-info'] == '{\"pod_uid\": \"post-switch-uid\", \"start_ts\": \"2000\"}'"
+              - _se6_coordinator.json.data['epoch'] == 'post-switch-uid:2000'
+            fail_msg: "(6) FAIL — expected active-source=source-b with FRESH (post-switch) target-info/epoch, got {{ _se6_coordinator.json.data }}"
 
         - name: "(6) ASSERT (via real HTTP against the stub): the facility lock was released on the SUCCESS path"
           ansible.builtin.uri:
@@ -1264,6 +1381,638 @@
         - name: "(6) stop stubs"
           ansible.builtin.command:
             argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-6.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenarios 7/8/9: umbrella #306 design round #2's own THREE
+    # discriminating scenarios (frozen design, gate contract) — each
+    # proves helm-as-oracle is genuinely gone: `helm upgrade` rc=0 no
+    # longer means "ready", and `helm rollback` rc=0 no longer means
+    # "restored". All three share the same receiver Deployment resource
+    # name (mxl-videotest-view-target — dmf-media's own charts/
+    # mxl-fabrics-demo/templates/target.yaml) and the SAME small budget
+    # overrides (l3_switch_quiesce_settle_seconds=1,
+    # l3_switch_upgrade_verify_timeout_seconds=1,
+    # l3_switch_verify_poll_delay_seconds=1 — so PHASE 2 verify always
+    # exhausts in exactly ONE fast attempt, since none of these three
+    # scenarios ever wants the UPGRADE itself to succeed) and differ only
+    # in l3_switch_rollback_verify_timeout_seconds and their Deployment/
+    # coordinator GET-time patch-queue fixtures (STATE["get_patch_queues"]
+    # — see stub_k8s_api.py's own _apply_get_patch_queue docstring).
+    #
+    # The Deployment queue is a BARE (unconditional) FIFO — this resource
+    # has exactly two readers in a real run (switch_poll_upgrade_ready.yml,
+    # then switch_poll_rollback_verify.yml, strictly in that order, never
+    # interleaved with anything else) — so entries are queued in the EXACT
+    # chronological order those two pollers will consume them: one
+    # "still not ready" filler per PHASE 2 verify attempt (always exactly
+    # 1, given the override above), then whatever the rollback side needs.
+    # The coordinator ConfigMap queue, by contrast, uses the CONDITIONAL
+    # (when_absent) form throughout — switch_read_coordinator.yml's own
+    # PRE-quiesce read of the SAME ConfigMap would otherwise silently
+    # steal a bare FIFO entry before PHASE 1 ever clears anything (the
+    # exact bug scenario 6 caught live during this PR's own gate).
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(7) helm upgrade rc=0 but the Deployment never converges — PHASE 2 verify must roll back (never select the target); rollback converges IMMEDIATELY, so the job fails rollback_verified previous_source_restored"
+      vars:
+        _se7_run_id: "77777777777777777777777777777777"
+      block:
+        - name: "(7) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-7.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(7) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-se-7.json]
+          register: _se7_start
+          changed_when: false
+
+        - name: "(7) parse stub URLs"
+          ansible.builtin.set_fact:
+            _se7_k8s_url: "{{ _se7_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+
+        - name: "(7) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-se-7-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _se7_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(7) seed the coordinator ConfigMap with a live PRE-switch state (active-source=source-a)"
+          ansible.builtin.uri:
+            url: "{{ _se7_k8s_url }}/api/v1/namespaces/mxl/configmaps/"
+            method: POST
+            body_format: json
+            body:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata: { name: mxl-coordinator, namespace: mxl }
+              data:
+                active-source: source-a
+                target-info: '{"pod_uid": "pre-switch-uid", "start_ts": "1000"}'
+                epoch: "pre-switch-uid:1000"
+            status_code: [201]
+
+        - name: "(7) seed the receiver's target Deployment, NEVER reaching rollout-status readiness (helm upgrade rc=0'd, per the helm log below, but the pod never converges — exactly the job-413 shape this whole design round exists to catch)"
+          ansible.builtin.uri:
+            url: "{{ _se7_k8s_url }}/apis/apps/v1/namespaces/mxl/deployments/"
+            method: POST
+            body_format: json
+            body:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata: { name: mxl-videotest-view-target, namespace: mxl, generation: 2 }
+              spec:
+                replicas: 1
+                template:
+                  spec:
+                    containers:
+                      - name: status
+                        env:
+                          - { name: MXL_FLOW_ID, value: b0ae9cba-a989-4568-ac96-8bd19272c966 }
+              status:
+                observedGeneration: 1
+                replicas: 1
+                updatedReplicas: 0
+                readyReplicas: 0
+                availableReplicas: 0
+                unavailableReplicas: 1
+            status_code: [201]
+
+        - name: "(7) queue the Deployment's OWN trajectory: still-not-ready for PHASE 2 verify's one attempt, THEN converged (rolled back to the pre-switch flow.id) for the rollback verify's FIRST attempt — proves rollback converging IMMEDIATELY still requires actual verification, not a bare rc=0"
+          ansible.builtin.uri:
+            url: "{{ _se7_k8s_url }}/test-only/get-patch-queue"
+            method: POST
+            body_format: json
+            body:
+              kind: Deployment
+              namespace: mxl
+              name: mxl-videotest-view-target
+              patches:
+                - status: { observedGeneration: 1, updatedReplicas: 0, readyReplicas: 0, availableReplicas: 0, unavailableReplicas: 1 }
+                - status: { observedGeneration: 2, updatedReplicas: 1, readyReplicas: 1, availableReplicas: 1, unavailableReplicas: 0 }
+                  spec:
+                    template:
+                      spec:
+                        containers:
+                          - name: status
+                            env:
+                              - { name: MXL_FLOW_ID, value: 5fbec3b1-1b0f-417d-9059-8b94a47197ed }
+            status_code: [200]
+
+        - name: "(7) queue the coordinator's target-info/epoch republish (conditional — see this file's own header for why bare FIFO would be wrong here)"
+          ansible.builtin.uri:
+            url: "{{ _se7_k8s_url }}/test-only/get-patch-queue"
+            method: POST
+            body_format: json
+            body:
+              kind: ConfigMap
+              namespace: mxl
+              name: mxl-coordinator
+              patches:
+                - when_absent: "data.target-info"
+                  patch:
+                    data:
+                      target-info: '{"pod_uid": "rollback-restored-uid", "start_ts": "3000"}'
+                      epoch: "rollback-restored-uid:3000"
+            status_code: [200]
+
+        - name: "(7) create the helm PATH shim dir"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin
+            state: directory
+
+        - name: "(7) symlink helm -> stub_helm.sh"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin/helm
+            src: "{{ l3_harness_dir }}/stub_helm.sh"
+            state: link
+            force: true
+
+        - name: "(7) remove any stale helm invocation log from a prior run"
+          ansible.builtin.file:
+            path: /tmp/l3-se-7-helm.log
+            state: absent
+
+        - name: "(7) run the REAL switch playbook — helm upgrade succeeds (rc=0) but the Deployment fixture never converges within PHASE 2 verify's own (overridden, fast) budget"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/switch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _se7_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - receiver_instance=mxl-videotest-view
+              - -e
+              - source_instance=source-b
+              - -e
+              - reason=test switch
+              - -e
+              - "{{ {'topology_params': _se_j1_topology_params_switched_to_b} | to_json }}"
+              - -e
+              - "l3_request_id={{ _se7_run_id }}"
+              - -e
+              - l3_switch_quiesce_settle_seconds=1
+              - -e
+              - l3_switch_upgrade_verify_timeout_seconds=1
+              - -e
+              - l3_switch_verify_poll_delay_seconds=1
+              - -e
+              - l3_switch_rollback_verify_timeout_seconds=3
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-se-7-kubeconfig.yaml
+            PATH: "/tmp/l3-harness-bin:{{ lookup('env', 'PATH') }}"
+            L3_STUB_HELM_LOG: /tmp/l3-se-7-helm.log
+          register: _se7_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(7) ASSERT: the job FAILED with rollback_verified previous_source_restored (never a bare success, and never rollback_verification_failed — the rollback DID converge)"
+          ansible.builtin.assert:
+            that:
+              - _se7_run.rc != 0
+              - "'rollback_verified previous_source_restored:' in _se7_run.stdout"
+              - "'rollback_verification_failed:' not in _se7_run.stdout"
+            fail_msg: "(7) FAIL — expected rollback_verified previous_source_restored. stdout={{ _se7_run.stdout }}"
+
+        - name: "(7) ASSERT (via real HTTP against the stub): active-source was restored to the PREVIOUS source (source-a) — NEVER the switch target (source-b). This is the discriminating proof itself: the OLD (pre-#306-round-2) play never read the Deployment at all, so a helm rc=0 with a never-converging pod would have sailed straight to PHASE 3 and set active-source=source-b."
+          ansible.builtin.uri:
+            url: "{{ _se7_k8s_url }}/api/v1/namespaces/mxl/configmaps/mxl-coordinator"
+            method: GET
+            return_content: true
+            validate_certs: false
+          register: _se7_coordinator
+
+        - name: "(7) assert active-source restored to source-a, never source-b"
+          ansible.builtin.assert:
+            that:
+              - _se7_coordinator.json.data['active-source'] == 'source-a'
+            fail_msg: "(7) FAIL — active-source={{ _se7_coordinator.json.data['active-source'] | default('<absent>') }}, expected source-a (restored) and NEVER source-b (the target). got={{ _se7_coordinator.json.data }}"
+
+        - name: "(7) ASSERT (via real HTTP against the stub): the facility lock was released"
+          ansible.builtin.uri:
+            url: "{{ _se7_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(7) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-7.json]
+          changed_when: false
+          failed_when: false
+
+    - name: "(8) a LATE-converging rollback (needs more than one verify poll to confirm) still gets caught, verified, and reported — never trusted on a single read, and never masked as success"
+      vars:
+        _se8_run_id: "88888888888888888888888888888888"
+      block:
+        - name: "(8) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-8.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(8) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-se-8.json]
+          register: _se8_start
+          changed_when: false
+
+        - name: "(8) parse stub URLs"
+          ansible.builtin.set_fact:
+            _se8_k8s_url: "{{ _se8_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+
+        - name: "(8) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-se-8-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _se8_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(8) seed the coordinator ConfigMap with a live PRE-switch state (active-source=source-a)"
+          ansible.builtin.uri:
+            url: "{{ _se8_k8s_url }}/api/v1/namespaces/mxl/configmaps/"
+            method: POST
+            body_format: json
+            body:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata: { name: mxl-coordinator, namespace: mxl }
+              data:
+                active-source: source-a
+                target-info: '{"pod_uid": "pre-switch-uid", "start_ts": "1000"}'
+                epoch: "pre-switch-uid:1000"
+            status_code: [201]
+
+        - name: "(8) seed the receiver's target Deployment, NEVER reaching rollout-status readiness for PHASE 2 verify's own attempt (same job-413 shape as scenario 7)"
+          ansible.builtin.uri:
+            url: "{{ _se8_k8s_url }}/apis/apps/v1/namespaces/mxl/deployments/"
+            method: POST
+            body_format: json
+            body:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata: { name: mxl-videotest-view-target, namespace: mxl, generation: 2 }
+              spec:
+                replicas: 1
+                template:
+                  spec:
+                    containers:
+                      - name: status
+                        env:
+                          - { name: MXL_FLOW_ID, value: b0ae9cba-a989-4568-ac96-8bd19272c966 }
+              status:
+                observedGeneration: 1
+                replicas: 1
+                updatedReplicas: 0
+                readyReplicas: 0
+                availableReplicas: 0
+                unavailableReplicas: 1
+            status_code: [201]
+
+        - name: "(8) queue the Deployment's OWN trajectory: still-not-ready for PHASE 2 verify's one attempt AND rollback verify's FIRST attempt, THEN converged only on rollback verify's SECOND attempt — the discriminating proof: this playbook must genuinely POLL the rollback, not trust a single read (the exact job-413 edge — helm's own 90s rollback --wait expired a beat before the real convergence happened)"
+          ansible.builtin.uri:
+            url: "{{ _se8_k8s_url }}/test-only/get-patch-queue"
+            method: POST
+            body_format: json
+            body:
+              kind: Deployment
+              namespace: mxl
+              name: mxl-videotest-view-target
+              patches:
+                - status: { observedGeneration: 1, updatedReplicas: 0, readyReplicas: 0, availableReplicas: 0, unavailableReplicas: 1 }
+                - status: { observedGeneration: 1, updatedReplicas: 0, readyReplicas: 0, availableReplicas: 0, unavailableReplicas: 1 }
+                - status: { observedGeneration: 2, updatedReplicas: 1, readyReplicas: 1, availableReplicas: 1, unavailableReplicas: 0 }
+                  spec:
+                    template:
+                      spec:
+                        containers:
+                          - name: status
+                            env:
+                              - { name: MXL_FLOW_ID, value: 5fbec3b1-1b0f-417d-9059-8b94a47197ed }
+            status_code: [200]
+
+        - name: "(8) queue the coordinator's target-info/epoch republish (conditional)"
+          ansible.builtin.uri:
+            url: "{{ _se8_k8s_url }}/test-only/get-patch-queue"
+            method: POST
+            body_format: json
+            body:
+              kind: ConfigMap
+              namespace: mxl
+              name: mxl-coordinator
+              patches:
+                - when_absent: "data.target-info"
+                  patch:
+                    data:
+                      target-info: '{"pod_uid": "rollback-restored-uid", "start_ts": "3000"}'
+                      epoch: "rollback-restored-uid:3000"
+            status_code: [200]
+
+        - name: "(8) create the helm PATH shim dir"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin
+            state: directory
+
+        - name: "(8) symlink helm -> stub_helm.sh"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin/helm
+            src: "{{ l3_harness_dir }}/stub_helm.sh"
+            state: link
+            force: true
+
+        - name: "(8) remove any stale helm invocation log from a prior run"
+          ansible.builtin.file:
+            path: /tmp/l3-se-8-helm.log
+            state: absent
+
+        - name: "(8) run the REAL switch playbook — the rollback genuinely needs TWO verify polls to confirm (rollback_verify_timeout=3s/delay=1s gives 3 attempts of headroom)"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/switch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _se8_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - receiver_instance=mxl-videotest-view
+              - -e
+              - source_instance=source-b
+              - -e
+              - reason=test switch
+              - -e
+              - "{{ {'topology_params': _se_j1_topology_params_switched_to_b} | to_json }}"
+              - -e
+              - "l3_request_id={{ _se8_run_id }}"
+              - -e
+              - l3_switch_quiesce_settle_seconds=1
+              - -e
+              - l3_switch_upgrade_verify_timeout_seconds=1
+              - -e
+              - l3_switch_verify_poll_delay_seconds=1
+              - -e
+              - l3_switch_rollback_verify_timeout_seconds=3
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-se-8-kubeconfig.yaml
+            PATH: "/tmp/l3-harness-bin:{{ lookup('env', 'PATH') }}"
+            L3_STUB_HELM_LOG: /tmp/l3-se-8-helm.log
+          register: _se8_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(8) ASSERT: the job STILL fails with rollback_verified previous_source_restored, even though the rollback needed multiple polls to confirm — never trusted on a single read, never masked as success just because it eventually converged"
+          ansible.builtin.assert:
+            that:
+              - _se8_run.rc != 0
+              - "'rollback_verified previous_source_restored:' in _se8_run.stdout"
+              - "'rollback_verification_failed:' not in _se8_run.stdout"
+            fail_msg: "(8) FAIL — expected rollback_verified previous_source_restored despite a late-converging rollback. stdout={{ _se8_run.stdout }}"
+
+        - name: "(8) ASSERT (via real HTTP against the stub): active-source restored to source-a, never the switch target"
+          ansible.builtin.uri:
+            url: "{{ _se8_k8s_url }}/api/v1/namespaces/mxl/configmaps/mxl-coordinator"
+            method: GET
+            return_content: true
+            validate_certs: false
+          register: _se8_coordinator
+
+        - name: "(8) assert active-source restored to source-a, never source-b"
+          ansible.builtin.assert:
+            that:
+              - _se8_coordinator.json.data['active-source'] == 'source-a'
+            fail_msg: "(8) FAIL — active-source={{ _se8_coordinator.json.data['active-source'] | default('<absent>') }}, expected source-a. got={{ _se8_coordinator.json.data }}"
+
+        - name: "(8) ASSERT (via real HTTP against the stub): the facility lock was released"
+          ansible.builtin.uri:
+            url: "{{ _se8_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(8) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-8.json]
+          changed_when: false
+          failed_when: false
+
+    - name: "(9) rollback verification ITSELF fails (never converges either) — active-source stays absent (never restored, never the target), lock released, job fails rollback_verification_failed"
+      vars:
+        _se9_run_id: "99999999999999999999999999999999"
+      block:
+        - name: "(9) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-9.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(9) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-se-9.json]
+          register: _se9_start
+          changed_when: false
+
+        - name: "(9) parse stub URLs"
+          ansible.builtin.set_fact:
+            _se9_k8s_url: "{{ _se9_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+
+        - name: "(9) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-se-9-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _se9_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(9) seed the coordinator ConfigMap with a live PRE-switch state (active-source=source-a)"
+          ansible.builtin.uri:
+            url: "{{ _se9_k8s_url }}/api/v1/namespaces/mxl/configmaps/"
+            method: POST
+            body_format: json
+            body:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata: { name: mxl-coordinator, namespace: mxl }
+              data:
+                active-source: source-a
+                target-info: '{"pod_uid": "pre-switch-uid", "start_ts": "1000"}'
+                epoch: "pre-switch-uid:1000"
+            status_code: [201]
+
+        - name: "(9) seed the receiver's target Deployment, PERMANENTLY stuck not-ready (never queued to change — neither PHASE 2 verify NOR the rollback verify that follows it ever see this Deployment converge)"
+          ansible.builtin.uri:
+            url: "{{ _se9_k8s_url }}/apis/apps/v1/namespaces/mxl/deployments/"
+            method: POST
+            body_format: json
+            body:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata: { name: mxl-videotest-view-target, namespace: mxl, generation: 2 }
+              spec:
+                replicas: 1
+                template:
+                  spec:
+                    containers:
+                      - name: status
+                        env:
+                          - { name: MXL_FLOW_ID, value: b0ae9cba-a989-4568-ac96-8bd19272c966 }
+              status:
+                observedGeneration: 1
+                replicas: 1
+                updatedReplicas: 0
+                readyReplicas: 0
+                availableReplicas: 0
+                unavailableReplicas: 1
+            status_code: [201]
+
+        - name: "(9) create the helm PATH shim dir"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin
+            state: directory
+
+        - name: "(9) symlink helm -> stub_helm.sh"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin/helm
+            src: "{{ l3_harness_dir }}/stub_helm.sh"
+            state: link
+            force: true
+
+        - name: "(9) remove any stale helm invocation log from a prior run"
+          ansible.builtin.file:
+            path: /tmp/l3-se-9-helm.log
+            state: absent
+
+        - name: "(9) run the REAL switch playbook — neither PHASE 2 verify nor the rollback verify that follows it ever converge (rollback_verify_timeout=3s/delay=1s exhausts all 3 attempts, still not ready)"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/switch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _se9_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - receiver_instance=mxl-videotest-view
+              - -e
+              - source_instance=source-b
+              - -e
+              - reason=test switch
+              - -e
+              - "{{ {'topology_params': _se_j1_topology_params_switched_to_b} | to_json }}"
+              - -e
+              - "l3_request_id={{ _se9_run_id }}"
+              - -e
+              - l3_switch_quiesce_settle_seconds=1
+              - -e
+              - l3_switch_upgrade_verify_timeout_seconds=1
+              - -e
+              - l3_switch_verify_poll_delay_seconds=1
+              - -e
+              - l3_switch_rollback_verify_timeout_seconds=3
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-se-9-kubeconfig.yaml
+            PATH: "/tmp/l3-harness-bin:{{ lookup('env', 'PATH') }}"
+            L3_STUB_HELM_LOG: /tmp/l3-se-9-helm.log
+          register: _se9_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(9) ASSERT: the job fails with rollback_verification_failed — never rollback_verified (the rollback itself never converged)"
+          ansible.builtin.assert:
+            that:
+              - _se9_run.rc != 0
+              - "'rollback_verification_failed:' in _se9_run.stdout"
+              - "'rollback_verified previous_source_restored:' not in _se9_run.stdout"
+            fail_msg: "(9) FAIL — expected rollback_verification_failed. stdout={{ _se9_run.stdout }}"
+
+        - name: "(9) ASSERT (via real HTTP against the stub): active-source stays ABSENT — no restore was attempted (rollback verification itself failed), and it is NEVER the switch target"
+          ansible.builtin.uri:
+            url: "{{ _se9_k8s_url }}/api/v1/namespaces/mxl/configmaps/mxl-coordinator"
+            method: GET
+            return_content: true
+            validate_certs: false
+          register: _se9_coordinator
+
+        - name: "(9) assert active-source absent"
+          ansible.builtin.assert:
+            that:
+              - "'active-source' not in (_se9_coordinator.json.data | default({}))"
+            fail_msg: "(9) FAIL — active-source={{ _se9_coordinator.json.data['active-source'] | default('<absent>') }}, expected absent (no restore attempted after a failed rollback verification). got={{ _se9_coordinator.json.data }}"
+
+        - name: "(9) ASSERT (via real HTTP against the stub): the facility lock was released"
+          ansible.builtin.uri:
+            url: "{{ _se9_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(9) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-9.json]
           changed_when: false
           failed_when: false
 
@@ -1283,24 +2032,52 @@
           mutant (select-before-repoint, repoint-before-quiesce, or any
           skipped phase) fails at least one of these three assertions, and the
           facility lock is confirmed released after every one. Scenario 5
-          proves a genuinely failed helm re-point (--rollback-on-failure
-          requested) never advances to phase 3 (active-source stays cleared)
-          and still releases the lock — this cannot itself verify Helm's own
-          rollback-on-failure guarantee (that is Helm's tested behavior, not
-          code this repo owns),
-          only that this playbook correctly requests a rollback-on-failure
-          mode and correctly treats a failure as a failure. Scenario 6
-          proves the full, unfaulted sequence reaches the correct final state
-          (active-source = the switch target) and releases the lock on the
-          SUCCESS path too. Scenarios 4c, 5, and 6 (umbrella #306) also assert
-          the FULL helm invocation sequence — get metadata (never the
-          l3_chart_version pin), pull to a tempdir, then upgrade carrying that
-          exact tempdir chart path, --reuse-values, no reset-mode flag, and
-          the feature-detected --rollback-on-failure flag — against
-          stub_helm.sh's own hardened `[RELEASE] [CHART]` two-positional
-          contract, the enforcement that was missing when AWX job 321 became
-          this playbook's first, and first FAILED, live invocation. Scenario
-          4b additionally proves chart resolution now runs (and is visible in
-          the helm log) BEFORE phase 1 quiesce, while phase 2 has genuinely
-          not run yet. Scenario 6 also proves the pulled chart tempdir is
-          removed after the run.
+          proves the PHASE 2 helm upgrade COMMAND ITSELF failing outright
+          (rc!=0, never reaching PHASE 2 verify at all since nothing was
+          re-pointed) never advances to phase 3 (active-source stays
+          cleared) and still releases the lock, through the SAME generic
+          rescue as any other pre-mutation failure. Scenario 6 proves the
+          full, unfaulted sequence reaches the correct final state
+          (active-source = the switch target, WITH fresh post-switch
+          target-info/epoch, never the stale pre-switch values) and
+          releases the lock on the SUCCESS path too. Scenarios 4c, 5, and 6
+          (umbrella #306) also assert the FULL helm invocation sequence —
+          get metadata (never the l3_chart_version pin), the pre-switch
+          baseline's own get values (umbrella #306 design round #2), pull
+          to a tempdir, then upgrade carrying that exact tempdir chart
+          path, --reuse-values, and the target's flow.id — with NONE of
+          --wait/--timeout/--rollback-on-failure/--atomic (helm-as-oracle
+          is gone) — against stub_helm.sh's own hardened `[RELEASE]
+          [CHART]` two-positional contract, the enforcement that was
+          missing when AWX job 321 became this playbook's first, and first
+          FAILED, live invocation. Scenario 4b additionally proves chart
+          resolution + the pre-switch baseline capture now both run (and
+          are visible in the helm log) BEFORE phase 1 quiesce, while phase
+          2 has genuinely not run yet. Scenario 6 also proves the pulled
+          chart tempdir is removed after the run.
+
+          Scenarios 7/8/9 (umbrella #306 design round #2's own frozen gate
+          contract) prove helm-as-oracle is genuinely gone, each via a
+          REAL kubernetes.core.k8s_info Deployment fixture the OLD
+          (pre-round-2) play never once queried: (7) helm upgrade rc=0 but
+          the Deployment never reaches rollout-status readiness — PHASE 2
+          verify (not helm's own --wait) catches this, rolls back, verifies
+          the rollback via all four pass criteria on its very FIRST poll,
+          restores the previous active-source (source-a), and STILL fails
+          the job (rollback_verified previous_source_restored) — active-
+          source is NEVER the switch target. (8) the same upgrade-never-
+          converges shape, but the rollback itself needs a SECOND poll to
+          confirm (the exact job-413 edge: helm's own rollback --wait
+          window can expire a beat before the real convergence lands) —
+          proves this playbook genuinely POLLS for verification rather than
+          trusting a single read or helm's own rc, with the SAME
+          rollback_verified outcome once confirmed. (9) the rollback itself
+          never converges either — active-source stays absent (no restore
+          attempted, and never the target), the lock still releases, and
+          the job fails rollback_verification_failed, never
+          rollback_verified. All three assert the coordinator's
+          active-source directly via real HTTP, which is what actually
+          discriminates: an old-play mutant that never learned to poll the
+          Deployment would sail straight to PHASE 3 on scenario 7/8's
+          fixtures and set active-source=source-b — these three scenarios
+          exist specifically so that cannot happen silently again.
