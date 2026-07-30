@@ -1,0 +1,39 @@
+---
+# umbrella #306 (design round #2, frozen 2026-07-30) — called ONLY when
+# switch_verify_upgrade.yml's PHASE 2 poll never reached
+# _switch_upgrade_verify_ready within its budget. Issues `helm rollback`
+# WITHOUT --wait (helm's own wait verdict is never trusted again after job
+# 413 — see switch_poll_rollback_verify.yml's own header), then polls for
+# ALL FOUR pass criteria directly. `changed_when: true` (a genuine
+# mutation); `failed_when: false` — this command's own rc is diagnostic
+# only, exactly like every other helm call in this playbook now that
+# helm-as-oracle is gone; the poll immediately after is what actually
+# decides the outcome, never this rc.
+#
+# The receiver's chart is NOT re-resolved/re-pulled here: `helm rollback`
+# takes a release + revision, never a chart argument — the tempdir
+# switch_resolve_chart.yml pulled for PHASE 2's upgrade plays no part in a
+# rollback.
+#
+# Leaves _switch_rollback_verified set for the caller (the playbook) to
+# branch on — this file never fails the play itself, matching
+# switch_verify_upgrade.yml's own contract.
+- name: "L3 switch: PHASE 2 verify failed — helm rollback to the pre-switch revision (NO --wait; rc is diagnostic only, verified below)"
+  ansible.builtin.command:
+    argv:
+      - helm
+      - rollback
+      - "{{ receiver_instance }}"
+      - "{{ _switch_baseline.revision }}"
+      - -n
+      - "{{ l3_target_namespace }}"
+  changed_when: true
+  failed_when: false
+  register: _switch_rollback_cmd
+
+- name: "L3 switch: post-rollback verify — compute the bounded attempt count from the timeout/delay budget"
+  ansible.builtin.set_fact:
+    _switch_rollback_poll_max_attempts: "{{ (l3_switch_rollback_verify_timeout_seconds | int) // (l3_switch_verify_poll_delay_seconds | int) }}"
+
+- name: "L3 switch: post-rollback verify — poll until ALL FOUR criteria hold or the budget is exhausted"
+  ansible.builtin.include_tasks: switch_poll_rollback_verify.yml

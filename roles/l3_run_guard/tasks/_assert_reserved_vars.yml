@@ -264,9 +264,35 @@
           - _switch_helm_metadata is not defined
           - _switch_receiver_metadata is not defined
           - _switch_receiver_chart_version is not defined
-          - _switch_helm_upgrade_help is not defined
-          - _switch_rollback_flag is not defined
           - _switch_chart_tmp is not defined
+          # umbrella #306 design round #2 (frozen 2026-07-30): PHASE 2's
+          # wait model replaced (switch_capture_baseline.yml,
+          # switch_verify_upgrade.yml, switch_poll_upgrade_ready.yml,
+          # switch_rollback_and_verify.yml, switch_poll_rollback_verify.yml)
+          # — the pre-switch baseline (revision/chart/flow.id/coordinator
+          # pre-state), the direct kubernetes.core.k8s_info rollout-status
+          # polls (never helm --wait), and the verified-rollback machinery.
+          # None of these have a legitimate caller-input case — a caller
+          # extra_var of any of these names could otherwise forge the
+          # rollback target revision, fake a "ready"/"verified" verdict, or
+          # forge the pre-switch flow.id a rollback is checked against.
+          - _switch_pre_values_result is not defined
+          - _switch_pre_values is not defined
+          - _switch_baseline is not defined
+          - _switch_upgrade_poll_max_attempts is not defined
+          - _switch_upgrade_deploy_poll is not defined
+          - _switch_upgrade_coord_poll is not defined
+          - _switch_upgrade_verify_ready is not defined
+          - _switch_upgrade_poll_attempt_done is not defined
+          - _switch_rollback_cmd is not defined
+          - _switch_rollback_poll_max_attempts is not defined
+          - _switch_rollback_values_poll is not defined
+          - _switch_rollback_deploy_poll is not defined
+          - _switch_rollback_coord_poll is not defined
+          - _switch_rollback_current_values is not defined
+          - _switch_rollback_verified is not defined
+          - _switch_rollback_poll_attempt_done is not defined
+          - _switch_final_readback is not defined
         fail_msg: >-
           L3 launcher refused: preflight-error (reserved-var). One or more
           reserved internal variables were supplied as extra_vars — these

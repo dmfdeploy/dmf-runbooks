@@ -1,0 +1,106 @@
+---
+# umbrella #306 (design round #2, frozen 2026-07-30) — post-rollback
+# verification. `helm rollback` is issued WITHOUT --wait (job 413: helm's
+# own rollback-wait verdict was WRONG — the rollback had verifiably
+# converged seconds after helm's 90s window expired) — helm's rc is
+# diagnostic only, never trusted. This file polls for ALL FOUR pass
+# criteria directly, the same recursive-include shape as
+# switch_poll_upgrade_ready.yml (see that file's header for why a
+# recursive include and not until:/retries: — identical reasoning applies
+# here).
+#
+# The four criteria (frozen design, verbatim):
+#   1. `helm get values` reports flow.id == the PRE-switch flow.id
+#      (_switch_baseline.flow_id) — proves the release's OWN values are
+#      restored, not just that `helm rollback` exited 0.
+#   2. The target Deployment reaches the SAME rollout-status conjunction
+#      switch_poll_upgrade_ready.yml checks (observedGeneration/updated/
+#      ready/available replicas, no unavailable) — proves the ROLLED-BACK
+#      pod template actually converged, not just that a rollback was
+#      requested.
+#   3. The pod template/env proves the target containers carry the
+#      PRE-switch flow id (the chart's own `status` container sets
+#      MXL_FLOW_ID from .Values.flow.id — dmf-media's
+#      charts/mxl-fabrics-demo/templates/target.yaml) — the SAME
+#      Deployment read as criterion 2 already carries this, no extra call.
+#   4. The coordinator has NONEMPTY target-info AND epoch (republished by
+#      the restored target on its own startup) — same freshness check as
+#      switch_poll_upgrade_ready.yml's own coordinator read.
+#
+# Sets _switch_rollback_verified (bool). Never fails the play itself — the
+# caller (the playbook's PHASE 2 verify-failure block) decides what to do
+# with the outcome (restore the previous active-source + fail
+# rollback_verified, or fail rollback_verification_failed — see that
+# block's own comments).
+- name: "L3 switch: post-rollback verify attempt {{ _switch_rollback_poll_attempt | default(1) }}/{{ _switch_rollback_poll_max_attempts }}"
+  block:
+    - name: "L3 switch: read the receiver's CURRENT Helm values (criterion 1 — flow.id restored)"
+      ansible.builtin.command:
+        argv:
+          - helm
+          - get
+          - values
+          - "{{ receiver_instance }}"
+          - -n
+          - "{{ l3_target_namespace }}"
+          - -o
+          - json
+      changed_when: false
+      register: _switch_rollback_values_poll
+
+    - name: "L3 switch: read the target Deployment's current status + pod template (criteria 2 + 3)"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ receiver_instance }}-target"
+        namespace: "{{ l3_target_namespace }}"
+      register: _switch_rollback_deploy_poll
+
+    - name: "L3 switch: read the coordinator ConfigMap's current target-info/epoch (criterion 4)"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: ConfigMap
+        name: mxl-coordinator
+        namespace: "{{ l3_target_namespace }}"
+      register: _switch_rollback_coord_poll
+
+    - name: "L3 switch: parse the receiver's CURRENT Helm values"
+      ansible.builtin.set_fact:
+        _switch_rollback_current_values: "{{ _switch_rollback_values_poll.stdout | from_json }}"
+
+    - name: "L3 switch: evaluate ALL FOUR post-rollback pass criteria (single combined condition, one shared budget)"
+      ansible.builtin.set_fact:
+        _switch_rollback_verified: >-
+          {{
+            (_switch_rollback_current_values.flow.id | default('')) == _switch_baseline.flow_id
+            and (_switch_rollback_deploy_poll.resources | length > 0)
+            and (_switch_rollback_deploy_poll.resources[0].status.observedGeneration | default(-1))
+                >= (_switch_rollback_deploy_poll.resources[0].metadata.generation | default(0))
+            and (_switch_rollback_deploy_poll.resources[0].status.updatedReplicas | default(0))
+                == (_switch_rollback_deploy_poll.resources[0].spec.replicas | default(1))
+            and (_switch_rollback_deploy_poll.resources[0].status.readyReplicas | default(0))
+                == (_switch_rollback_deploy_poll.resources[0].spec.replicas | default(1))
+            and (_switch_rollback_deploy_poll.resources[0].status.availableReplicas | default(0))
+                == (_switch_rollback_deploy_poll.resources[0].spec.replicas | default(1))
+            and (_switch_rollback_deploy_poll.resources[0].status.unavailableReplicas | default(0)) == 0
+            and (
+              _switch_rollback_deploy_poll.resources[0].spec.template.spec.containers
+              | selectattr('name', 'equalto', 'status') | map(attribute='env') | first | default([])
+              | selectattr('name', 'equalto', 'MXL_FLOW_ID') | map(attribute='value') | first | default('')
+            ) == _switch_baseline.flow_id
+            and (_switch_rollback_coord_poll.resources | length > 0)
+            and (_switch_rollback_coord_poll.resources[0].data['target-info'] | default('') | trim) != ''
+            and (_switch_rollback_coord_poll.resources[0].data['epoch'] | default('') | trim) != ''
+          }}
+        _switch_rollback_poll_attempt_done: "{{ _switch_rollback_poll_attempt | default(1) | int }}"
+
+    - name: "L3 switch: post-rollback verify poll delay (standard Ansible sleep idiom)"
+      ansible.builtin.wait_for:
+        timeout: "{{ l3_switch_verify_poll_delay_seconds }}"
+      when: not _switch_rollback_verified and _switch_rollback_poll_attempt_done < _switch_rollback_poll_max_attempts
+
+    - name: "L3 switch: post-rollback verify — recurse (next attempt)"
+      ansible.builtin.include_tasks: switch_poll_rollback_verify.yml
+      vars:
+        _switch_rollback_poll_attempt: "{{ _switch_rollback_poll_attempt_done + 1 }}"
+      when: not _switch_rollback_verified and _switch_rollback_poll_attempt_done < _switch_rollback_poll_max_attempts

@@ -31,25 +31,69 @@
 # header for the full design rationale) rather than main.yml's full launch
 # gate or lock_only.yml's teardown entry point.
 #
-# Failure posture (spec §6.2, claude1/#201 WP4 addendum condition 4): a
-# failure at ANY phase leaves active-source cleared (or never advanced) —
-# a clean, zero-transmitter quiesced state — and this playbook does NOT
-# attempt to restore the pre-switch active-source. dmf-cms's own
-# ReconnectViaAwxActuator reports failed_rollback_required and expects
-# OPERATOR retry/rollback, never an automatic one; this playbook's own
-# rescue: mirrors that on the ansible side (release the lock, re-raise,
-# nothing else). There is consequently no DMF_L3_OUTCOME marker emitted
-# here either — that vocabulary belongs to launch/teardown/rollback's own
-# snapshot-based outcome model (dmf-cms's OperationState), which a switch
-# does not use at all; the actuator reads the AWX job's own terminal
-# status directly (successful/failed/...), nothing else.
+# Failure posture (spec §6.2, claude1/#201 WP4 addendum condition 4, REVISED
+# by umbrella #306 design round #2, frozen 2026-07-30): a failure at ANY
+# phase BEFORE PHASE 2's own upgrade verification leaves active-source
+# cleared (or never advanced) — a clean, zero-transmitter quiesced state,
+# no rollback needed because nothing was ever re-pointed. A failure OF
+# PHASE 2's own verification is different: the viewer's Helm release WAS
+# re-pointed, so this playbook now runs a bounded, VERIFIED `helm rollback`
+# (never trusting helm's own wait verdict — job 413 proved it can be wrong)
+# and, only once that rollback is independently confirmed via all four
+# pass criteria (switch_poll_rollback_verify.yml), restores the pre-switch
+# active-source IF one was set. Either way — verified-rollback-restore or
+# rollback-verification-failure — the job STILL reports failure; a switch
+# that did not reach its requested target never reports success (see the
+# PHASE 2 verify block below for the exact two outcomes and their
+# messages). dmf-cms's own ReconnectViaAwxActuator still expects operator
+# retry/rollback on any failure — an automatically-restored previous
+# source does not change that; it only means "recovered to a known-safe
+# state" is stronger than the old "quiesced, nothing else" contract. This
+# playbook's own rescue: is UNCHANGED as the unconditional lock-release
+# backstop (see its own comments) — it never becomes the AUTOMATIC-rollback
+# path (that is entirely in-block, below), only the final safety net for
+# every phase (including a failed rollback-and-verify itself). There is
+# consequently still no DMF_L3_OUTCOME marker emitted here — that
+# vocabulary belongs to launch/teardown/rollback's own snapshot-based
+# outcome model (dmf-cms's OperationState), which a switch does not use at
+# all; the actuator reads the AWX job's own terminal status directly
+# (successful/failed/...), nothing else.
+#
+# TIMING CONTRACT (umbrella #306 design round #2 — the console watch budget
+# formula's own reference; DMF_CONSOLE_L3_SWITCH_SOURCE_TIMEOUT_SECONDS in
+# dmf-cms is a SEPARATE change, not this PR, but its default (360s) is
+# built directly from these four vars + AWX/poll slack — keep them in sync
+# if either side's default ever moves):
+#   l3_switch_quiesce_settle_seconds        (10)  — PHASE 1: fixed settle
+#     wait after clearing active-source/target-info/epoch, before PHASE 2's
+#     helm upgrade, so the outgoing supervisor has genuinely stopped
+#     transmitting before the viewer restarts.
+#   l3_switch_upgrade_verify_timeout_seconds (120) — PHASE 2 rollout
+#     verification budget (kubernetes.core.k8s_info polling, NOT helm
+#     --wait — see the PHASE 2 tasks below). Arithmetic (job 413
+#     measurements): ~31s observed pod turnover + ~60s observed
+#     convergence + ~30s slack. Kubernetes' own default 30s termination
+#     grace applies (no terminationGracePeriodSeconds override in the
+#     chart). Kept at 120s even on the #308-fixed image for attempt #3 —
+#     turnover re-measurement against that image comes later, not here.
+#   l3_switch_rollback_verify_timeout_seconds (120) — post-rollback
+#     verification budget (same rationale/arithmetic as above — a rollback
+#     is itself a pod turnover + convergence, not a shortcut).
+#   l3_switch_verify_poll_delay_seconds      (10)  — poll interval for both
+#     verification polls (reuses launch-mxl-fabrics-demo.yml's own existing
+#     Deployment-wait delay: 10 idiom).
+# All four are ordinary play vars (like l3_target_namespace) — override via
+# -e for a faster test-mode poll; production runs take the defaults above.
 - name: MXL fabrics demo switch - reconfigure viewer active source
   hosts: localhost
   connection: local
   gather_facts: false
   vars:
     l3_target_namespace: mxl
-    l3_switch_viewer_repoint_timeout: 90s
+    l3_switch_quiesce_settle_seconds: 10
+    l3_switch_upgrade_verify_timeout_seconds: 120
+    l3_switch_rollback_verify_timeout_seconds: 120
+    l3_switch_verify_poll_delay_seconds: 10
   tasks:
     - name: "L3 switch gate through terminal — ONE outer block/rescue/always
         (mirrors launch/teardown's own R4a Backbone shape: this playbook's
@@ -103,6 +147,17 @@
             name: l3_run_guard
             tasks_from: switch_resolve_chart
 
+        - name: "L3 switch: capture the PRE-switch baseline (umbrella #306
+            design round #2, roles/l3_run_guard/tasks/switch_capture_baseline.yml)
+            — revision/chart identity/flow.id/coordinator pre-state, read
+            under the held facility lock but BEFORE any mutation, exactly
+            like switch_resolve_chart.yml above. This is what PHASE 2's own
+            post-rollback verification compares against, and the source of
+            the previous active-source a verified rollback restores."
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: switch_capture_baseline
+
         # ── PHASE 1: QUIESCE — de-select ──────────────────────────────
         - name: "PHASE 1 (quiesce): clear active-source — the WP2
             supervisor's own continuous re-check sees this mismatch and
@@ -142,23 +197,43 @@
           vars:
             l3_fault_inject_boundary: post-switch-quiesce
 
+        - name: "PHASE 1 (quiesce): fixed settle wait (umbrella #306 design
+            round #2) — l3_switch_quiesce_settle_seconds, standard Ansible
+            sleep idiom (wait_for with only timeout:). Gives the outgoing
+            supervisor's own continuous re-check (spec §6.2 step 1) time to
+            genuinely stop transmitting before PHASE 2 restarts the viewer
+            at the new flow.id — a fixed wait, not a poll, because there is
+            no observable external signal for 'the supervisor has stopped'
+            short of the coordinator fields this step already cleared."
+          ansible.builtin.wait_for:
+            timeout: "{{ l3_switch_quiesce_settle_seconds }}"
+
         # ── PHASE 2: RE-POINT — restart the viewer at the new flow.id ──
-        - name: "PHASE 2 (re-point): re-point + restart the viewer — atomic
-            rollback on failure (umbrella #201 WP4b condition 1, chart arg
-            fixed by umbrella #306): the selected rollback flag
-            (_switch_rollback_flag) makes Helm roll THIS release back to
-            its PRE-switch values on any failure (bad values, timeout,
-            readiness failure) rather than leaving a half-applied release.
-            active-source is ALREADY cleared (phase 1), so a failed
-            re-point still leaves a clean, zero-transmitter state, never a
-            half-switched one. The chart positional is the LOCAL path
-            switch_resolve_chart.yml already pulled (same installed
-            version the release is on, never l3_chart_version) — Helm's
-            own `[RELEASE] [CHART]` contract requires it; omitting it was
-            umbrella #306's entire bug. --reuse-values (never
-            --reset-values/--reset-then-reuse-values) preserves every
-            value the L3 launcher injected at install time; only flow.id
-            is overridden here."
+        - name: "PHASE 2 (re-point): re-point + restart the viewer (umbrella
+            #201 WP4b condition 1, chart arg fixed by umbrella #306,
+            WAIT MODEL REPLACED by umbrella #306 design round #2 —
+            job 413 proved helm's own --wait/rollback-wait verdict can be
+            WRONG: its 90s upgrade wait expired during genuine pod
+            turnover, then its rollback wait ALSO expired even though the
+            rollback had verifiably converged seconds later. Helm-as-oracle
+            is gone: NO --wait, NO --timeout, NO --rollback-on-failure, NO
+            --atomic — this command's own rc is diagnostic only. Rollout
+            readiness is verified DIRECTLY, next task, via
+            kubernetes.core.k8s_info polling (switch_verify_upgrade.yml) —
+            a failure there runs a VERIFIED helm rollback (never trusting
+            helm's own wait verdict either), not helm's own automatic one.
+            active-source is ALREADY cleared (phase 1), so this task
+            failing outright (rc != 0, before verification even starts)
+            still leaves a clean, zero-transmitter state, never a
+            half-switched one — the SAME contract as before, just no
+            longer helm's own rollback machinery enforcing it. The chart
+            positional is the LOCAL path switch_resolve_chart.yml already
+            pulled (same installed version the release is on, never
+            l3_chart_version) — Helm's own `[RELEASE] [CHART]` contract
+            requires it; omitting it was umbrella #306's ORIGINAL bug.
+            --reuse-values (never --reset-values/--reset-then-reuse-values)
+            preserves every value the L3 launcher injected at install
+            time; only flow.id is overridden here."
           ansible.builtin.command:
             argv:
               - helm
@@ -170,10 +245,6 @@
               - --reuse-values
               - --set
               - "flow.id={{ _switch_target_projection.flow_id }}"
-              - "{{ _switch_rollback_flag }}"
-              - --wait
-              - --timeout
-              - "{{ l3_switch_viewer_repoint_timeout }}"
           changed_when: true
 
         - name: "L3: test-only fault injection boundary (umbrella #201
@@ -185,6 +256,83 @@
             tasks_from: fault_inject
           vars:
             l3_fault_inject_boundary: post-switch-repoint
+
+        - name: "PHASE 2 verify (umbrella #306 design round #2) — poll
+            kubernetes.core.k8s_info until the target Deployment reaches
+            rollout-status readiness AND the coordinator's target-info/
+            epoch are fresh, or l3_switch_upgrade_verify_timeout_seconds is
+            exhausted. Sets _switch_upgrade_verify_ready — see
+            roles/l3_run_guard/tasks/switch_verify_upgrade.yml for the full
+            rationale (this replaces helm's own --wait entirely)."
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: switch_verify_upgrade
+
+        - name: "PHASE 2 verify FAILED (umbrella #306 design round #2) —
+            never trust helm's own rc or wait verdict; the facility lock,
+            the cleared active-source, and target-info/epoch ALL stay
+            exactly as PHASE 1 left them while this runs. Rolls back to the
+            pre-switch revision, verifies the rollback via ALL FOUR pass
+            criteria (switch_poll_rollback_verify.yml), and EITHER restores
+            the pre-switch active-source (only if one was set) and fails
+            with rollback_verified previous_source_restored, OR — if
+            rollback verification itself fails — leaves active-source
+            absent and fails with rollback_verification_failed. A switch
+            that did not reach its requested target NEVER reports success
+            either way."
+          when: not _switch_upgrade_verify_ready
+          block:
+            - name: "L3 switch: roll back the receiver + verify all four pass criteria (umbrella #306 design round #2)"
+              ansible.builtin.include_role:
+                name: l3_run_guard
+                tasks_from: switch_rollback_and_verify
+
+            - name: "L3 switch: rollback verified — restore the pre-switch active-source (ONLY IF one was set pre-quiesce; criterion 4 of switch_rollback_verified already proves fresh target-info/epoch)"
+              kubernetes.core.k8s:
+                state: present
+                definition:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata: { name: mxl-coordinator, namespace: "{{ l3_target_namespace }}" }
+                  data:
+                    active-source: "{{ _switch_baseline.active_source }}"
+              when: _switch_rollback_verified and (_switch_baseline.active_source | trim) != ''
+
+            - name: "L3 switch: rollback verified — still a failed switch (never silently succeed on a restore)"
+              ansible.builtin.fail:
+                msg: >-
+                  rollback_verified previous_source_restored:
+                  receiver_instance={{ receiver_instance }}
+                  request_id={{ l3_request_id | default('') }}
+                  restored_active_source={{ _switch_baseline.active_source | default('') }}.
+                  PHASE 2's upgrade did not verify within
+                  {{ l3_switch_upgrade_verify_timeout_seconds }}s; the
+                  receiver was rolled back to revision
+                  {{ _switch_baseline.revision }} and independently
+                  verified (values, Deployment rollout-status, pod
+                  flow.id, coordinator freshness). The pre-switch
+                  active-source was restored where one was set. This
+                  switch did NOT reach its requested target — operator
+                  retry required.
+              when: _switch_rollback_verified
+
+            - name: "L3 switch: rollback verification FAILED — active-source stays absent, no restore attempted"
+              ansible.builtin.fail:
+                msg: >-
+                  rollback_verification_failed:
+                  receiver_instance={{ receiver_instance }}
+                  request_id={{ l3_request_id | default('') }}.
+                  PHASE 2's upgrade did not verify within
+                  {{ l3_switch_upgrade_verify_timeout_seconds }}s; a helm
+                  rollback to revision {{ _switch_baseline.revision }} was
+                  attempted but did NOT verify within
+                  {{ l3_switch_rollback_verify_timeout_seconds }}s either
+                  (values/rollout-status/pod-flow-id/coordinator-freshness
+                  not all confirmed). active-source is left absent
+                  (zero-transmitter, the spec's own safe state) — the lock
+                  is about to be released; OPERATOR INTERVENTION REQUIRED,
+                  this is not a state a retry alone is guaranteed to fix.
+              when: not _switch_rollback_verified
 
         # ── PHASE 3: SELECT — set active-source ───────────────────────
         - name: "PHASE 3 (select): set active-source = the switch target —
@@ -200,6 +348,34 @@
               data:
                 active-source: "{{ _switch_target_projection.active_source }}"
 
+        - name: "PHASE 3 final readback (umbrella #306 design round #2) —
+            re-read the coordinator ConfigMap and assert the FULL
+            conjunction for the target: the PATCH above genuinely landed
+            (never trust a k8s module's own reported success — the same
+            'call-success never equals clean' discipline
+            rollback_helm_surface.yml already applies to helm), and
+            target-info/epoch are STILL fresh (defense in depth against a
+            race between PHASE 2 verify's own read and this patch)."
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: ConfigMap
+            name: mxl-coordinator
+            namespace: "{{ l3_target_namespace }}"
+          register: _switch_final_readback
+
+        - name: "PHASE 3 final readback: assert the full conjunction"
+          ansible.builtin.assert:
+            that:
+              - _switch_final_readback.resources | length > 0
+              - _switch_final_readback.resources[0].data['active-source'] | default('') == _switch_target_projection.active_source
+              - (_switch_final_readback.resources[0].data['target-info'] | default('') | trim) != ''
+              - (_switch_final_readback.resources[0].data['epoch'] | default('') | trim) != ''
+            fail_msg: >-
+              DMF_L3_SWITCH_REFUSED: detail=switch-final-readback-mismatch
+              request_id={{ l3_request_id | default('') }}
+              receiver_instance={{ receiver_instance }}
+              got={{ _switch_final_readback.resources[0].data | default({}) }}
+
         - name: "L3 switch success — release the lock (no DMF_L3_OUTCOME
             marker — see this playbook's own header for why: that
             vocabulary is launch/teardown/rollback's own snapshot-based
@@ -209,15 +385,22 @@
             tasks_from: lock_release
       rescue:
         - name: "L3 switch rescue — UNCONDITIONAL lock release (umbrella
-            #201 WP4b condition 3): NO restore-old-active-source, no
-            rollback machinery — spec §6.2's own failure posture is
-            'active-source stays cleared, report failure, operator
-            retry/rollback' (claude1/#201 WP4 addendum condition 4: no new
-            rollback logic in the actuator; this playbook mirrors that on
-            the ansible side). Whatever phase failed, the coordinator is
-            already in its safe quiesced state (phase 1 ran first, or
-            never started at all); this rescue's ONLY job is making sure
-            the facility lock is never left held."
+            #201 WP4b condition 3, REVISED by umbrella #306 design round
+            #2): this is still the FINAL backstop, unconditionally
+            releasing the facility lock no matter which phase failed —
+            including a failed PHASE 2 verify-rollback-and-verify sequence
+            above, whose own ansible.builtin.fail tasks land here exactly
+            like any other failure. It is deliberately NOT where any
+            rollback/restore logic lives — that machinery is entirely
+            in-block (the 'PHASE 2 verify FAILED' block above), scoped
+            specifically to 'the upgrade was applied but didn't verify';
+            every OTHER failure this rescue catches (pre-lock refusals,
+            switch_resolve_chart/switch_capture_baseline read failures,
+            PHASE 1 mutation failures, PHASE 2's own command failing
+            outright before verification even starts, a PHASE 3 final-
+            readback mismatch) still leaves active-source cleared/absent —
+            the spec's own safe quiesced state, no rollback needed because
+            nothing further to restore."
           ansible.builtin.include_role:
             name: l3_run_guard
             tasks_from: lock_release
@@ -228,11 +411,10 @@
               MXL fabrics-demo switch failed for
               receiver_instance={{ receiver_instance | default('<unknown>') }}
               request_id={{ l3_request_id | default('<unknown>') }}. See the
-              task error above for the root cause; the facility lock has
-              already been released. active-source is cleared (or was
-              never advanced) — this is the spec's own safe quiesced
-              state; no automatic rollback runs here, operator
-              retry/rollback required.
+              task error above for the root cause — if an automatic rollback
+              ran, its own outcome is reported in a separate error just
+              above this one; the facility lock has already been released.
+              Operator retry/rollback required.
       always:
         - name: "L3 switch: remove the temporary chart directory (umbrella
             #306) — idempotent, a no-op when switch_resolve_chart.yml never

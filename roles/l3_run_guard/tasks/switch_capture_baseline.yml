@@ -1,0 +1,79 @@
+---
+# umbrella #306 (design round #2, frozen 2026-07-30) — capture the
+# receiver's PRE-switch baseline: the exact reference state PHASE 2's own
+# post-rollback verification (switch_poll_rollback_verify.yml) compares
+# against, and the source of the "previous active-source" a verified
+# rollback restores. Called from the playbook AFTER switch_resolve_chart.yml
+# (reuses its already-read _switch_receiver_metadata — no second `helm get
+# metadata` call) and BEFORE PHASE 1 (quiesce): this is a pure READ, no
+# mutation, so it can safely run pre-quiesce like every other pre-mutation
+# step in this playbook.
+#
+# WHY A SEPARATE FILE FROM switch_resolve_chart.yml: that file's job is
+# "what chart do we pull" (chart identity/version, for PHASE 2's argv);
+# this file's job is "what do we roll back TO if PHASE 2 doesn't verify" —
+# a different concern (rollback reference vs. pull target), even though
+# both read from the same `helm get metadata` call. Revision is read from
+# metadata here (never re-fetched); flow.id is NOT in `helm get metadata`
+# output, so a `helm get values` call is required.
+#
+# `helm get values` (no --all) mirrors rollback_helm_surface.yml's own
+# content-identity convention — user-supplied values only, which is
+# exactly where flow.id lives (the L3 launcher always sets it via --set,
+# so it is a user-supplied value on every install/upgrade, never a
+# chart-default-only field).
+- name: "L3 switch: read the receiver's PRE-switch Helm values (rollback verification baseline — flow.id is never in `helm get metadata`, needs its own read)"
+  ansible.builtin.command:
+    argv:
+      - helm
+      - get
+      - values
+      - "{{ receiver_instance }}"
+      - -n
+      - "{{ l3_target_namespace }}"
+      - -o
+      - json
+  changed_when: false
+  register: _switch_pre_values_result
+
+- name: "L3 switch: parse the receiver's PRE-switch Helm values"
+  ansible.builtin.set_fact:
+    _switch_pre_values: "{{ _switch_pre_values_result.stdout | from_json }}"
+
+- name: "L3 switch: assert the PRE-switch values carry a flow.id (nothing to roll back to if this is missing — refuse before any mutation)"
+  ansible.builtin.assert:
+    that:
+      - _switch_pre_values.flow is defined
+      - (_switch_pre_values.flow.id | default('') | trim) != ''
+    fail_msg: >-
+      DMF_L3_SWITCH_REFUSED: detail=switch-pre-values-missing-flow-id
+      request_id={{ l3_request_id | default('') }}
+      receiver_instance={{ receiver_instance }}
+      got={{ _switch_pre_values }}
+
+# _switch_baseline bundles everything switch_poll_rollback_verify.yml (all
+# four pass criteria) and the post-verification restore decision need, in
+# one place, read entirely BEFORE phase 1 ever mutates anything:
+#   .revision      — helm get metadata's own revision (the `helm rollback`
+#                     TARGET; a revision number, not used for verification
+#                     itself — content-identity is, same R3a-8 lesson
+#                     rollback_helm_surface.yml already encodes).
+#   .chart/.chart_version — the receiver's pre-switch chart identity,
+#                     already resolved by switch_resolve_chart.yml.
+#   .flow_id       — the pre-switch flow.id, what a verified rollback must
+#                     restore.
+#   .active_source/.target_info/.epoch — the coordinator's pre-switch
+#                     values (read by switch_read_coordinator.yml, POST-lock
+#                     — see that file's own header for why post-lock is the
+#                     only safe time to read it). A verified rollback
+#                     restores active_source ONLY IF this was non-empty.
+- name: "L3 switch: bundle the PRE-switch baseline (rollback verification reference + restore-source decision)"
+  ansible.builtin.set_fact:
+    _switch_baseline:
+      revision: "{{ _switch_receiver_metadata.revision }}"
+      chart: "{{ _switch_receiver_metadata.chart }}"
+      chart_version: "{{ _switch_receiver_chart_version }}"
+      flow_id: "{{ _switch_pre_values.flow.id }}"
+      active_source: "{{ _switch_coordinator_pre.resources[0].data['active-source'] | default('') }}"
+      target_info: "{{ _switch_coordinator_pre.resources[0].data['target-info'] | default('') }}"
+      epoch: "{{ _switch_coordinator_pre.resources[0].data['epoch'] | default('') }}"

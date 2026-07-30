@@ -1,0 +1,82 @@
+---
+# umbrella #306 (design round #2, frozen 2026-07-30) — PHASE 2 rollout
+# verification: helm's own --wait is GONE (job 413's false failure: the
+# rollback's own --wait window ALSO expired even though the rollback had
+# verifiably converged seconds later — helm's wait verdict is diagnostic
+# at best, actively wrong at worst). This file is the direct replacement:
+# poll kubernetes.core.k8s_info (never shell out to kubectl — the EE does
+# not guarantee it) until BOTH the target Deployment reaches rollout-status
+# readiness AND the coordinator's target-info/epoch are fresh (republished
+# by the new pod on startup), or the budget
+# (l3_switch_upgrade_verify_timeout_seconds, default 120s — the console
+# watch budget formula's own "upgrade" term) is exhausted.
+#
+# WHY A RECURSIVE include_tasks, NOT until:/retries: (the play's existing
+# retry/delay SHAPE, e.g. launch-mxl-fabrics-demo.yml's own Deployment
+# wait) — until:/retries: only retries ONE task's own module call; this
+# step needs a SINGLE shared budget across TWO different resource reads
+# (Deployment + ConfigMap), and ansible-core rejects `retries:` on
+# include_tasks outright ("'retries' is not a valid attribute for a
+# TaskInclude", confirmed against ansible-core 2.20.5). A recursive
+# self-include with an explicit attempt counter is the standard vanilla-
+# Ansible way to poll a MULTI-resource combined condition under one budget.
+# The attempt counter is materialized via set_fact (_switch_upgrade_poll_attempt_done)
+# BEFORE being passed to the recursive include's own vars: — passing the
+# self-referential template directly (`{{ (_switch_upgrade_poll_attempt |
+# default(1) | int) + 1 }}`) hits ansible-core's "Recursive loop detected
+# in template" guard once the same variable name has been re-templated
+# across enough recursion levels (reproduced directly against 2.20.5);
+# materializing it first breaks the chain.
+#
+# Sets (never fails the play itself — the caller decides what a
+# not-ready outcome means): _switch_upgrade_verify_ready (bool),
+# _switch_upgrade_deploy_poll / _switch_upgrade_coord_poll (the LAST
+# k8s_info reads, for the caller's own diagnostics if it wants them).
+- name: "L3 switch: PHASE 2 verify attempt {{ _switch_upgrade_poll_attempt | default(1) }}/{{ _switch_upgrade_poll_max_attempts }}"
+  block:
+    - name: "L3 switch: read the target Deployment's current status (kubernetes.core.k8s_info — never kubectl)"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ receiver_instance }}-target"
+        namespace: "{{ l3_target_namespace }}"
+      register: _switch_upgrade_deploy_poll
+
+    - name: "L3 switch: read the coordinator ConfigMap's current target-info/epoch"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: ConfigMap
+        name: mxl-coordinator
+        namespace: "{{ l3_target_namespace }}"
+      register: _switch_upgrade_coord_poll
+
+    - name: "L3 switch: evaluate PHASE 2 rollout-status + coordinator-freshness (single combined condition, one shared budget)"
+      ansible.builtin.set_fact:
+        _switch_upgrade_verify_ready: >-
+          {{
+            (_switch_upgrade_deploy_poll.resources | length > 0)
+            and (_switch_upgrade_deploy_poll.resources[0].status.observedGeneration | default(-1))
+                >= (_switch_upgrade_deploy_poll.resources[0].metadata.generation | default(0))
+            and (_switch_upgrade_deploy_poll.resources[0].status.updatedReplicas | default(0))
+                == (_switch_upgrade_deploy_poll.resources[0].spec.replicas | default(1))
+            and (_switch_upgrade_deploy_poll.resources[0].status.readyReplicas | default(0))
+                == (_switch_upgrade_deploy_poll.resources[0].spec.replicas | default(1))
+            and (_switch_upgrade_deploy_poll.resources[0].status.availableReplicas | default(0))
+                == (_switch_upgrade_deploy_poll.resources[0].spec.replicas | default(1))
+            and (_switch_upgrade_deploy_poll.resources[0].status.unavailableReplicas | default(0)) == 0
+            and (_switch_upgrade_coord_poll.resources | length > 0)
+            and (_switch_upgrade_coord_poll.resources[0].data['target-info'] | default('') | trim) != ''
+            and (_switch_upgrade_coord_poll.resources[0].data['epoch'] | default('') | trim) != ''
+          }}
+        _switch_upgrade_poll_attempt_done: "{{ _switch_upgrade_poll_attempt | default(1) | int }}"
+
+    - name: "L3 switch: PHASE 2 verify poll delay (standard Ansible sleep idiom — wait_for with only timeout:)"
+      ansible.builtin.wait_for:
+        timeout: "{{ l3_switch_verify_poll_delay_seconds }}"
+      when: not _switch_upgrade_verify_ready and _switch_upgrade_poll_attempt_done < _switch_upgrade_poll_max_attempts
+
+    - name: "L3 switch: PHASE 2 verify — recurse (next attempt)"
+      ansible.builtin.include_tasks: switch_poll_upgrade_ready.yml
+      vars:
+        _switch_upgrade_poll_attempt: "{{ _switch_upgrade_poll_attempt_done + 1 }}"
+      when: not _switch_upgrade_verify_ready and _switch_upgrade_poll_attempt_done < _switch_upgrade_poll_max_attempts
