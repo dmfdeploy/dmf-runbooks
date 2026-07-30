@@ -45,6 +45,18 @@
 #                                       every scenario gets a working
 #                                       values read for free without
 #                                       needing to seed one explicitly)
+#   L3_STUB_HELM_VALUES_FAIL_AFTER_N /
+#   L3_STUB_HELM_VALUES_COUNT_FILE      (umbrella #306 design round #2 fix
+#                                       round) both must be set together —
+#                                       the Nth-and-later 'get values' call
+#                                       for ANY release fails; earlier ones
+#                                       succeed normally. File-backed
+#                                       counter (each `helm` invocation is
+#                                       a fresh process). Distinguishes the
+#                                       ONE pre-quiesce baseline-capture
+#                                       read from every SUBSEQUENT
+#                                       rollback-verify poll read, which
+#                                       __FAIL__ (uniform) can't.
 #   L3_STUB_HELM_METADATA_<RELEASE>     JSON object (umbrella #306), same
 #                                       name-derivation as VALUES above;
 #                                       "__FAIL__" to simulate a fetch
@@ -191,6 +203,24 @@ for item in items:
         if [ "$values_json" = "__FAIL__" ]; then
           echo "stub_helm.sh: simulated 'helm get values' failure for release '$release'" >&2
           exit 1
+        fi
+        # umbrella #306 design round #2 fix round — L3_STUB_HELM_VALUES_FAIL_AFTER_N
+        # (paired with L3_STUB_HELM_VALUES_COUNT_FILE, a file-backed counter,
+        # since each `helm` invocation is a fresh process with no shared
+        # memory — same "an env var supplies a filesystem location" idiom
+        # as L3_STUB_HELM_LOG): the Nth-and-later 'get values' call for ANY
+        # release fails, earlier ones succeed normally. Distinguishes "the
+        # ONE pre-quiesce baseline-capture read" from "every SUBSEQUENT
+        # rollback-verify poll read" — __FAIL__ above can't, since it fails
+        # every call uniformly. Both env vars must be set for this to
+        # apply; unset (the default) preserves prior behavior exactly.
+        if [ -n "${L3_STUB_HELM_VALUES_FAIL_AFTER_N:-}" ] && [ -n "${L3_STUB_HELM_VALUES_COUNT_FILE:-}" ]; then
+          call_count=$(( $(cat "$L3_STUB_HELM_VALUES_COUNT_FILE" 2>/dev/null || echo 0) + 1 ))
+          printf '%s' "$call_count" > "$L3_STUB_HELM_VALUES_COUNT_FILE"
+          if [ "$call_count" -gt "$L3_STUB_HELM_VALUES_FAIL_AFTER_N" ]; then
+            echo "stub_helm.sh: simulated 'helm get values' failure for release '$release' (call #$call_count > L3_STUB_HELM_VALUES_FAIL_AFTER_N=$L3_STUB_HELM_VALUES_FAIL_AFTER_N)" >&2
+            exit 1
+          fi
         fi
         if [ -z "$values_json" ]; then
           values_json='{"flow":{"id":"5fbec3b1-1b0f-417d-9059-8b94a47197ed"}}'
