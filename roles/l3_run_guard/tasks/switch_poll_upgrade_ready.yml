@@ -73,10 +73,16 @@
     - name: "L3 switch: PHASE 2 verify poll delay (standard Ansible sleep idiom — wait_for with only timeout:)"
       ansible.builtin.wait_for:
         timeout: "{{ l3_switch_verify_poll_delay_seconds }}"
-      when: not _switch_upgrade_verify_ready and _switch_upgrade_poll_attempt_done < _switch_upgrade_poll_max_attempts
+      when: not _switch_upgrade_verify_ready and (_switch_upgrade_poll_attempt_done | int) < (_switch_upgrade_poll_max_attempts | int)
 
     - name: "L3 switch: PHASE 2 verify — recurse (next attempt)"
       ansible.builtin.include_tasks: switch_poll_upgrade_ready.yml
       vars:
-        _switch_upgrade_poll_attempt: "{{ _switch_upgrade_poll_attempt_done + 1 }}"
-      when: not _switch_upgrade_verify_ready and _switch_upgrade_poll_attempt_done < _switch_upgrade_poll_max_attempts
+        # ansible-core < ~2.19 does not default to Jinja2 native types —
+        # a `| int`-filtered set_fact can still round-trip as a STRING
+        # through this recursive include's own vars: boundary (confirmed
+        # against ansible-core 2.15 in CI: "can only concatenate str (not
+        # int) to str" on the bare `+ 1` below). Re-cast defensively at
+        # the point of use rather than trust the type set_fact left it in.
+        _switch_upgrade_poll_attempt: "{{ (_switch_upgrade_poll_attempt_done | int) + 1 }}"
+      when: not _switch_upgrade_verify_ready and (_switch_upgrade_poll_attempt_done | int) < (_switch_upgrade_poll_max_attempts | int)

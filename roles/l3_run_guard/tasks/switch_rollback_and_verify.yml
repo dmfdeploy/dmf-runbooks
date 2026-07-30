@@ -33,7 +33,11 @@
 
 - name: "L3 switch: post-rollback verify — compute the bounded attempt count from the timeout/delay budget"
   ansible.builtin.set_fact:
-    _switch_rollback_poll_max_attempts: "{{ (l3_switch_rollback_verify_timeout_seconds | int) // (l3_switch_verify_poll_delay_seconds | int) }}"
+    # +1 — see switch_verify_upgrade.yml's own comment for the exact
+    # same reasoning: a bare floor division polls only through
+    # t=(timeout - delay), one whole interval short of the documented
+    # budget; +1 makes the last attempt land at t=timeout.
+    _switch_rollback_poll_max_attempts: "{{ ((l3_switch_rollback_verify_timeout_seconds | int) // (l3_switch_verify_poll_delay_seconds | int)) + 1 }}"
 
 - name: "L3 switch: post-rollback verify — poll until ALL FOUR criteria hold or the budget is exhausted"
   ansible.builtin.include_tasks: switch_poll_rollback_verify.yml

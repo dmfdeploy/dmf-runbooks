@@ -13,7 +13,16 @@
 # never a bare re-raise — see the playbook's own PHASE 2 verify block).
 - name: "L3 switch: PHASE 2 verify — compute the bounded attempt count from the timeout/delay budget"
   ansible.builtin.set_fact:
-    _switch_upgrade_poll_max_attempts: "{{ (l3_switch_upgrade_verify_timeout_seconds | int) // (l3_switch_verify_poll_delay_seconds | int) }}"
+    # +1, not a bare floor division: attempt 1 fires at t=0 (no delay
+    # before it — see switch_poll_upgrade_ready.yml), and each further
+    # attempt costs one more `delay`. A bare `timeout // delay` therefore
+    # polls only through t=(timeout - delay) — one whole interval SHORT of
+    # the documented budget (e.g. 120s/10s bare-division gives 12 attempts,
+    # last one at t=110, never actually reaching t=120) — under-enforcing
+    # the exact timing contract this play's own header documents and the
+    # console watch budget formula budgets against. +1 makes the LAST
+    # attempt land at t=timeout (12 -> 13 attempts, last at t=120).
+    _switch_upgrade_poll_max_attempts: "{{ ((l3_switch_upgrade_verify_timeout_seconds | int) // (l3_switch_verify_poll_delay_seconds | int)) + 1 }}"
 
 - name: "L3 switch: PHASE 2 verify — poll until ready or the budget is exhausted"
   ansible.builtin.include_tasks: switch_poll_upgrade_ready.yml
