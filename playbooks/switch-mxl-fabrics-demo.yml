@@ -84,6 +84,10 @@
 #     Deployment-wait delay: 10 idiom).
 # All four are ordinary play vars (like l3_target_namespace) — override via
 # -e for a faster test-mode poll; production runs take the defaults above.
+# Each verification budget polls THROUGH t=timeout inclusive (attempt count
+# = (timeout // delay) + 1 — see switch_verify_upgrade.yml /
+# switch_rollback_and_verify.yml's own comments) — the FULL documented
+# window, never one interval short of it.
 - name: MXL fabrics demo switch - reconfigure viewer active source
   hosts: localhost
   connection: local
@@ -217,16 +221,19 @@
             turnover, then its rollback wait ALSO expired even though the
             rollback had verifiably converged seconds later. Helm-as-oracle
             is gone: NO --wait, NO --timeout, NO --rollback-on-failure, NO
-            --atomic — this command's own rc is diagnostic only. Rollout
-            readiness is verified DIRECTLY, next task, via
-            kubernetes.core.k8s_info polling (switch_verify_upgrade.yml) —
-            a failure there runs a VERIFIED helm rollback (never trusting
-            helm's own wait verdict either), not helm's own automatic one.
-            active-source is ALREADY cleared (phase 1), so this task
-            failing outright (rc != 0, before verification even starts)
-            still leaves a clean, zero-transmitter state, never a
-            half-switched one — the SAME contract as before, just no
-            longer helm's own rollback machinery enforcing it. The chart
+            --atomic — this command's own rc is DIAGNOSTIC ONLY, exactly
+            like the rollback command in switch_rollback_and_verify.yml
+            (failed_when: false, same reasoning): a non-zero rc here does
+            NOT jump to rescue on its own — PHASE 2 verify (next task, via
+            kubernetes.core.k8s_info polling, switch_verify_upgrade.yml)
+            always runs and decides readiness directly, regardless of
+            whether this command itself reported success. A verify failure
+            (whether triggered by this command's own rc!=0, or by a rc=0
+            upgrade whose Deployment never actually converges — job 413's
+            own shape) runs the SAME verified helm rollback (never trusting
+            helm's own wait/rc verdict either way). active-source is
+            ALREADY cleared (phase 1), so however PHASE 2 verify concludes,
+            the coordinator never sees a half-switched state. The chart
             positional is the LOCAL path switch_resolve_chart.yml already
             pulled (same installed version the release is on, never
             l3_chart_version) — Helm's own `[RELEASE] [CHART]` contract
@@ -246,6 +253,7 @@
               - --set
               - "flow.id={{ _switch_target_projection.flow_id }}"
           changed_when: true
+          failed_when: false
 
         - name: "L3: test-only fault injection boundary (umbrella #201
             WP4b — no-op on every real run; proves a re-point failure
@@ -396,11 +404,15 @@
             specifically to 'the upgrade was applied but didn't verify';
             every OTHER failure this rescue catches (pre-lock refusals,
             switch_resolve_chart/switch_capture_baseline read failures,
-            PHASE 1 mutation failures, PHASE 2's own command failing
-            outright before verification even starts, a PHASE 3 final-
-            readback mismatch) still leaves active-source cleared/absent —
-            the spec's own safe quiesced state, no rollback needed because
-            nothing further to restore."
+            PHASE 1 mutation failures, a PHASE 3 final-readback mismatch)
+            still leaves active-source cleared/absent — the spec's own
+            safe quiesced state, no rollback needed because nothing
+            further to restore. Note PHASE 2's own helm upgrade command no
+            longer fails outright on rc!=0 (failed_when: false — its rc is
+            diagnostic only, exactly like the rollback command): every
+            PHASE-2-onward failure now flows through the verify-rollback-
+            and-verify sequence above instead, never straight to this
+            rescue."
           ansible.builtin.include_role:
             name: l3_run_guard
             tasks_from: lock_release
