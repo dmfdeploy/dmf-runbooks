@@ -28,6 +28,10 @@ for NetBox registration + lifecycle tag flips.
 
 See DMF Platform ADR-0014 for the multi-project AWX layout and ADR-0025 for the EE-as-runtime + Helm execution model (both in the DMF Platform umbrella repo).
 
+## Operational runbooks
+
+- [Media-Path Recovery via Cluster Truth](docs/runbooks/media-path-recovery.md) — decision ladder for recovering a stuck/frozen MXL media path (coordinator ConfigMap + facility lock) by reading and writing cluster truth directly with `kubectl`, independent of the orchestration backend.
+
 ## License
 
 This project is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text. Third-party components (notably Sony nmos-cpp) are listed in [NOTICE](NOTICE).
