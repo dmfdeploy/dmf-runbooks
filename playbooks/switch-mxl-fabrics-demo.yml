@@ -52,12 +52,53 @@
 # playbook's own rescue: is UNCHANGED as the unconditional lock-release
 # backstop (see its own comments) — it never becomes the AUTOMATIC-rollback
 # path (that is entirely in-block, below), only the final safety net for
-# every phase (including a failed rollback-and-verify itself). There is
-# consequently still no DMF_L3_OUTCOME marker emitted here — that
-# vocabulary belongs to launch/teardown/rollback's own snapshot-based
-# outcome model (dmf-cms's OperationState), which a switch does not use at
-# all; the actuator reads the AWX job's own terminal status directly
-# (successful/failed/...), nothing else.
+# every phase (including a failed rollback-and-verify itself).
+#
+# STRUCTURED OUTCOME EVENT (umbrella #323, decided in the 2026-07-30
+# console-truth design round recorded on #321, landed 2026-07-31): this
+# playbook now DOES emit a marker on every terminal exit — but a SEPARATE,
+# switch-owned vocabulary (DMF_L3_SWITCH_OUTCOME,
+# roles/l3_run_guard/tasks/_emit_switch_outcome.yml), never DMF_L3_OUTCOME.
+# The two are deliberately NOT unified: DMF_L3_OUTCOME's token set
+# (preflight-error, post-mutation-failed, facility-busy, ...) is launch/
+# teardown/rollback's own snapshot-based OperationState model — keyed off
+# l3_snapshot_created/l3_mutation_started and the dmf-run-<id> ConfigMap's
+# own lifecycle (superseded / failed_rollback_required), none of which a
+# switch has (no snapshot is ever captured, l3_mutation_started is never
+# set). Forcing a switch's own failure taxonomy — a clean pre-repoint
+# refusal vs. a VERIFIED helm rollback that either restored the previous
+# source or didn't (see the PHASE 2 verify block below for the exact two
+# rollback outcomes and their existing, UNCHANGED fail messages) — through
+# that model would be a misleading fit, not a real reuse. So
+# DMF_L3_SWITCH_OUTCOME carries its own small, switch-specific enum
+# instead: `success`, `rollback_verified_previous_source_restored`,
+# `rollback_verification_failed`, and `refused` (the catch-all for every
+# OTHER terminal failure — pre-lock, pre-mutation reads, PHASE 1 mutation,
+# a PHASE 3 final-readback mismatch — every one of which this playbook's
+# own rescue: header below already classifies as "leaves active-source
+# cleared/absent, the same safe quiesced state"). EXACTLY ONE event fires
+# per run: the two PHASE-2-specific tokens are emitted in-block,
+# immediately before their own ansible.builtin.fail task (a fail ends that
+# branch, so the emit must precede it — the ordering is not
+# interchangeable), and set _switch_outcome_emitted so the rescue:'s own
+# generic `refused` emit — the catch-all for every failure that DIDN'T
+# already go through one of those two branches — skips firing a
+# duplicate/misleading second marker on top (mirrors
+# l3_pre_mutation_marker_emitted's identical role in gate_rescue.yml's own
+# branch A, applied here since this playbook's control flow is simple
+# enough to own the sentinel directly rather than factoring it into a
+# shared role file). `success` is the LAST task in the block, after the
+# lock-release include, so nothing later can still fail the run out from
+# under an already-emitted success marker.
+#
+# This is layered ON TOP of dmf-cms's own short-term #320 bridge (which
+# parses fixed allowlisted prefixes — including the two rollback fail
+# messages' own unchanged text and DMF_L3_SWITCH_REFUSED — from failed AWX
+# job stdout): the console accepts BOTH during the transition, so this
+# release lands independently of any console change. The actuator still
+# also reads the AWX job's own terminal status directly
+# (successful/failed/...) — the marker adds STRUCTURE on top of that, it
+# doesn't replace it.
 #
 # TIMING CONTRACT (umbrella #306 design round #2 — the console watch budget
 # formula's own reference; DMF_CONSOLE_L3_SWITCH_SOURCE_TIMEOUT_SECONDS in
@@ -306,6 +347,34 @@
                     active-source: "{{ _switch_baseline.active_source }}"
               when: _switch_rollback_verified and (_switch_baseline.active_source | trim) != ''
 
+            - name: "L3 switch outcome: mark emitted + emit rollback_verified_previous_source_restored
+                (umbrella #323) — BEFORE the fail task below: an
+                ansible.builtin.fail ends this branch immediately, so the
+                event has to be rendered first or it would never fire.
+                Setting _switch_outcome_emitted here (not inside
+                _emit_switch_outcome.yml itself — see that file's own
+                header for why the sentinel stays playbook-owned) is what
+                lets the rescue: below tell 'this branch already reported
+                its own honest outcome' apart from every other failure and
+                skip a second, redundant `refused` marker."
+              ansible.builtin.set_fact:
+                _switch_outcome_emitted: true
+              when: _switch_rollback_verified
+
+            - name: "L3 switch outcome: emit rollback_verified_previous_source_restored (umbrella #323)"
+              ansible.builtin.include_role:
+                name: l3_run_guard
+                tasks_from: _emit_switch_outcome
+              vars:
+                l3_switch_outcome_token: rollback_verified_previous_source_restored
+                l3_switch_outcome_kv: >-
+                  run_id={{ l3_run_id | default('') }}
+                  request_id={{ l3_request_id | default('') }}
+                  receiver_instance={{ receiver_instance }}
+                  restored_active_source={{ _switch_baseline.active_source | default('') }}
+                  baseline_revision={{ _switch_baseline.revision }}
+              when: _switch_rollback_verified
+
             - name: "L3 switch: rollback verified — still a failed switch (never silently succeed on a restore)"
               ansible.builtin.fail:
                 msg: >-
@@ -323,6 +392,26 @@
                   switch did NOT reach its requested target — operator
                   retry required.
               when: _switch_rollback_verified
+
+            - name: "L3 switch outcome: mark emitted + emit rollback_verification_failed
+                (umbrella #323) — same BEFORE-the-fail-task ordering as
+                the sibling branch above, see its own comment."
+              ansible.builtin.set_fact:
+                _switch_outcome_emitted: true
+              when: not _switch_rollback_verified
+
+            - name: "L3 switch outcome: emit rollback_verification_failed (umbrella #323)"
+              ansible.builtin.include_role:
+                name: l3_run_guard
+                tasks_from: _emit_switch_outcome
+              vars:
+                l3_switch_outcome_token: rollback_verification_failed
+                l3_switch_outcome_kv: >-
+                  run_id={{ l3_run_id | default('') }}
+                  request_id={{ l3_request_id | default('') }}
+                  receiver_instance={{ receiver_instance }}
+                  baseline_revision={{ _switch_baseline.revision }}
+              when: not _switch_rollback_verified
 
             - name: "L3 switch: rollback verification FAILED — active-source stays absent, no restore attempted"
               ansible.builtin.fail:
@@ -384,14 +473,61 @@
               receiver_instance={{ receiver_instance }}
               got={{ _switch_final_readback.resources[0].data | default({}) }}
 
-        - name: "L3 switch success — release the lock (no DMF_L3_OUTCOME
-            marker — see this playbook's own header for why: that
-            vocabulary is launch/teardown/rollback's own snapshot-based
-            outcome model, which a switch does not use)"
+        - name: "L3 switch success — release the lock (see this playbook's
+            own header for the DMF_L3_SWITCH_OUTCOME decision — a switch
+            still never emits DMF_L3_OUTCOME, that remains launch/teardown/
+            rollback's own snapshot-based vocabulary)"
           ansible.builtin.include_role:
             name: l3_run_guard
             tasks_from: lock_release
+
+        - name: "L3 switch outcome: emit success (umbrella #323) — the LAST
+            task in this block, deliberately AFTER lock_release above: if
+            anything from here down could still fail the run, this stays
+            unreached and the failure is reported honestly through rescue:
+            instead — never a success marker followed by a FAILED AWX job."
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: _emit_switch_outcome
+          vars:
+            l3_switch_outcome_token: success
+            l3_switch_outcome_kv: >-
+              run_id={{ l3_run_id | default('') }}
+              request_id={{ l3_request_id | default('') }}
+              receiver_instance={{ receiver_instance }}
+              active_source={{ _switch_target_projection.active_source }}
       rescue:
+        - name: "L3 switch outcome: emit refused (umbrella #323) — the
+            generic catch-all for every failure that DIDN'T already emit
+            its own specific marker in-block (pre-lock refusals, the
+            shared identity.yml/lock.yml reserved-var/lock-unavailable/
+            facility-busy paths, switch_read_coordinator/
+            switch_resolve_chart/switch_capture_baseline read failures,
+            PHASE 1 mutation failures, a PHASE 3 final-readback mismatch,
+            or any genuinely unexpected exception) — see this playbook's
+            own header for why all of these share one token: they are
+            exactly the set this rescue's own next task already
+            classifies as 'leaves active-source cleared/absent, the safe
+            quiesced state'. Guarded on _switch_outcome_emitted so a
+            PHASE-2 verify-failed branch's own more specific marker
+            (rollback_verified_previous_source_restored /
+            rollback_verification_failed, set BEFORE its own fail task —
+            see that block's own comments) is never followed by a second,
+            redundant one here — mirrors l3_pre_mutation_marker_emitted /
+            gate_rescue.yml's own branch A. Runs FIRST in this rescue,
+            before the lock-release backstop below, matching
+            gate_rescue.yml's own emit-then-release ordering."
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: _emit_switch_outcome
+          vars:
+            l3_switch_outcome_token: refused
+            l3_switch_outcome_kv: >-
+              run_id={{ l3_run_id | default('<unknown>') }}
+              request_id={{ l3_request_id | default('<unknown>') }}
+              receiver_instance={{ receiver_instance | default('<unknown>') }}
+          when: not (_switch_outcome_emitted | default(false))
+
         - name: "L3 switch rescue — UNCONDITIONAL lock release (umbrella
             #201 WP4b condition 3, REVISED by umbrella #306 design round
             #2): this is still the FINAL backstop, unconditionally

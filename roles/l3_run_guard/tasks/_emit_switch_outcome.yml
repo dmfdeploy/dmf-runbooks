@@ -1,0 +1,52 @@
+---
+# umbrella #323 — the SINGLE named marker-emission task for the SWITCH
+# playbook's own structured outcome event. Mirrors _emit_outcome.yml's
+# shape and discipline exactly (read that file's header first if you
+# haven't): one ansible.builtin.debug task, literally named
+# 'dmf-l3-switch-outcome', because the console reads AWX job events
+# FILTERED BY THAT TASK NAME and parses event_data.res.msg — it does not
+# scrape stdout (stdout always ends with the PLAY RECAP epilogue, which is
+# what made a stdout-tail contract unreliable for dmf-l3-outcome in the
+# first place; the same reasoning applies here unchanged).
+#
+# WHY A SEPARATE MARKER, NOT DMF_L3_OUTCOME (umbrella #306 design round
+# #2/#323, frozen 2026-07-30 -> 2026-07-31): DMF_L3_OUTCOME's vocabulary
+# (preflight-error, post-mutation-failed, facility-busy, ...) is launch/
+# teardown/rollback's own snapshot-based OperationState model —
+# l3_snapshot_created, l3_mutation_started, the dmf-run-<id> ConfigMap
+# lifecycle (superseded / failed_rollback_required). A switch has NONE of
+# that: it never captures a snapshot, never sets l3_mutation_started, and
+# its own failure taxonomy is genuinely different (a clean pre-repoint
+# refusal vs. a VERIFIED helm rollback that either restored the previous
+# source or didn't — see the playbook's own header for the two-outcome
+# PHASE 2 verify-failed model). Reusing DMF_L3_OUTCOME's tokens for a
+# switch would force an awkward, misleading fit (what is a switch's
+# "snapshot"?) onto a model it was never designed for. DMF_L3_SWITCH_OUTCOME
+# is therefore this playbook's OWN, separate vocabulary — never emitted by
+# launch/teardown/rollback, never mixed with DMF_L3_OUTCOME's own token
+# set. The two legacy identity.yml/lock.yml refusal paths a switch run can
+# still reach pre-lock (reserved-var, lock-unavailable, facility-busy —
+# shared code with launch/teardown, see identity.yml/lock.yml) still emit
+# their OWN DMF_L3_OUTCOME marker via _refuse_pre_mutation.yml, unchanged;
+# this file's marker is emitted ADDITIONALLY, by the calling playbook
+# itself, at the SAME terminal exit — see switch-mxl-fabrics-demo.yml's
+# own rescue: for how the two coexist without double-counting.
+#
+# Callers set l3_switch_outcome_token (required) and l3_switch_outcome_kv
+# (optional, a pre-built "key=value key2=value2" string — kv assembly is
+# the CALLER's job, this file only renders the final marker line
+# verbatim, exactly like _emit_outcome.yml). The marker string format
+# mirrors the original DMF_L3_OUTCOME contract:
+# "DMF_L3_SWITCH_OUTCOME: <token> [<kv>]".
+#
+# l3_switch_outcome_token/l3_switch_outcome_kv are reserved in
+# _assert_reserved_vars.yml for the same "emitter shadow" reason
+# l3_outcome_token/l3_outcome_kv already are (that file's own header,
+# R4a/P1-2) — a caller extra_var of the same name would otherwise outrank
+# this include's own task-level vars: and let an attacker choose an
+# arbitrary marker/detail regardless of the real outcome.
+
+- name: dmf-l3-switch-outcome
+  ansible.builtin.debug:
+    msg: >-
+      DMF_L3_SWITCH_OUTCOME: {{ l3_switch_outcome_token }}{{ (' ' ~ l3_switch_outcome_kv) if (l3_switch_outcome_kv | default('')) else '' }}
