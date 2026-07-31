@@ -1,0 +1,116 @@
+---
+# umbrella #323 fix round (codex adversarial gate, P1) — the switch play's
+# VERY FIRST task, ahead of switch_lock and ahead of the outer
+# block/rescue/always entirely.
+#
+# THE RULE THIS FILE ENFORCES: every variable the structured-outcome
+# decision READS must be proven caller-free before this play does anything
+# at all. Not "reserved" — reserved is necessary but provably insufficient
+# here — actually proven, at a point in the play where the refusal itself
+# does not have to consult any of the names in question.
+#
+# WHY THE BLOCKLIST ALONE IS NOT ENOUGH. _assert_reserved_vars.yml already
+# reserves _switch_outcome_emitted / l3_switch_outcome_token /
+# l3_switch_outcome_kv, and it fails closed. But it runs INSIDE switch_lock
+# -> identity.yml, so its refusal raises, lands in the switch play's own
+# outer rescue, and that rescue's catch-all is the thing that reads the
+# shadowed names — the violation path runs THROUGH the shadowed variables.
+# Codex's gate found the two concrete exits (both reproduced empirically
+# for this fix round, see _emit_switch_refused_literal.yml's own header for
+# the reproduction):
+#   (a) -e _switch_outcome_emitted=true  -> the catch-all is SKIPPED; the
+#       run exits terminally with NO structured event at all.
+#   (b) -e l3_switch_outcome_token=... -e l3_switch_outcome_kv=...  -> the
+#       catch-all renders the ATTACKER's token/kv as this run's outcome.
+# Adding more names to the blocklist cannot fix that; the fix has to be an
+# earlier guard whose own refusal route is non-shadowable, which is exactly
+# the shape identity.yml already uses for its l3_run_id check (its own
+# R4a/P1-2 comment: "Same block/rescue shape ... and for the same reason:
+# no `when:` a caller could shadow to skip cleanup while still letting the
+# assert fail closed") and exactly what _refuse_pre_mutation.yml already
+# does for launch/teardown — a refusal path emits its OWN marker rather
+# than depending on a distant outer rescue.
+#
+# SWITCH-SCOPED ON PURPOSE. This is included by switch-mxl-fabrics-demo.yml
+# only. The names below are the switch play's own outcome machinery;
+# launch/teardown/rollback share none of it, so none of their entry points
+# (main.yml, lock_only.yml, rollback_identity.yml) are touched.
+#
+# WHY THIS RUNS OUTSIDE THE OUTER BLOCK, NOT AS ITS FIRST TASK. If this
+# guard lived inside the outer block, its own fail would be caught by that
+# rescue, which would then emit a SECOND marker on top of the literal one
+# this file already emitted — and the only way to suppress that second
+# emission is the sentinel, which is precisely the value case (a) forges.
+# `-e _switch_outcome_emitted=false` alongside a forged token would then
+# yield two markers, the second of them forged. Running ahead of the block
+# makes the play end here, with exactly one marker, unconditionally. There
+# is nothing to clean up at this point either: no facility lock has been
+# acquired, no chart tempdir pulled, no coordinator field touched.
+#
+# WHY EACH NAME IS ON THE LIST:
+#   _switch_outcome_emitted     — the exactly-once sentinel the outer
+#                                 rescue's catch-all reads. Case (a).
+#   l3_switch_outcome_token     — the token _emit_switch_outcome.yml
+#   l3_switch_outcome_kv          renders verbatim. Case (b).
+#   _switch_stage               — the play's own stage fact, and therefore
+#                                 the SOURCE OF detail= on every refused
+#                                 event. Reserved additively in
+#                                 _assert_reserved_vars.yml as well (it is
+#                                 a real set_fact target, so the R5a-1
+#                                 scanner requires it there); guarded HERE
+#                                 because, exactly like the sentinel, the
+#                                 reserved-var refusal path itself would
+#                                 otherwise read the shadowed value and let
+#                                 a caller choose which stage the console
+#                                 is told the run died in.
+#   _switch_upgrade_verify_ready — the trusted failure state the catch-all's
+#   _switch_rollback_verified      own skip decision and the PHASE 2
+#                                 branch's token selection are derived
+#                                 from. Both are already reserved, but the
+#                                 same "the refusal path reads the shadowed
+#                                 value" problem applies to them the moment
+#                                 the skip decision depends on them, so
+#                                 they are proven caller-free here too.
+#
+# The assert is a SINGLE DIRECT assert with every name spelled out in-line,
+# for the identical reason _assert_reserved_vars.yml's own header gives: an
+# intermediate fact/var of ANY kind (even a differently-named boolean) just
+# relocates the same bypass, since extra_vars outrank a task's own `vars:`
+# too. The block/rescue (never a `when:`) is what routes a failed assert to
+# the emitting cleanup: the ONLY way into `rescue:` is a genuine assert
+# failure, so there is no condition here a caller could shadow to skip the
+# emission while still letting the assert fail closed.
+
+- name: "L3 switch outcome-control guard (umbrella #323 fix round, P1) — the outcome-decision variables must be UNDEFINED at play entry"
+  block:
+    - name: "L3 switch outcome-control guard: single direct assert, no shadowable intermediate (mirrors _assert_reserved_vars.yml's own R4a/P1-2 shape)"
+      ansible.builtin.assert:
+        that:
+          - _switch_outcome_emitted is not defined
+          - l3_switch_outcome_token is not defined
+          - l3_switch_outcome_kv is not defined
+          - _switch_stage is not defined
+          - _switch_upgrade_verify_ready is not defined
+          - _switch_rollback_verified is not defined
+        fail_msg: >-
+          DMF_L3_SWITCH_REFUSED: detail=reserved-var
+          One or more of this switch play's own outcome-decision variables
+          (_switch_outcome_emitted, l3_switch_outcome_token,
+          l3_switch_outcome_kv, _switch_stage,
+          _switch_upgrade_verify_ready, _switch_rollback_verified) were
+          supplied as extra_vars. These are set exclusively by this play's
+          own logic and must never be caller-supplied — a caller who
+          controls them controls what the console is told this run's
+          outcome was. Structural precondition — cannot be overridden.
+  rescue:
+    - name: "L3 switch outcome-control guard: emit the HARD-CODED refused marker (literal token+detail, see _emit_switch_refused_literal.yml — deliberately not _emit_switch_outcome.yml, whose token is exactly what a caller may have just shadowed)"
+      ansible.builtin.include_tasks: _emit_switch_refused_literal.yml
+
+    - name: "L3 switch outcome-control guard: fail the play (nothing to release — this runs before the facility lock, the chart pull, and any coordinator write)"
+      ansible.builtin.fail:
+        msg: >-
+          MXL fabrics-demo switch refused before entry: reserved
+          outcome-decision variables were supplied as extra_vars. No
+          facility lock was acquired, no chart was pulled, and the
+          coordinator ConfigMap was not touched. Structural precondition —
+          cannot be overridden.

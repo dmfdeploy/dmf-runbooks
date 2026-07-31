@@ -45,6 +45,24 @@
 # R4a/P1-2) — a caller extra_var of the same name would otherwise outrank
 # this include's own task-level vars: and let an attacker choose an
 # arbitrary marker/detail regardless of the real outcome.
+#
+# umbrella #323 fix round (codex adversarial gate, P1): that reservation
+# alone was NOT sufficient, because the reserved-var refusal raises into
+# switch-mxl-fabrics-demo.yml's own outer rescue — and that rescue's
+# catch-all is itself a caller of THIS file, rendering the very
+# token/kv the caller had just shadowed. The switch play now runs
+# switch_outcome_guard.yml as its first task, ahead of its outer block,
+# proving both names (plus the sentinel, the stage fact and the two PHASE 2
+# verdict facts) caller-free before this file is ever reached on any path.
+# The one route that cannot use this file is that guard's own refusal — it
+# fires precisely when these names may be shadowed — so it emits through
+# _emit_switch_refused_literal.yml instead: the same
+# 'dmf-l3-switch-outcome' task name, but a msg that is a pure YAML literal
+# with no Jinja at all. Those two files are the COMPLETE, enumerated set of
+# DMF_L3_SWITCH_OUTCOME emission points, and
+# tests/scripts/check_playbook_structure.py gates exactly that: no third
+# file (and no task in the switch playbook itself) may carry the marker
+# name, and the literal one must stay literal.
 
 - name: dmf-l3-switch-outcome
   ansible.builtin.debug:
