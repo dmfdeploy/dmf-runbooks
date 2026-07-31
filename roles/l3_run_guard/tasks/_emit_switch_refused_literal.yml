@@ -1,0 +1,62 @@
+---
+# umbrella #323 fix round (codex adversarial gate, P1) — the SECOND, and
+# deliberately the ONLY other, sanctioned DMF_L3_SWITCH_OUTCOME emission
+# point: a marker whose ENTIRE payload is a YAML string literal, carrying
+# no Jinja at all.
+#
+# WHY THIS FILE HAS TO EXIST. _emit_switch_outcome.yml renders its token
+# and kv from l3_switch_outcome_token/l3_switch_outcome_kv, supplied as
+# task-level `vars:` on the include_role call. Ansible extra_vars OUTRANK
+# task-level vars, set_fact and register identically — the same precedence
+# fact _assert_reserved_vars.yml's own R4a/P1-2 header documents, and
+# re-verified empirically for this fix round (a throwaway play showed
+# `-e tok=X` beating BOTH an include_role `vars: tok:` and a set_fact of
+# the same name, and `-e sentinel=true` turning a `when: not (sentinel |
+# default(false))` catch-all into a skip). Those names ARE reserved in the
+# blocklist — but the reserved-var REFUSAL PATH ITSELF used to run through
+# the very variables the caller had just shadowed:
+#
+#   -e l3_switch_outcome_token=attacker_token
+#     -> the reserved-var assert fails -> the play lands in the switch
+#        play's own outer rescue -> the catch-all's include renders
+#        "DMF_L3_SWITCH_OUTCOME: attacker_token ..." — i.e. the console is
+#        handed, inside the structured event it trusts, whatever string the
+#        attacker chose.
+#   -e _switch_outcome_emitted=true
+#     -> the SAME refusal, but now the catch-all's own
+#        `when: not (_switch_outcome_emitted | default(false))` is false, so
+#        the only outcome task in the entire play is SKIPPED: a terminal
+#        exit that emits NO event at all.
+#
+# No variable can close that hole, because extra_vars sit at the TOP of
+# Ansible's precedence table — there is nothing that outranks them. The
+# only content a caller genuinely cannot reach is a literal in a task's own
+# module args. Hence this file: switch_outcome_guard.yml's rescue includes
+# it, and the whole marker — token AND detail — is spelled out here, byte
+# for byte, before any shadowed value is ever consulted.
+#
+# NO KV, ON PURPOSE. Every other emission carries run_id/request_id/
+# receiver_instance. This one carries none, because it fires exactly when
+# the caller has been caught trying to forge this play's own internal
+# state: echoing ANY caller-supplied string back into a structured event
+# the console parses is precisely the wrong instinct there (a
+# receiver_instance of "x detail=chart-resolve" would splice a second
+# detail= field into the line, and identity.yml has not run yet, so there
+# is no trustworthy run_id to carry either way). The console correlates the
+# event to its own dispatch by AWX job id, not by this kv, so nothing real
+# is lost. tests/scripts/check_playbook_structure.py enforces the no-Jinja
+# property STRUCTURALLY — this file is only worth trusting for as long as
+# it stays a literal, so that property is gated, not merely asserted here
+# in prose.
+#
+# The task NAME is the same 'dmf-l3-switch-outcome' the console filters AWX
+# job events by — it has to be, or the console would never see this event
+# at all. That is why check_playbook_structure.py's own uniqueness check
+# now sanctions exactly TWO emission files BY NAME and verifies the shape
+# of each, rather than one: a closed, enumerated, structurally-verified set
+# is the same discipline as "exactly one file", just with the one
+# irreducible exception spelled out and gated instead of left implicit.
+
+- name: dmf-l3-switch-outcome
+  ansible.builtin.debug:
+    msg: "DMF_L3_SWITCH_OUTCOME: refused detail=reserved-var"

@@ -310,6 +310,22 @@
           - _switch_outcome_emitted is not defined
           - l3_switch_outcome_token is not defined
           - l3_switch_outcome_kv is not defined
+          # umbrella #323 fix round (codex adversarial gate, P1):
+          # _switch_stage is switch-mxl-fabrics-demo.yml's own in-flight
+          # stage fact, and therefore the SOURCE of detail= on every
+          # `refused` event the console reads. A real set_fact target, so
+          # the R5a-1 scanner requires it here — but note that reserving it
+          # HERE is necessary and NOT sufficient, for exactly the reason
+          # this file's own R4a/P1-2 header gives about emitter shadowing:
+          # this guard's refusal path raises into the switch play's outer
+          # rescue, which is itself what renders detail=. The switch play
+          # therefore ALSO runs roles/l3_run_guard/tasks/switch_outcome_guard.yml
+          # as its very first task, ahead of its outer block, which proves
+          # this name (and the emitter/verdict names above and below) is
+          # caller-free and, on violation, emits a HARD-CODED literal
+          # refused marker instead of one rendered through the shadowed
+          # values. See that file's header for the full argument.
+          - _switch_stage is not defined
         fail_msg: >-
           L3 launcher refused: preflight-error (reserved-var). One or more
           reserved internal variables were supplied as extra_vars — these

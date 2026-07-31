@@ -136,6 +136,37 @@ _SWITCH_PLAYBOOK = "switch-mxl-fabrics-demo.yml"
 _SWITCH_OUTCOME_EMIT_FILE = "_emit_switch_outcome.yml"
 _SWITCH_OUTCOME_MARKER_NAME = "dmf-l3-switch-outcome"
 
+# umbrella #323 fix round (codex adversarial gate, P1) — the SECOND
+# sanctioned emission file. It exists because the generic emitter above
+# renders its token from l3_switch_outcome_token, and extra_vars outrank
+# the include's own task-level vars: on the ONE path that has to emit while
+# those names may be shadowed (the outcome-control guard's own refusal),
+# a rendered token is forgeable and a rendered `when:` sentinel is
+# skippable. That path therefore emits a pure literal instead. The
+# emission-point set stays CLOSED at exactly these two files — the check
+# below enumerates them, and additionally proves the literal one really is
+# literal (no Jinja), because that property is the only thing making it
+# trustworthy at all.
+_SWITCH_OUTCOME_LITERAL_FILE = "_emit_switch_refused_literal.yml"
+_SWITCH_OUTCOME_LITERAL_MSG = "DMF_L3_SWITCH_OUTCOME: refused detail=reserved-var"
+_SWITCH_OUTCOME_EMIT_FILES = (_SWITCH_OUTCOME_EMIT_FILE, _SWITCH_OUTCOME_LITERAL_FILE)
+
+# The switch play's own outcome-decision variables — every name the
+# structured-outcome decision READS, which the guard must prove caller-free
+# before the play does anything. Kept here so the guard cannot silently
+# shrink: dropping any of these from its assert is exactly the regression
+# that reopens the P1 hole (see switch_outcome_guard.yml's own header for
+# the per-name rationale).
+_SWITCH_GUARD_FILE = "switch_outcome_guard.yml"
+_SWITCH_GUARD_NAMES = (
+    "_switch_outcome_emitted",
+    "l3_switch_outcome_token",
+    "l3_switch_outcome_kv",
+    "_switch_stage",
+    "_switch_upgrade_verify_ready",
+    "_switch_rollback_verified",
+)
+
 # umbrella #272 (regression guard, added same round as the fix) — scan
 # scope for the None-sentinel anti-pattern below: this role's own task
 # files plus the real entry playbooks. filter_plugins/*.py is Python, not
@@ -392,68 +423,149 @@ def _iter_tasks(node: object):
                 yield from _iter_tasks(t[key])
 
 
-def _check_switch_outcome_marker() -> list[str]:
-    """umbrella #323 — structural floor for the switch playbook's own
-    structured outcome event (DMF_L3_SWITCH_OUTCOME, a vocabulary SEPARATE
-    from DMF_L3_OUTCOME — see playbooks/switch-mxl-fabrics-demo.yml's own
-    header and _emit_switch_outcome.yml's own header for why). Three
-    things, mirroring the exact discipline _emit_outcome.yml's own header
-    documents for dmf-l3-outcome:
-
-      1. roles/l3_run_guard/tasks/_emit_switch_outcome.yml exists, contains
-         EXACTLY ONE task, and that task is an ansible.builtin.debug task
-         whose `name:` is LITERALLY 'dmf-l3-switch-outcome' — the console
-         reads AWX job events filtered by this exact task name, not stdout.
-      2. that name is UNIQUE: no other task file under roles/l3_run_guard/
-         tasks/ and no task in the switch playbook itself reuses it — "ONE
-         task file is the single named marker-emission point" only holds if
-         nothing else can shadow it.
-      3. the switch playbook actually WIRES the marker in at least once
-         (an `include_role: ... tasks_from: _emit_switch_outcome` call
-         somewhere in its play) — a structural floor only; it does NOT
-         prove every terminal branch fires it with the correct enum, that
-         is tests/l3-switch-execution.yml's own execution-test job.
-    """
+def _check_one_switch_emit_file(path: Path) -> list[str]:
+    """Shared shape check for a sanctioned DMF_L3_SWITCH_OUTCOME emission
+    file: exactly ONE task, named literally 'dmf-l3-switch-outcome', and an
+    ansible.builtin.debug task (event_data.res.msg is what the console
+    parses)."""
     errors: list[str] = []
-    emit_file = _ROLE_TASKS_DIR / _SWITCH_OUTCOME_EMIT_FILE
-    if not emit_file.is_file():
-        return [
-            f"{emit_file.relative_to(_REPO_ROOT)}: umbrella #323's dedicated "
-            "switch-outcome marker-emission file is missing."
-        ]
-
+    rel = path.relative_to(_REPO_ROOT)
     try:
-        emit_tasks = yaml.safe_load(emit_file.read_text())
+        emit_tasks = yaml.safe_load(path.read_text())
     except yaml.YAMLError as exc:
-        return [f"{emit_file.relative_to(_REPO_ROOT)}: YAML parse error: {exc}"]
+        return [f"{rel}: YAML parse error: {exc}"]
 
     if not isinstance(emit_tasks, list) or len(emit_tasks) != 1:
         errors.append(
-            f"{emit_file.relative_to(_REPO_ROOT)}: expected exactly ONE task "
-            "in this file (the single named marker-emission point, mirroring "
-            f"_emit_outcome.yml) — got "
+            f"{rel}: expected exactly ONE task in this file (a sanctioned "
+            "named marker-emission point, mirroring _emit_outcome.yml) — got "
             f"{len(emit_tasks) if isinstance(emit_tasks, list) else type(emit_tasks).__name__}."
         )
-    else:
-        only = emit_tasks[0]
-        if not isinstance(only, dict) or only.get("name") != _SWITCH_OUTCOME_MARKER_NAME:
+        return errors
+
+    only = emit_tasks[0]
+    if not isinstance(only, dict) or only.get("name") != _SWITCH_OUTCOME_MARKER_NAME:
+        errors.append(
+            f"{rel}: the single task's own `name:` must be literally "
+            f"'{_SWITCH_OUTCOME_MARKER_NAME}' — the console filters AWX job "
+            "events by this exact task name, it does not scrape stdout."
+        )
+    elif "ansible.builtin.debug" not in only and "debug" not in only:
+        errors.append(
+            f"{rel}: the marker task must be an ansible.builtin.debug task "
+            "(event_data.res.msg is what the console parses)."
+        )
+    return errors
+
+
+def _check_switch_outcome_marker() -> list[str]:
+    """umbrella #323 (+ its fix round) — structural floor for the switch
+    playbook's own structured outcome event (DMF_L3_SWITCH_OUTCOME, a
+    vocabulary SEPARATE from DMF_L3_OUTCOME — see
+    playbooks/switch-mxl-fabrics-demo.yml's own header and
+    _emit_switch_outcome.yml's own header for why). Five things, mirroring
+    the exact discipline _emit_outcome.yml's own header documents for
+    dmf-l3-outcome:
+
+      1. BOTH sanctioned emission files exist under roles/l3_run_guard/
+         tasks/ — _emit_switch_outcome.yml (the generic, caller-parameterised
+         one) and _emit_switch_refused_literal.yml (the fix round's
+         hard-coded one) — and each contains EXACTLY ONE task, an
+         ansible.builtin.debug task whose `name:` is LITERALLY
+         'dmf-l3-switch-outcome': the console reads AWX job events filtered
+         by this exact task name, not stdout.
+      2. the marker name is UNIQUE OUTSIDE that pair: no other task file
+         under roles/l3_run_guard/tasks/ and no task in the switch playbook
+         itself reuses it. The emission-point set is CLOSED and enumerated —
+         "one file" became "exactly these two, each shape-checked", which is
+         the same discipline with the one irreducible exception written down
+         and gated rather than left implicit.
+      3. the switch playbook actually WIRES the generic marker in at least
+         once (an `include_role: ... tasks_from: _emit_switch_outcome` call
+         somewhere in its play) — a structural floor only; it does NOT prove
+         every terminal branch fires it with the correct enum, that is
+         tests/l3-switch-execution.yml's own execution-test job.
+      4. (fix round, codex gate P1) the LITERAL emitter is genuinely
+         literal: its msg contains no '{{' at all and is exactly the
+         expected refused/detail=reserved-var string. This is the whole
+         reason that file is trustworthy — extra_vars outrank task vars,
+         set_fact and register alike, so a rendered token on the ONE path
+         that must emit while those names may be shadowed is forgeable.
+         The moment someone "tidies" a variable back into it, the P1 hole
+         reopens silently; this check is what makes that impossible to land.
+      5. (fix round, codex gate P1) switch_outcome_guard.yml still asserts
+         EVERY outcome-decision variable is undefined. Dropping a name from
+         that list is the other silent way to reopen the hole.
+    """
+    errors: list[str] = []
+    emit_file = _ROLE_TASKS_DIR / _SWITCH_OUTCOME_EMIT_FILE
+    literal_file = _ROLE_TASKS_DIR / _SWITCH_OUTCOME_LITERAL_FILE
+
+    missing = [p for p in (emit_file, literal_file) if not p.is_file()]
+    if missing:
+        return [
+            f"{p.relative_to(_REPO_ROOT)}: a sanctioned umbrella #323 "
+            "switch-outcome marker-emission file is missing."
+            for p in missing
+        ]
+
+    errors.extend(_check_one_switch_emit_file(emit_file))
+    errors.extend(_check_one_switch_emit_file(literal_file))
+
+    # (4) the literal emitter must contain no Jinja at all, and must say
+    # exactly what the guard's refusal is supposed to say.
+    try:
+        literal_tasks = yaml.safe_load(literal_file.read_text())
+    except yaml.YAMLError:
+        literal_tasks = None
+    if isinstance(literal_tasks, list) and len(literal_tasks) == 1 and isinstance(literal_tasks[0], dict):
+        debug_spec = literal_tasks[0].get("ansible.builtin.debug") or literal_tasks[0].get("debug") or {}
+        msg = debug_spec.get("msg") if isinstance(debug_spec, dict) else None
+        if not isinstance(msg, str) or "{{" in msg or "{%" in msg:
             errors.append(
-                f"{emit_file.relative_to(_REPO_ROOT)}: the single task's own "
-                f"`name:` must be literally '{_SWITCH_OUTCOME_MARKER_NAME}' — "
-                "the console filters AWX job events by this exact task name, "
-                "it does not scrape stdout."
+                f"{literal_file.relative_to(_REPO_ROOT)}: this file's marker "
+                "msg MUST be a plain string literal with no Jinja — it is the "
+                "one emission path that runs while l3_switch_outcome_token / "
+                "_switch_outcome_emitted may be caller-shadowed, and extra_vars "
+                "outrank every variable source, so anything rendered here is "
+                f"forgeable. got: {msg!r}"
             )
-        elif "ansible.builtin.debug" not in only and "debug" not in only:
+        elif msg.strip() != _SWITCH_OUTCOME_LITERAL_MSG:
             errors.append(
-                f"{emit_file.relative_to(_REPO_ROOT)}: the marker task must "
-                "be an ansible.builtin.debug task (event_data.res.msg is what "
-                "the console parses)."
+                f"{literal_file.relative_to(_REPO_ROOT)}: expected the marker "
+                f"msg to be exactly {_SWITCH_OUTCOME_LITERAL_MSG!r} — got "
+                f"{msg.strip()!r}."
+            )
+
+    # (5) the guard must still assert every outcome-decision name.
+    guard_file = _ROLE_TASKS_DIR / _SWITCH_GUARD_FILE
+    if not guard_file.is_file():
+        errors.append(
+            f"roles/l3_run_guard/tasks/{_SWITCH_GUARD_FILE}: the switch play's "
+            "outcome-control guard is missing — without it the reserved-var "
+            "refusal path renders the very variables the caller shadowed."
+        )
+    else:
+        guard_text = guard_file.read_text()
+        unguarded = [
+            n for n in _SWITCH_GUARD_NAMES if f"{n} is not defined" not in guard_text
+        ]
+        if unguarded:
+            errors.append(
+                f"roles/l3_run_guard/tasks/{_SWITCH_GUARD_FILE}: no "
+                f"'<name> is not defined' assertion for {unguarded} — every "
+                "variable the structured-outcome decision reads must be proven "
+                "caller-free before the play does anything (umbrella #323 fix "
+                "round P1)."
             )
 
     # Uniqueness across every OTHER role task file + the switch playbook
     # itself, and (piggybacking the same walk) count how many times the
-    # switch playbook actually calls this file.
-    other_paths = [p for p in sorted(_ROLE_TASKS_DIR.glob("*.yml")) if p.name != _SWITCH_OUTCOME_EMIT_FILE]
+    # switch playbook actually calls the generic emitter.
+    other_paths = [
+        p for p in sorted(_ROLE_TASKS_DIR.glob("*.yml"))
+        if p.name not in _SWITCH_OUTCOME_EMIT_FILES
+    ]
     switch_playbook_path = _PLAYBOOKS_DIR / _SWITCH_PLAYBOOK
     other_paths.append(switch_playbook_path)
 
@@ -485,8 +597,10 @@ def _check_switch_outcome_marker() -> list[str]:
     if dupes:
         errors.append(
             f"a task literally named '{_SWITCH_OUTCOME_MARKER_NAME}' was "
-            f"found OUTSIDE {emit_file.relative_to(_REPO_ROOT)} too: {dupes} — "
-            "this must stay the ONE, single named marker-emission point."
+            f"found outside the two sanctioned emission files "
+            f"({', '.join(_SWITCH_OUTCOME_EMIT_FILES)}): {dupes} — the "
+            "emission-point set is closed and enumerated; a third one is how "
+            "a run silently starts reporting two different outcomes."
         )
 
     if switch_playbook_calls == 0:
@@ -698,10 +812,13 @@ def main() -> int:
         "`type_debug` vs. quoted-type-name comparison either (same "
         "portability class — see _check_type_debug_antipattern's "
         "docstring). umbrella #323: the switch playbook's own "
-        f"'{_SWITCH_OUTCOME_MARKER_NAME}' structured-outcome marker exists, "
-        "is uniquely named, and is actually wired into "
-        f"{_SWITCH_PLAYBOOK} (see _check_switch_outcome_marker's own "
-        "docstring)."
+        f"'{_SWITCH_OUTCOME_MARKER_NAME}' structured-outcome marker exists in "
+        f"both sanctioned emission files ({', '.join(_SWITCH_OUTCOME_EMIT_FILES)}) "
+        "and nowhere else, the literal one is still a Jinja-free literal, "
+        f"{_SWITCH_GUARD_FILE} still proves every outcome-decision variable "
+        f"({len(_SWITCH_GUARD_NAMES)} names) caller-free, and the marker is "
+        f"actually wired into {_SWITCH_PLAYBOOK} (see "
+        "_check_switch_outcome_marker's own docstring)."
     )
     return 0
 

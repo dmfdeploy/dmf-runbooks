@@ -72,24 +72,79 @@
 # that model would be a misleading fit, not a real reuse. So
 # DMF_L3_SWITCH_OUTCOME carries its own small, switch-specific enum
 # instead: `success`, `rollback_verified_previous_source_restored`,
-# `rollback_verification_failed`, and `refused` (the catch-all for every
-# OTHER terminal failure — pre-lock, pre-mutation reads, PHASE 1 mutation,
-# a PHASE 3 final-readback mismatch — every one of which this playbook's
-# own rescue: header below already classifies as "leaves active-source
-# cleared/absent, the same safe quiesced state"). EXACTLY ONE event fires
-# per run: the two PHASE-2-specific tokens are emitted in-block,
-# immediately before their own ansible.builtin.fail task (a fail ends that
-# branch, so the emit must precede it — the ordering is not
-# interchangeable), and set _switch_outcome_emitted so the rescue:'s own
-# generic `refused` emit — the catch-all for every failure that DIDN'T
-# already go through one of those two branches — skips firing a
-# duplicate/misleading second marker on top (mirrors
-# l3_pre_mutation_marker_emitted's identical role in gate_rescue.yml's own
-# branch A, applied here since this playbook's control flow is simple
-# enough to own the sentinel directly rather than factoring it into a
-# shared role file). `success` is the LAST task in the block, after the
-# lock-release include, so nothing later can still fail the run out from
-# under an already-emitted success marker.
+# `rollback_verified_no_previous_source`, `rollback_verification_failed`,
+# and `refused` (the catch-all for every OTHER terminal failure — pre-lock,
+# pre-mutation reads, PHASE 1 mutation, a PHASE 3 final-readback mismatch —
+# every one of which this playbook's own rescue: header below already
+# classifies as "leaves active-source cleared/absent, the same safe
+# quiesced state"). EXACTLY ONE event fires per run: the PHASE-2-specific
+# tokens are emitted in-block, immediately before their own
+# ansible.builtin.fail task (a fail ends that branch, so the emit must
+# precede it — the ordering is not interchangeable), and set
+# _switch_outcome_emitted so the rescue:'s own generic `refused` emit — the
+# catch-all for every failure that DIDN'T already go through one of those
+# branches — skips firing a duplicate/misleading second marker on top
+# (mirrors l3_pre_mutation_marker_emitted's identical role in
+# gate_rescue.yml's own branch A, applied here since this playbook's
+# control flow is simple enough to own the sentinel directly rather than
+# factoring it into a shared role file). `success` is the LAST task in the
+# block, after the lock-release include, so nothing later can still fail
+# the run out from under an already-emitted success marker.
+#
+# THE TWO ROLLBACK-VERIFIED TOKENS (umbrella #323 fix round, codex gate
+# P2a): a VERIFIED rollback has two genuinely different endings, because
+# the restore task is deliberately skipped when the pre-switch coordinator
+# had NO active-source set (`when: ... and (_switch_baseline.active_source
+# | trim) != ''` — there is nothing to restore, and writing an empty
+# active-source would be a mutation, not a restore). Emitting
+# rollback_verified_previous_source_restored with an EMPTY
+# restored_active_source on that exit told the console a factual untruth —
+# "the previous source was restored", when the honest statement is "the
+# rollback verified and there was no previous source to restore". So that
+# exit now emits its own token, rollback_verified_no_previous_source. Both
+# still fail the job, both still leave a coordinator whose active-source is
+# exactly what it was pre-switch, and BOTH still share the ONE, unchanged,
+# byte-identical `rollback_verified previous_source_restored:` legacy fail
+# message — dmf-cms's #320 stdout bridge parses that prefix during the
+# transition and must not be disturbed by a change that only concerns the
+# structured event.
+#
+# detail= ON refused (umbrella #323 fix round, operator ruling): `refused`
+# covers ~20 distinct terminal exits, from a pre-lock guard refusal
+# (nothing whatsoever touched) to a PHASE 3 final-readback mismatch (the
+# switch all but complete). The console cannot act on those the same way,
+# so the refused event now also carries a detail= field naming the stage
+# that was in flight — the same convention this playbook already uses one
+# line away in "DMF_L3_SWITCH_REFUSED: detail=switch-final-readback-
+# mismatch". It is deliberately a SMALL, stable vocabulary spanning the
+# exits rather than one value per exit: reserved-var, pre-lock,
+# coordinator-read, chart-resolve, baseline-capture, quiesce, repoint,
+# select, and final-readback. detail=reserved-var is emitted only by the
+# hard-coded guard marker; detail=pre-lock is the DEFAULT (see the
+# no-pre-lock-set_fact comment inside the block for why that default is the
+# correct value rather than a guess).
+# detail= is always the FIRST kv field, immediately after the token, so a
+# parser that takes the first detail= can never be confused by a
+# caller-supplied free-text value (e.g. a receiver_instance containing
+# "detail=") appearing later in the same line.
+#
+# NON-FORGEABILITY OF ALL OF THE ABOVE (umbrella #323 fix round, codex gate
+# P1 — read roles/l3_run_guard/tasks/switch_outcome_guard.yml's own header
+# for the full story, it is the substance of this fix). Ansible extra_vars
+# outrank task-level vars, set_fact and register alike, so a caller could
+# previously either silence this play's only outcome task
+# (-e _switch_outcome_emitted=true) or dictate its content
+# (-e l3_switch_outcome_token=...) — and could do so precisely BECAUSE the
+# reserved-var refusal path itself ran through the shadowed names. The
+# first task of this play is now switch_outcome_guard, which proves every
+# variable the outcome decision reads is caller-free and, on violation,
+# emits a HARD-CODED literal refused marker
+# (_emit_switch_refused_literal.yml) and ends the play before the outer
+# block is ever entered. The stage fact that feeds detail= is covered by
+# that same guard, so a caller cannot choose the detail string either; and
+# the catch-all's skip decision is now a conjunction of the sentinel AND
+# the real PHASE 2 verify verdict, so no single shadowed name can suppress
+# the event even if the guard were somehow bypassed.
 #
 # This is layered ON TOP of dmf-cms's own short-term #320 bridge (which
 # parses fixed allowlisted prefixes — including the two rollback fail
@@ -140,11 +195,50 @@
     l3_switch_rollback_verify_timeout_seconds: 120
     l3_switch_verify_poll_delay_seconds: 10
   tasks:
+    # The ONE task that deliberately sits OUTSIDE the outer block below
+    # (umbrella #323 fix round, codex gate P1). It proves that none of the
+    # variables this play's own structured-outcome decision reads were
+    # supplied as extra_vars, and on violation emits a hard-coded literal
+    # `refused detail=reserved-var` marker and ends the play — before the
+    # block, so its own failure can never be caught by a rescue whose
+    # emission the caller may have just shadowed, and with genuinely
+    # nothing to clean up (no lock, no chart tempdir, no coordinator
+    # write). See roles/l3_run_guard/tasks/switch_outcome_guard.yml's own
+    # header for why the reserved-var blocklist alone cannot close this and
+    # why no variable-based fix is possible against extra_vars.
+    - name: "L3 switch outcome-control guard (umbrella #323 fix round — MUST stay the first task of this play, and outside the outer block)"
+      ansible.builtin.include_role:
+        name: l3_run_guard
+        tasks_from: switch_outcome_guard
+
     - name: "L3 switch gate through terminal — ONE outer block/rescue/always
         (mirrors launch/teardown's own R4a Backbone shape: this playbook's
         own rescue: sees every failure in the whole span, and the always:
         lock-release is an unconditional backstop)"
       block:
+        # _switch_stage names the stage that is IN FLIGHT, so a failure
+        # anywhere in it reports that stage as the refused event's detail=.
+        # Each transition is set immediately BEFORE the stage it names
+        # begins. The fact is proven caller-free by the outcome-control
+        # guard above (and reserved in _assert_reserved_vars.yml, as the
+        # R5a-1 scanner requires for any set_fact target), so the detail
+        # string is this play's own statement about itself, never a
+        # caller's.
+        #
+        # THERE IS DELIBERATELY NO `_switch_stage: pre-lock` TASK HERE, and
+        # the rescue's kv defaults to pre-lock instead. A playbook-level
+        # set_fact at this point would run BEFORE switch_lock -> identity.yml
+        # -> _assert_reserved_vars.yml, which would then find _switch_stage
+        # already "defined" and refuse EVERY legitimate switch run as a
+        # forged reserved var — the exact trap switch_validate.yml's own
+        # header documents (qwen1 gate fix round, caught live again here by
+        # probing this fix against the stub harness before writing tests).
+        # The default is not a fallback guess either: the only code that can
+        # fail between this play's first task and the first transition below
+        # is identity.yml's own reserved-var/request-id validation and the
+        # facility-lock acquisition, all of which ARE pre-lock by definition.
+        # That is also why the vocabulary has no `unexpected` member in
+        # practice — there is no span it could describe.
         - name: "L3 switch-lock guard (identity -> switch_validate ->
             facility lock acquisition — umbrella #201 WP4b,
             roles/l3_run_guard/tasks/switch_lock.yml). qwen1 gate fix
@@ -160,6 +254,10 @@
           ansible.builtin.include_role:
             name: l3_run_guard
             tasks_from: switch_lock
+
+        - name: "L3 switch stage -> coordinator-read (facility lock now HELD; every read from here to baseline-capture still leaves the coordinator untouched)"
+          ansible.builtin.set_fact:
+            _switch_stage: coordinator-read
 
         - name: "L3: test-only fault injection boundary (umbrella #201
             WP4b — no-op on every real run; proves a pre-mutation switch
@@ -181,6 +279,10 @@
             name: l3_run_guard
             tasks_from: switch_read_coordinator
 
+        - name: "L3 switch stage -> chart-resolve (helm get metadata + helm pull, still pre-mutation)"
+          ansible.builtin.set_fact:
+            _switch_stage: chart-resolve
+
         - name: "L3 switch: resolve + pull the receiver's own installed chart
             (umbrella #306, roles/l3_run_guard/tasks/switch_resolve_chart.yml)
             — under the held facility lock, but BEFORE any coordinator
@@ -191,6 +293,10 @@
           ansible.builtin.include_role:
             name: l3_run_guard
             tasks_from: switch_resolve_chart
+
+        - name: "L3 switch stage -> baseline-capture (helm get values + the baseline bundle, the LAST pre-mutation stage)"
+          ansible.builtin.set_fact:
+            _switch_stage: baseline-capture
 
         - name: "L3 switch: capture the PRE-switch baseline (umbrella #306
             design round #2, roles/l3_run_guard/tasks/switch_capture_baseline.yml)
@@ -204,6 +310,10 @@
             tasks_from: switch_capture_baseline
 
         # ── PHASE 1: QUIESCE — de-select ──────────────────────────────
+        - name: "L3 switch stage -> quiesce (PHASE 1 — the FIRST stage that mutates anything; a failure from here leaves active-source cleared, the safe zero-transmitter state)"
+          ansible.builtin.set_fact:
+            _switch_stage: quiesce
+
         - name: "PHASE 1 (quiesce): clear active-source — the WP2
             supervisor's own continuous re-check sees this mismatch and
             stops+parks the outgoing initiator (spec §6.2 step 1); THIS
@@ -254,6 +364,10 @@
             timeout: "{{ l3_switch_quiesce_settle_seconds }}"
 
         # ── PHASE 2: RE-POINT — restart the viewer at the new flow.id ──
+        - name: "L3 switch stage -> repoint (PHASE 2 — from here the viewer's Helm release has been re-pointed, so a `refused detail=repoint` tells the console something materially different from `detail=quiesce`)"
+          ansible.builtin.set_fact:
+            _switch_stage: repoint
+
         - name: "PHASE 2 (re-point): re-point + restart the viewer (umbrella
             #201 WP4b condition 1, chart arg fixed by umbrella #306,
             WAIT MODEL REPLACED by umbrella #306 design round #2 —
@@ -361,7 +475,13 @@
                 _switch_outcome_emitted: true
               when: _switch_rollback_verified
 
-            - name: "L3 switch outcome: emit rollback_verified_previous_source_restored (umbrella #323)"
+            - name: "L3 switch outcome: emit rollback_verified_previous_source_restored
+                (umbrella #323) — ONLY on the exit where the restore task
+                above genuinely RAN, i.e. the pre-switch coordinator
+                actually had an active-source. The `when:` here is the
+                SAME conjunction that gates the restore itself, on purpose:
+                the two must never disagree, because this token is a claim
+                ABOUT that task having run."
               ansible.builtin.include_role:
                 name: l3_run_guard
                 tasks_from: _emit_switch_outcome
@@ -373,9 +493,35 @@
                   receiver_instance={{ receiver_instance }}
                   restored_active_source={{ _switch_baseline.active_source | default('') }}
                   baseline_revision={{ _switch_baseline.revision }}
-              when: _switch_rollback_verified
+              when: _switch_rollback_verified and (_switch_baseline.active_source | trim) != ''
 
-            - name: "L3 switch: rollback verified — still a failed switch (never silently succeed on a restore)"
+            - name: "L3 switch outcome: emit rollback_verified_no_previous_source
+                (umbrella #323 fix round, codex gate P2a) — the OTHER
+                verified-rollback exit: the restore task above was skipped
+                because the pre-switch coordinator had active-source ABSENT,
+                so there was nothing to restore. The old code emitted
+                rollback_verified_previous_source_restored here too, with
+                restored_active_source rendering EMPTY — a factually false
+                enum on a perfectly valid exit, which is exactly the kind of
+                thing a console acts on wrongly. Carries NO
+                restored_active_source kv, because none was restored. The
+                legacy stdout fail message for this branch is deliberately
+                UNCHANGED and shared with the sibling exit (see the fail
+                task below) — dmf-cms's #320 bridge parses it byte-for-byte
+                during the transition; only the structured enum splits."
+              ansible.builtin.include_role:
+                name: l3_run_guard
+                tasks_from: _emit_switch_outcome
+              vars:
+                l3_switch_outcome_token: rollback_verified_no_previous_source
+                l3_switch_outcome_kv: >-
+                  run_id={{ l3_run_id | default('') }}
+                  request_id={{ l3_request_id | default('') }}
+                  receiver_instance={{ receiver_instance }}
+                  baseline_revision={{ _switch_baseline.revision }}
+              when: _switch_rollback_verified and (_switch_baseline.active_source | trim) == ''
+
+            - name: "L3 switch: rollback verified — still a failed switch (never silently succeed on a restore). ONE fail task for BOTH verified-rollback exits: this msg is dmf-cms's #320 stdout bridge contract and stays byte-identical; the restored-vs-no-previous-source distinction lives in the structured event above, never here (umbrella #323 fix round, codex gate P2a)"
               ansible.builtin.fail:
                 msg: >-
                   rollback_verified previous_source_restored:
@@ -432,6 +578,10 @@
               when: not _switch_rollback_verified
 
         # ── PHASE 3: SELECT — set active-source ───────────────────────
+        - name: "L3 switch stage -> select (PHASE 3 — the switch is all but complete; a refusal here is the closest-to-done exit the catch-all reports)"
+          ansible.builtin.set_fact:
+            _switch_stage: select
+
         - name: "PHASE 3 (select): set active-source = the switch target —
             only the matching supervisor un-parks, and because phase 1
             cleared the endpoint it can ONLY start against phase 2's fresh
@@ -444,6 +594,18 @@
               metadata: { name: mxl-coordinator, namespace: "{{ l3_target_namespace }}" }
               data:
                 active-source: "{{ _switch_target_projection.active_source }}"
+
+        # `final-readback`, NOT `final-readback-mismatch`: this stage covers
+        # BOTH the k8s_info read and the conjunction assert below, and a
+        # failure of the read itself is not a mismatch. Naming the stage
+        # after only one of its two failure modes would reintroduce exactly
+        # the false-enum class this fix round closed for
+        # rollback_verified_no_previous_source (P2a). The assert's own
+        # legacy stdout line keeps its more specific, unchanged
+        # "detail=switch-final-readback-mismatch" wording.
+        - name: "L3 switch stage -> final-readback (PHASE 3 verification: the readback read AND its conjunction assert)"
+          ansible.builtin.set_fact:
+            _switch_stage: final-readback
 
         - name: "PHASE 3 final readback (umbrella #306 design round #2) —
             re-read the coordinator ConfigMap and assert the FULL
@@ -511,6 +673,7 @@
             quiesced state'. Guarded on _switch_outcome_emitted so a
             PHASE-2 verify-failed branch's own more specific marker
             (rollback_verified_previous_source_restored /
+            rollback_verified_no_previous_source /
             rollback_verification_failed, set BEFORE its own fail task —
             see that block's own comments) is never followed by a second,
             redundant one here — mirrors l3_pre_mutation_marker_emitted /
@@ -522,11 +685,34 @@
             tasks_from: _emit_switch_outcome
           vars:
             l3_switch_outcome_token: refused
+            # detail= FIRST, immediately after the token: every field after
+            # it may carry caller-supplied free text (receiver_instance is a
+            # caller extra_var), so a parser that reads the FIRST detail=
+            # can never be spliced by a value planted later in the line.
+            # _switch_stage is proven caller-free by this play's own first
+            # task (switch_outcome_guard) — see this playbook's header and
+            # that file's own for why reserving the name was necessary but
+            # NOT sufficient on its own.
             l3_switch_outcome_kv: >-
+              detail={{ _switch_stage | default('pre-lock') }}
               run_id={{ l3_run_id | default('<unknown>') }}
               request_id={{ l3_request_id | default('<unknown>') }}
               receiver_instance={{ receiver_instance | default('<unknown>') }}
-          when: not (_switch_outcome_emitted | default(false))
+          # Skip ONLY when the sentinel says a specific marker already fired
+          # AND the trusted failure state that is the sole legitimate reason
+          # for one agrees: PHASE 2 verify genuinely ran and concluded
+          # not-ready. Defense in depth for the umbrella #323 fix round's
+          # own P1 — the guard at the top of this play already proves both
+          # names caller-free, and this conjunction means that even if that
+          # guard were bypassed, no SINGLE shadowed extra_var could suppress
+          # this event: `-e _switch_outcome_emitted=true` alone still emits,
+          # because _switch_upgrade_verify_ready is undefined on every
+          # pre-PHASE-2 refusal (which is every exit the old, sentinel-only
+          # condition silently swallowed).
+          when: >-
+            not (_switch_outcome_emitted | default(false))
+            or (_switch_upgrade_verify_ready is not defined)
+            or (_switch_upgrade_verify_ready | default(false) | bool)
 
         - name: "L3 switch rescue — UNCONDITIONAL lock release (umbrella
             #201 WP4b condition 3, REVISED by umbrella #306 design round
@@ -571,11 +757,29 @@
             because the pulled chart's lifetime spans PHASE 2's re-point,
             well past that file — removing it any earlier would delete the
             chart PHASE 2 still needs (umbrella #296's own lesson, applied
-            here)."
+            here).
+
+            failed_when: false (umbrella #323 fix round, codex gate P2b):
+            this is HOUSEKEEPING — a tempdir this play created, in a
+            directory nothing else depends on. It used to be able to fail
+            the job, and because it lives in the outer always: it runs AFTER
+            the block has already emitted `success`: an unwritable/vanished
+            tempdir therefore produced a FAILED AWX job carrying a success
+            event, i.e. the exact contradiction the success-emit ordering
+            comment above exists to prevent. A cleanup failure must never
+            change this run's outcome — it is not evidence about the switch.
+            The residue is a stale directory under the controller's own
+            tempdir, self-clearing on reboot and harmless in the ephemeral
+            AWX EE pod this actually runs in. The sibling lock-release
+            backstop below is NOT the same exposure: release.yml already
+            wraps its own work in a block/rescue that logs and swallows
+            (its own R4a/P1-3 header) — it cannot fail the play today, so
+            there is nothing to fix there."
           ansible.builtin.file:
             path: "{{ _switch_chart_tmp.path | default('') }}"
             state: absent
           changed_when: false
+          failed_when: false
           when: _switch_chart_tmp is defined
 
         - name: "L3 switch release — idempotent lock-release backstop
