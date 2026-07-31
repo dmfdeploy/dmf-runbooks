@@ -47,7 +47,34 @@
 # carries the pulled tempdir chart path, --reuse-values, no reset-mode
 # flag, and --rollback-on-failure.
 #
+# umbrella #323 fix round (codex adversarial gate): three additions, all
+# structural rather than cosmetic. (1) Every structured-event assertion now
+# PARSES the token out of the marker line and compares it for EQUALITY —
+# the previous `'refused' in marker` substring checks were satisfied by
+# 'not_refused', by any kv value containing the word, and by any longer
+# token sharing the prefix, which is to say they discriminated almost
+# nothing. Those parse expressions are deliberately BACKSLASH-FREE (a
+# literal space instead of `\s+`, and a whole-match regex_search +
+# regex_replace instead of a `\1` backreference): how many backslashes
+# survive depends on the YAML scalar style AND the Jinja quote style AND
+# the ansible-core version, and this suite's own first attempt at it
+# silently produced a non-matching pattern under one such combination. A
+# pattern with no escapes at all cannot drift that way — which also matters
+# because CI runs an EE-pinned ansible-core 2.15 leg that cannot be
+# reproduced on this harness. The whole-match form also never RAISES on a
+# non-match (regex_search with a group reference does), so a missing field
+# surfaces as a readable assertion failure instead of a template error. (2) Scenario 11 covers the verified-rollback exit where the
+# pre-switch coordinator had NO active-source: it and scenario 7 differ in
+# exactly that one fixture and must now report DIFFERENT tokens, which is
+# what stops the play claiming a restore that never happened. (3) Scenarios
+# 12a/12b/12c are adversarial: they run the real playbook with the outcome
+# event's own control variables supplied as extra_vars and prove the caller
+# can neither silence nor author the event. See each scenario's own header.
+#
 # Run:  ansible-playbook tests/l3-switch-execution.yml
+# (LONG — it starts fresh stub servers per scenario and runs the real
+# playbook as a nested subprocess each time; run it detached and poll
+# rather than in a foreground shell with a command timeout.)
 
 - name: "Umbrella #201 WP4b — L3 switch playbook real-playbook stubbed execution tests"
   hosts: localhost
@@ -267,11 +294,23 @@
           ansible.builtin.set_fact:
             _se1_markers: "{{ (_se1_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
 
-        - ansible.builtin.assert:
+        - name: "(1) assert exactly ONE marker was emitted (a terminal exit that emits none, or two, fails here)"
+          ansible.builtin.assert:
             that:
               - _se1_markers | length == 1
-              - "'refused' in _se1_markers[0]"
-            fail_msg: "(1) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME refused marker, got: {{ _se1_markers }}"
+            fail_msg: "(1) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME marker, got: {{ _se1_markers }}"
+
+        - name: "(1) parse the marker's token + detail out of the line — the EXACT fields, never a substring (umbrella #323 fix round, codex gate: `'refused' in marker` is also satisfied by a mutant emitting 'not_refused', by any kv VALUE containing that word, and by any longer token sharing the prefix — so the old check discriminated almost nothing). detail= is parsed as the FIRST such field, which is why the playbook always renders it immediately after the token: caller-supplied free text (receiver_instance) can only ever appear later in the line and can never splice this value."
+          ansible.builtin.set_fact:
+            _se1_token: "{{ (_se1_markers[0] | regex_search('DMF_L3_SWITCH_OUTCOME: [A-Za-z0-9_]+') | default('DMF_L3_SWITCH_OUTCOME: <unparsed>', true)) | regex_replace('^DMF_L3_SWITCH_OUTCOME: ', '') }}"
+            _se1_detail: "{{ (_se1_markers[0] | regex_search('detail=[A-Za-z0-9_-]+') | default('detail=<no-detail-field>', true)) | regex_replace('^detail=', '') }}"
+
+        - name: "(1) ASSERT the parsed enum is EXACTLY token 'refused' detail 'pre-lock'. detail=pre-lock is the stage that was in flight: a refusal inside switch_lock (identity/validate/lock acquisition) — nothing touched, no lock ever held."
+          ansible.builtin.assert:
+            that:
+              - _se1_token == 'refused'
+              - _se1_detail == 'pre-lock'
+            fail_msg: "(1) FAIL — expected token 'refused' detail 'pre-lock'. got token={{ _se1_token }} detail={{ _se1_detail }} markers={{ _se1_markers }}"
 
         - name: "(1) ASSERT (via real HTTP against the stub): the facility lock was NEVER created (pre-lock refusal)"
           ansible.builtin.uri:
@@ -375,11 +414,23 @@
           ansible.builtin.set_fact:
             _se2_markers: "{{ (_se2_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
 
-        - ansible.builtin.assert:
+        - name: "(2) assert exactly ONE marker was emitted (a terminal exit that emits none, or two, fails here)"
+          ansible.builtin.assert:
             that:
               - _se2_markers | length == 1
-              - "'refused' in _se2_markers[0]"
-            fail_msg: "(2) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME refused marker, got: {{ _se2_markers }}"
+            fail_msg: "(2) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME marker, got: {{ _se2_markers }}"
+
+        - name: "(2) parse the marker's token + detail out of the line — the EXACT fields, never a substring (umbrella #323 fix round, codex gate: `'refused' in marker` is also satisfied by a mutant emitting 'not_refused', by any kv VALUE containing that word, and by any longer token sharing the prefix — so the old check discriminated almost nothing). detail= is parsed as the FIRST such field, which is why the playbook always renders it immediately after the token: caller-supplied free text (receiver_instance) can only ever appear later in the line and can never splice this value."
+          ansible.builtin.set_fact:
+            _se2_token: "{{ (_se2_markers[0] | regex_search('DMF_L3_SWITCH_OUTCOME: [A-Za-z0-9_]+') | default('DMF_L3_SWITCH_OUTCOME: <unparsed>', true)) | regex_replace('^DMF_L3_SWITCH_OUTCOME: ', '') }}"
+            _se2_detail: "{{ (_se2_markers[0] | regex_search('detail=[A-Za-z0-9_-]+') | default('detail=<no-detail-field>', true)) | regex_replace('^detail=', '') }}"
+
+        - name: "(2) ASSERT the parsed enum is EXACTLY token 'refused' detail 'pre-lock'. detail=pre-lock is the stage that was in flight: a refusal inside switch_lock (identity/validate/lock acquisition) — nothing touched, no lock ever held."
+          ansible.builtin.assert:
+            that:
+              - _se2_token == 'refused'
+              - _se2_detail == 'pre-lock'
+            fail_msg: "(2) FAIL — expected token 'refused' detail 'pre-lock'. got token={{ _se2_token }} detail={{ _se2_detail }} markers={{ _se2_markers }}"
 
         - name: "(2) ASSERT (via real HTTP against the stub): the facility lock was NEVER created (pre-lock refusal)"
           ansible.builtin.uri:
@@ -482,11 +533,23 @@
           ansible.builtin.set_fact:
             _se3_markers: "{{ (_se3_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
 
-        - ansible.builtin.assert:
+        - name: "(3) assert exactly ONE marker was emitted (a terminal exit that emits none, or two, fails here)"
+          ansible.builtin.assert:
             that:
               - _se3_markers | length == 1
-              - "'refused' in _se3_markers[0]"
-            fail_msg: "(3) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME refused marker, got: {{ _se3_markers }}"
+            fail_msg: "(3) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME marker, got: {{ _se3_markers }}"
+
+        - name: "(3) parse the marker's token + detail out of the line — the EXACT fields, never a substring (umbrella #323 fix round, codex gate: `'refused' in marker` is also satisfied by a mutant emitting 'not_refused', by any kv VALUE containing that word, and by any longer token sharing the prefix — so the old check discriminated almost nothing). detail= is parsed as the FIRST such field, which is why the playbook always renders it immediately after the token: caller-supplied free text (receiver_instance) can only ever appear later in the line and can never splice this value."
+          ansible.builtin.set_fact:
+            _se3_token: "{{ (_se3_markers[0] | regex_search('DMF_L3_SWITCH_OUTCOME: [A-Za-z0-9_]+') | default('DMF_L3_SWITCH_OUTCOME: <unparsed>', true)) | regex_replace('^DMF_L3_SWITCH_OUTCOME: ', '') }}"
+            _se3_detail: "{{ (_se3_markers[0] | regex_search('detail=[A-Za-z0-9_-]+') | default('detail=<no-detail-field>', true)) | regex_replace('^detail=', '') }}"
+
+        - name: "(3) ASSERT the parsed enum is EXACTLY token 'refused' detail 'coordinator-read'. detail=coordinator-read is the stage that was in flight: the facility lock IS held by this point but nothing has been mutated."
+          ansible.builtin.assert:
+            that:
+              - _se3_token == 'refused'
+              - _se3_detail == 'coordinator-read'
+            fail_msg: "(3) FAIL — expected token 'refused' detail 'coordinator-read'. got token={{ _se3_token }} detail={{ _se3_detail }} markers={{ _se3_markers }}"
 
         - name: "(3) ASSERT (via real HTTP against the stub): the facility
             lock was acquired then RELEASED (this refusal fires AFTER
@@ -637,11 +700,23 @@
           ansible.builtin.set_fact:
             _se4a_markers: "{{ (_se4a_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
 
-        - ansible.builtin.assert:
+        - name: "(4a) assert exactly ONE marker was emitted (a terminal exit that emits none, or two, fails here)"
+          ansible.builtin.assert:
             that:
               - _se4a_markers | length == 1
-              - "'refused' in _se4a_markers[0]"
-            fail_msg: "(4a) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME refused marker, got: {{ _se4a_markers }}"
+            fail_msg: "(4a) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME marker, got: {{ _se4a_markers }}"
+
+        - name: "(4a) parse the marker's token + detail out of the line — the EXACT fields, never a substring (umbrella #323 fix round, codex gate: `'refused' in marker` is also satisfied by a mutant emitting 'not_refused', by any kv VALUE containing that word, and by any longer token sharing the prefix — so the old check discriminated almost nothing). detail= is parsed as the FIRST such field, which is why the playbook always renders it immediately after the token: caller-supplied free text (receiver_instance) can only ever appear later in the line and can never splice this value."
+          ansible.builtin.set_fact:
+            _se4a_token: "{{ (_se4a_markers[0] | regex_search('DMF_L3_SWITCH_OUTCOME: [A-Za-z0-9_]+') | default('DMF_L3_SWITCH_OUTCOME: <unparsed>', true)) | regex_replace('^DMF_L3_SWITCH_OUTCOME: ', '') }}"
+            _se4a_detail: "{{ (_se4a_markers[0] | regex_search('detail=[A-Za-z0-9_-]+') | default('detail=<no-detail-field>', true)) | regex_replace('^detail=', '') }}"
+
+        - name: "(4a) ASSERT the parsed enum is EXACTLY token 'refused' detail 'coordinator-read'. detail=coordinator-read is the stage that was in flight: the facility lock IS held by this point but nothing has been mutated."
+          ansible.builtin.assert:
+            that:
+              - _se4a_token == 'refused'
+              - _se4a_detail == 'coordinator-read'
+            fail_msg: "(4a) FAIL — expected token 'refused' detail 'coordinator-read'. got token={{ _se4a_token }} detail={{ _se4a_detail }} markers={{ _se4a_markers }}"
 
         - name: "(4a) ASSERT (via real HTTP against the stub): the coordinator is COMPLETELY UNCHANGED (no phase ever ran)"
           ansible.builtin.uri:
@@ -721,11 +796,23 @@
           ansible.builtin.set_fact:
             _se4b_markers: "{{ (_se4b_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
 
-        - ansible.builtin.assert:
+        - name: "(4b) assert exactly ONE marker was emitted (a terminal exit that emits none, or two, fails here)"
+          ansible.builtin.assert:
             that:
               - _se4b_markers | length == 1
-              - "'refused' in _se4b_markers[0]"
-            fail_msg: "(4b) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME refused marker, got: {{ _se4b_markers }}"
+            fail_msg: "(4b) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME marker, got: {{ _se4b_markers }}"
+
+        - name: "(4b) parse the marker's token + detail out of the line — the EXACT fields, never a substring (umbrella #323 fix round, codex gate: `'refused' in marker` is also satisfied by a mutant emitting 'not_refused', by any kv VALUE containing that word, and by any longer token sharing the prefix — so the old check discriminated almost nothing). detail= is parsed as the FIRST such field, which is why the playbook always renders it immediately after the token: caller-supplied free text (receiver_instance) can only ever appear later in the line and can never splice this value."
+          ansible.builtin.set_fact:
+            _se4b_token: "{{ (_se4b_markers[0] | regex_search('DMF_L3_SWITCH_OUTCOME: [A-Za-z0-9_]+') | default('DMF_L3_SWITCH_OUTCOME: <unparsed>', true)) | regex_replace('^DMF_L3_SWITCH_OUTCOME: ', '') }}"
+            _se4b_detail: "{{ (_se4b_markers[0] | regex_search('detail=[A-Za-z0-9_-]+') | default('detail=<no-detail-field>', true)) | regex_replace('^detail=', '') }}"
+
+        - name: "(4b) ASSERT the parsed enum is EXACTLY token 'refused' detail 'quiesce'. detail=quiesce is the stage that was in flight: PHASE 1 has cleared active-source; the viewer is NOT yet re-pointed."
+          ansible.builtin.assert:
+            that:
+              - _se4b_token == 'refused'
+              - _se4b_detail == 'quiesce'
+            fail_msg: "(4b) FAIL — expected token 'refused' detail 'quiesce'. got token={{ _se4b_token }} detail={{ _se4b_detail }} markers={{ _se4b_markers }}"
 
         - name: "(4b) ASSERT (via real HTTP against the stub): the coordinator is QUIESCED (active-source/target-info/epoch all cleared) — phase 1 ran, phase 2/3 did not"
           ansible.builtin.uri:
@@ -845,11 +932,23 @@
           ansible.builtin.set_fact:
             _se4c_markers: "{{ (_se4c_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
 
-        - ansible.builtin.assert:
+        - name: "(4c) assert exactly ONE marker was emitted (a terminal exit that emits none, or two, fails here)"
+          ansible.builtin.assert:
             that:
               - _se4c_markers | length == 1
-              - "'refused' in _se4c_markers[0]"
-            fail_msg: "(4c) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME refused marker, got: {{ _se4c_markers }}"
+            fail_msg: "(4c) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME marker, got: {{ _se4c_markers }}"
+
+        - name: "(4c) parse the marker's token + detail out of the line — the EXACT fields, never a substring (umbrella #323 fix round, codex gate: `'refused' in marker` is also satisfied by a mutant emitting 'not_refused', by any kv VALUE containing that word, and by any longer token sharing the prefix — so the old check discriminated almost nothing). detail= is parsed as the FIRST such field, which is why the playbook always renders it immediately after the token: caller-supplied free text (receiver_instance) can only ever appear later in the line and can never splice this value."
+          ansible.builtin.set_fact:
+            _se4c_token: "{{ (_se4c_markers[0] | regex_search('DMF_L3_SWITCH_OUTCOME: [A-Za-z0-9_]+') | default('DMF_L3_SWITCH_OUTCOME: <unparsed>', true)) | regex_replace('^DMF_L3_SWITCH_OUTCOME: ', '') }}"
+            _se4c_detail: "{{ (_se4c_markers[0] | regex_search('detail=[A-Za-z0-9_-]+') | default('detail=<no-detail-field>', true)) | regex_replace('^detail=', '') }}"
+
+        - name: "(4c) ASSERT the parsed enum is EXACTLY token 'refused' detail 'repoint'. detail=repoint is the stage that was in flight: the viewer's Helm release WAS re-pointed — materially different from detail=quiesce, which is exactly why detail= exists."
+          ansible.builtin.assert:
+            that:
+              - _se4c_token == 'refused'
+              - _se4c_detail == 'repoint'
+            fail_msg: "(4c) FAIL — expected token 'refused' detail 'repoint'. got token={{ _se4c_token }} detail={{ _se4c_detail }} markers={{ _se4c_markers }}"
 
         - name: "(4c) ASSERT: the receiver's chart was resolved (umbrella #306
             — get metadata + pull, BEFORE the re-point), the pre-switch
@@ -1156,12 +1255,22 @@
           ansible.builtin.set_fact:
             _se5_markers: "{{ (_se5_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
 
-        - ansible.builtin.assert:
+        - name: "(5) assert exactly ONE marker was emitted (a terminal exit that emits none, or two, fails here)"
+          ansible.builtin.assert:
             that:
               - _se5_markers | length == 1
-              - "'rollback_verified_previous_source_restored' in _se5_markers[0]"
+            fail_msg: "(5) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME marker, got: {{ _se5_markers }}"
+
+        - name: "(5) parse the marker's token out of the line — the EXACT fields, never a substring (umbrella #323 fix round, codex gate: `'rollback_verified_previous_source_restored' in marker` is also satisfied by a mutant emitting 'not_rollback_verified_previous_source_restored', by any kv VALUE containing that word, and by any longer token sharing the prefix — so the old check discriminated almost nothing). detail= is parsed as the FIRST such field, which is why the playbook always renders it immediately after the token: caller-supplied free text (receiver_instance) can only ever appear later in the line and can never splice this value."
+          ansible.builtin.set_fact:
+            _se5_token: "{{ (_se5_markers[0] | regex_search('DMF_L3_SWITCH_OUTCOME: [A-Za-z0-9_]+') | default('DMF_L3_SWITCH_OUTCOME: <unparsed>', true)) | regex_replace('^DMF_L3_SWITCH_OUTCOME: ', '') }}"
+
+        - name: "(5) ASSERT the parsed enum is EXACTLY token 'rollback_verified_previous_source_restored'"
+          ansible.builtin.assert:
+            that:
+              - _se5_token == 'rollback_verified_previous_source_restored'
               - "'restored_active_source=source-a' in _se5_markers[0]"
-            fail_msg: "(5) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME rollback_verified_previous_source_restored marker, got: {{ _se5_markers }}"
+            fail_msg: "(5) FAIL — expected token 'rollback_verified_previous_source_restored'. got token={{ _se5_token }} markers={{ _se5_markers }}"
 
         - name: "(5) ASSERT: chart resolution (umbrella #306) + the pre-switch
             baseline capture (umbrella #306 design round #2) ran and helm
@@ -1435,12 +1544,21 @@
           ansible.builtin.set_fact:
             _se6_markers: "{{ (_se6_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
 
-        - ansible.builtin.assert:
+        - name: "(6) assert exactly ONE marker was emitted (a terminal exit that emits none, or two, fails here)"
+          ansible.builtin.assert:
             that:
               - _se6_markers | length == 1
-              - "'success' in _se6_markers[0]"
-              - "'receiver_instance=mxl-videotest-view' in _se6_markers[0]"
-            fail_msg: "(6) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME success marker, got: {{ _se6_markers }}"
+            fail_msg: "(6) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME marker, got: {{ _se6_markers }}"
+
+        - name: "(6) parse the marker's token out of the line — the EXACT fields, never a substring (umbrella #323 fix round, codex gate: `'success' in marker` is also satisfied by a mutant emitting 'not_success', by any kv VALUE containing that word, and by any longer token sharing the prefix — so the old check discriminated almost nothing). detail= is parsed as the FIRST such field, which is why the playbook always renders it immediately after the token: caller-supplied free text (receiver_instance) can only ever appear later in the line and can never splice this value."
+          ansible.builtin.set_fact:
+            _se6_token: "{{ (_se6_markers[0] | regex_search('DMF_L3_SWITCH_OUTCOME: [A-Za-z0-9_]+') | default('DMF_L3_SWITCH_OUTCOME: <unparsed>', true)) | regex_replace('^DMF_L3_SWITCH_OUTCOME: ', '') }}"
+
+        - name: "(6) ASSERT the parsed enum is EXACTLY token 'success'"
+          ansible.builtin.assert:
+            that:
+              - _se6_token == 'success'
+            fail_msg: "(6) FAIL — expected token 'success'. got token={{ _se6_token }} markers={{ _se6_markers }}"
 
         - name: "(6) ASSERT: chart resolution ran (umbrella #306 — get metadata
             + pull), the pre-switch baseline was captured (umbrella #306
@@ -1772,13 +1890,23 @@
           ansible.builtin.set_fact:
             _se7_markers: "{{ (_se7_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
 
-        - ansible.builtin.assert:
+        - name: "(7) assert exactly ONE marker was emitted (a terminal exit that emits none, or two, fails here)"
+          ansible.builtin.assert:
             that:
               - _se7_markers | length == 1
-              - "'rollback_verified_previous_source_restored' in _se7_markers[0]"
+            fail_msg: "(7) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME marker, got: {{ _se7_markers }}"
+
+        - name: "(7) parse the marker's token out of the line — the EXACT fields, never a substring (umbrella #323 fix round, codex gate: `'rollback_verified_previous_source_restored' in marker` is also satisfied by a mutant emitting 'not_rollback_verified_previous_source_restored', by any kv VALUE containing that word, and by any longer token sharing the prefix — so the old check discriminated almost nothing). detail= is parsed as the FIRST such field, which is why the playbook always renders it immediately after the token: caller-supplied free text (receiver_instance) can only ever appear later in the line and can never splice this value."
+          ansible.builtin.set_fact:
+            _se7_token: "{{ (_se7_markers[0] | regex_search('DMF_L3_SWITCH_OUTCOME: [A-Za-z0-9_]+') | default('DMF_L3_SWITCH_OUTCOME: <unparsed>', true)) | regex_replace('^DMF_L3_SWITCH_OUTCOME: ', '') }}"
+
+        - name: "(7) ASSERT the parsed enum is EXACTLY token 'rollback_verified_previous_source_restored'"
+          ansible.builtin.assert:
+            that:
+              - _se7_token == 'rollback_verified_previous_source_restored'
               - "'restored_active_source=source-a' in _se7_markers[0]"
               - "'receiver_instance=mxl-videotest-view' in _se7_markers[0]"
-            fail_msg: "(7) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME rollback_verified_previous_source_restored marker, got: {{ _se7_markers }}"
+            fail_msg: "(7) FAIL — expected token 'rollback_verified_previous_source_restored'. got token={{ _se7_token }} markers={{ _se7_markers }}"
 
         - name: "(7) ASSERT (via real HTTP against the stub): active-source was restored to the PREVIOUS source (source-a) — NEVER the switch target (source-b). This is the discriminating proof itself: the OLD (pre-#306-round-2) play never read the Deployment at all, so a helm rc=0 with a never-converging pod would have sailed straight to PHASE 3 and set active-source=source-b."
           ansible.builtin.uri:
@@ -1999,11 +2127,22 @@
           ansible.builtin.set_fact:
             _se8_markers: "{{ (_se8_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
 
-        - ansible.builtin.assert:
+        - name: "(8) assert exactly ONE marker was emitted (a terminal exit that emits none, or two, fails here)"
+          ansible.builtin.assert:
             that:
               - _se8_markers | length == 1
-              - "'rollback_verified_previous_source_restored' in _se8_markers[0]"
-            fail_msg: "(8) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME rollback_verified_previous_source_restored marker, got: {{ _se8_markers }}"
+            fail_msg: "(8) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME marker, got: {{ _se8_markers }}"
+
+        - name: "(8) parse the marker's token out of the line — the EXACT fields, never a substring (umbrella #323 fix round, codex gate: `'rollback_verified_previous_source_restored' in marker` is also satisfied by a mutant emitting 'not_rollback_verified_previous_source_restored', by any kv VALUE containing that word, and by any longer token sharing the prefix — so the old check discriminated almost nothing). detail= is parsed as the FIRST such field, which is why the playbook always renders it immediately after the token: caller-supplied free text (receiver_instance) can only ever appear later in the line and can never splice this value."
+          ansible.builtin.set_fact:
+            _se8_token: "{{ (_se8_markers[0] | regex_search('DMF_L3_SWITCH_OUTCOME: [A-Za-z0-9_]+') | default('DMF_L3_SWITCH_OUTCOME: <unparsed>', true)) | regex_replace('^DMF_L3_SWITCH_OUTCOME: ', '') }}"
+
+        - name: "(8) ASSERT the parsed enum is EXACTLY token 'rollback_verified_previous_source_restored'"
+          ansible.builtin.assert:
+            that:
+              - _se8_token == 'rollback_verified_previous_source_restored'
+              - "'restored_active_source=source-a' in _se8_markers[0]"
+            fail_msg: "(8) FAIL — expected token 'rollback_verified_previous_source_restored'. got token={{ _se8_token }} markers={{ _se8_markers }}"
 
         - name: "(8) ASSERT (via real HTTP against the stub): active-source restored to source-a, never the switch target"
           ansible.builtin.uri:
@@ -2184,14 +2323,23 @@
           ansible.builtin.set_fact:
             _se9_markers: "{{ (_se9_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
 
-        - ansible.builtin.assert:
+        - name: "(9) assert exactly ONE marker was emitted (a terminal exit that emits none, or two, fails here)"
+          ansible.builtin.assert:
             that:
               - _se9_markers | length == 1
-              - "'rollback_verification_failed' in _se9_markers[0]"
-              - "'rollback_verified_previous_source_restored' not in _se9_markers[0]"
+            fail_msg: "(9) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME marker, got: {{ _se9_markers }}"
+
+        - name: "(9) parse the marker's token out of the line — the EXACT fields, never a substring (umbrella #323 fix round, codex gate: `'rollback_verification_failed' in marker` is also satisfied by a mutant emitting 'not_rollback_verification_failed', by any kv VALUE containing that word, and by any longer token sharing the prefix — so the old check discriminated almost nothing). detail= is parsed as the FIRST such field, which is why the playbook always renders it immediately after the token: caller-supplied free text (receiver_instance) can only ever appear later in the line and can never splice this value."
+          ansible.builtin.set_fact:
+            _se9_token: "{{ (_se9_markers[0] | regex_search('DMF_L3_SWITCH_OUTCOME: [A-Za-z0-9_]+') | default('DMF_L3_SWITCH_OUTCOME: <unparsed>', true)) | regex_replace('^DMF_L3_SWITCH_OUTCOME: ', '') }}"
+
+        - name: "(9) ASSERT the parsed enum is EXACTLY token 'rollback_verification_failed'"
+          ansible.builtin.assert:
+            that:
+              - _se9_token == 'rollback_verification_failed'
               - "'restored_active_source' not in _se9_markers[0]"
               - "'receiver_instance=mxl-videotest-view' in _se9_markers[0]"
-            fail_msg: "(9) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME rollback_verification_failed marker, got: {{ _se9_markers }}"
+            fail_msg: "(9) FAIL — expected token 'rollback_verification_failed'. got token={{ _se9_token }} markers={{ _se9_markers }}"
 
         - name: "(9) ASSERT (via real HTTP against the stub): active-source stays ABSENT — no restore was attempted (rollback verification itself failed), and it is NEVER the switch target"
           ansible.builtin.uri:
@@ -2430,6 +2578,27 @@
               - "'rollback_verified previous_source_restored:' not in _se10_run.stdout"
             fail_msg: "(10) FAIL — expected rollback_verification_failed. stdout={{ _se10_run.stdout }}"
 
+        - name: "(10) ASSERT: exactly ONE DMF_L3_SWITCH_OUTCOME marker, token rollback_verification_failed (umbrella #323 fix round, codex gate: this scenario reaches a real PHASE-2 terminal branch but used to assert ONLY the legacy stdout prefix above — so a mutant that dropped the structured event on the values-read-failure path, or emitted the WRONG enum for it, passed unnoticed here)"
+          ansible.builtin.set_fact:
+            _se10_markers: "{{ (_se10_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
+
+        - name: "(10) assert exactly ONE marker was emitted (a terminal exit that emits none, or two, fails here)"
+          ansible.builtin.assert:
+            that:
+              - _se10_markers | length == 1
+            fail_msg: "(10) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME marker, got: {{ _se10_markers }}"
+
+        - name: "(10) parse the marker's token out of the line — the EXACT field, never a substring (see scenario 1's own parse task for why `'x' in marker` discriminates almost nothing)"
+          ansible.builtin.set_fact:
+            _se10_token: "{{ (_se10_markers[0] | regex_search('DMF_L3_SWITCH_OUTCOME: [A-Za-z0-9_]+') | default('DMF_L3_SWITCH_OUTCOME: <unparsed>', true)) | regex_replace('^DMF_L3_SWITCH_OUTCOME: ', '') }}"
+
+        - name: "(10) ASSERT the parsed enum is EXACTLY token 'rollback_verification_failed' — never `refused` (this is NOT a generic rescue exit: the poll ran to its own budget and the play reported the frozen design's own outcome for it), and never either rollback_verified_* token (nothing was restored)"
+          ansible.builtin.assert:
+            that:
+              - _se10_token == 'rollback_verification_failed'
+              - "'restored_active_source' not in _se10_markers[0]"
+            fail_msg: "(10) FAIL — expected token 'rollback_verification_failed'. got token={{ _se10_token }} markers={{ _se10_markers }}"
+
         - name: "(10) ASSERT: at least one 'get values' call was made (the pre-quiesce baseline capture — call #1, which MUST still succeed) and at least one MORE (a rollback-verify poll attempt, which must have failed and NOT aborted the play)"
           ansible.builtin.slurp:
             src: /tmp/l3-se-10-helm.log
@@ -2469,6 +2638,772 @@
         - name: "(10) stop stubs"
           ansible.builtin.command:
             argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-10.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 11: umbrella #323 fix round, codex gate P2a — the OTHER
+    # verified-rollback exit. Identical in every respect to scenario 7
+    # (upgrade never converges -> rollback -> rollback verifies on its first
+    # poll) EXCEPT that the pre-switch coordinator has NO active-source set.
+    # The restore task is correctly SKIPPED on that exit (`when: ... and
+    # (_switch_baseline.active_source | trim) != ''` — there is nothing to
+    # restore, and writing an empty active-source would be a mutation, not a
+    # restore), but the play used to emit
+    # rollback_verified_previous_source_restored anyway, with
+    # restored_active_source rendering EMPTY: a factually FALSE enum on a
+    # perfectly valid exit. It now emits rollback_verified_no_previous_source.
+    #
+    # This scenario is what makes that split real rather than cosmetic: run
+    # it against the pre-fix play and it fails on the token, while scenario
+    # 7 (the active-source=source-a twin) keeps passing — which is exactly
+    # the discrimination the old single-token design lacked. The LEGACY
+    # stdout fail message is asserted to be the SAME, byte-identical
+    # `rollback_verified previous_source_restored:` line scenario 7 sees:
+    # dmf-cms's #320 bridge parses it during the transition and this fix
+    # deliberately did not touch it.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(11) rollback verifies, but the pre-switch coordinator had NO active-source — the job must report rollback_verified_no_previous_source, never claim a restore that never happened"
+      vars:
+        _se11_run_id: "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1"
+      block:
+        - name: "(11) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-11.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(11) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-se-11.json]
+          register: _se11_start
+          changed_when: false
+
+        - name: "(11) parse stub URLs"
+          ansible.builtin.set_fact:
+            _se11_k8s_url: "{{ _se11_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+
+        - name: "(11) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-se-11-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _se11_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(11) seed the coordinator ConfigMap with NO active-source (the discriminating difference from scenario 7 — a live topology that is currently quiesced, which is a perfectly legal pre-switch state)"
+          ansible.builtin.uri:
+            url: "{{ _se11_k8s_url }}/api/v1/namespaces/mxl/configmaps/"
+            method: POST
+            body_format: json
+            body:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata: { name: mxl-coordinator, namespace: mxl }
+              data:
+                target-info: '{"pod_uid": "pre-switch-uid", "start_ts": "1000"}'
+                epoch: "pre-switch-uid:1000"
+            status_code: [201]
+
+        - name: "(11) seed the receiver's target Deployment, NEVER reaching rollout-status readiness (same job-413 shape as scenario 7)"
+          ansible.builtin.uri:
+            url: "{{ _se11_k8s_url }}/apis/apps/v1/namespaces/mxl/deployments/"
+            method: POST
+            body_format: json
+            body:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata: { name: mxl-videotest-view-target, namespace: mxl, generation: 2 }
+              spec:
+                replicas: 1
+                template:
+                  spec:
+                    containers:
+                      - name: status
+                        env:
+                          - { name: MXL_FLOW_ID, value: b0ae9cba-a989-4568-ac96-8bd19272c966 }
+              status:
+                observedGeneration: 1
+                replicas: 1
+                updatedReplicas: 0
+                readyReplicas: 0
+                availableReplicas: 0
+                unavailableReplicas: 1
+            status_code: [201]
+
+        - name: "(11) queue the Deployment's own trajectory: not-ready for PHASE 2 verify's two attempts, THEN converged at the pre-switch flow.id for the rollback verify's first attempt (identical to scenario 7 — the rollback itself must genuinely verify, so the ONLY variable under test is the absent active-source)"
+          ansible.builtin.uri:
+            url: "{{ _se11_k8s_url }}/test-only/get-patch-queue"
+            method: POST
+            body_format: json
+            body:
+              kind: Deployment
+              namespace: mxl
+              name: mxl-videotest-view-target
+              patches:
+                - status: { observedGeneration: 1, updatedReplicas: 0, readyReplicas: 0, availableReplicas: 0, unavailableReplicas: 1 }
+                - status: { observedGeneration: 1, updatedReplicas: 0, readyReplicas: 0, availableReplicas: 0, unavailableReplicas: 1 }
+                - status: { observedGeneration: 2, updatedReplicas: 1, readyReplicas: 1, availableReplicas: 1, unavailableReplicas: 0 }
+                  spec:
+                    template:
+                      spec:
+                        containers:
+                          - name: status
+                            env:
+                              - { name: MXL_FLOW_ID, value: 5fbec3b1-1b0f-417d-9059-8b94a47197ed }
+            status_code: [200]
+
+        - name: "(11) queue the coordinator's target-info/epoch republish (conditional — see this file's own header for why bare FIFO would be wrong here)"
+          ansible.builtin.uri:
+            url: "{{ _se11_k8s_url }}/test-only/get-patch-queue"
+            method: POST
+            body_format: json
+            body:
+              kind: ConfigMap
+              namespace: mxl
+              name: mxl-coordinator
+              patches:
+                - when_absent: "data.target-info"
+                  patch:
+                    data:
+                      target-info: '{"pod_uid": "rollback-restored-uid", "start_ts": "3000"}'
+                      epoch: "rollback-restored-uid:3000"
+            status_code: [200]
+
+        - name: "(11) create the helm PATH shim dir"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin
+            state: directory
+
+        - name: "(11) symlink helm -> stub_helm.sh"
+          ansible.builtin.file:
+            path: /tmp/l3-harness-bin/helm
+            src: "{{ l3_harness_dir }}/stub_helm.sh"
+            state: link
+            force: true
+
+        - name: "(11) remove any stale helm invocation log from a prior run"
+          ansible.builtin.file:
+            path: /tmp/l3-se-11-helm.log
+            state: absent
+
+        - name: "(11) run the REAL switch playbook"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/switch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _se11_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - receiver_instance=mxl-videotest-view
+              - -e
+              - source_instance=source-b
+              - -e
+              - reason=test switch
+              - -e
+              - "{{ {'topology_params': _se_j1_topology_params_switched_to_b} | to_json }}"
+              - -e
+              - "l3_request_id={{ _se11_run_id }}"
+              - -e
+              - l3_switch_quiesce_settle_seconds=1
+              - -e
+              - l3_switch_upgrade_verify_timeout_seconds=1
+              - -e
+              - l3_switch_verify_poll_delay_seconds=1
+              - -e
+              - l3_switch_rollback_verify_timeout_seconds=3
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-se-11-kubeconfig.yaml
+            PATH: "/tmp/l3-harness-bin:{{ lookup('env', 'PATH') }}"
+            L3_STUB_HELM_LOG: /tmp/l3-se-11-helm.log
+          register: _se11_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(11) ASSERT: the job FAILED, and the LEGACY stdout line is the SAME byte-identical `rollback_verified previous_source_restored:` message scenario 7 sees — this fix changed the structured enum ONLY, never dmf-cms's #320 bridge contract"
+          ansible.builtin.assert:
+            that:
+              - _se11_run.rc != 0
+              - "'rollback_verified previous_source_restored:' in _se11_run.stdout"
+              - "'rollback_verification_failed:' not in _se11_run.stdout"
+            fail_msg: "(11) FAIL — expected the unchanged legacy rollback_verified message. stdout={{ _se11_run.stdout }}"
+
+        - name: "(11) ASSERT: exactly ONE DMF_L3_SWITCH_OUTCOME marker (umbrella #323 fix round, codex gate P2a)"
+          ansible.builtin.set_fact:
+            _se11_markers: "{{ (_se11_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
+
+        - name: "(11) assert exactly ONE marker was emitted (a terminal exit that emits none, or two, fails here)"
+          ansible.builtin.assert:
+            that:
+              - _se11_markers | length == 1
+            fail_msg: "(11) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME marker, got: {{ _se11_markers }}"
+
+        - name: "(11) parse the marker's token out of the line — the EXACT field, never a substring. This one matters more than most: 'rollback_verified' IS a prefix of BOTH tokens, so a substring check could not tell the two apart at all"
+          ansible.builtin.set_fact:
+            _se11_token: "{{ (_se11_markers[0] | regex_search('DMF_L3_SWITCH_OUTCOME: [A-Za-z0-9_]+') | default('DMF_L3_SWITCH_OUTCOME: <unparsed>', true)) | regex_replace('^DMF_L3_SWITCH_OUTCOME: ', '') }}"
+
+        - name: "(11) ASSERT the parsed enum is EXACTLY token 'rollback_verified_no_previous_source', carrying NO restored_active_source field — the pre-fix play emitted rollback_verified_previous_source_restored here with an EMPTY restored_active_source, which is the false claim this scenario exists to prevent"
+          ansible.builtin.assert:
+            that:
+              - _se11_token == 'rollback_verified_no_previous_source'
+              - "'restored_active_source' not in _se11_markers[0]"
+              - "'receiver_instance=mxl-videotest-view' in _se11_markers[0]"
+            fail_msg: "(11) FAIL — expected token 'rollback_verified_no_previous_source'. got token={{ _se11_token }} markers={{ _se11_markers }}"
+
+        - name: "(11) ASSERT (via real HTTP against the stub): active-source is still ABSENT — the restore task was correctly skipped, and it is NEVER the switch target"
+          ansible.builtin.uri:
+            url: "{{ _se11_k8s_url }}/api/v1/namespaces/mxl/configmaps/mxl-coordinator"
+            method: GET
+            return_content: true
+            validate_certs: false
+          register: _se11_coordinator
+
+        - name: "(11) assert active-source absent"
+          ansible.builtin.assert:
+            that:
+              - "'active-source' not in (_se11_coordinator.json.data | default({}))"
+            fail_msg: "(11) FAIL — active-source={{ _se11_coordinator.json.data['active-source'] | default('<absent>') }}, expected absent (there was no previous source to restore). got={{ _se11_coordinator.json.data }}"
+
+        - name: "(11) ASSERT (via real HTTP against the stub): the facility lock was released"
+          ansible.builtin.uri:
+            url: "{{ _se11_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(11) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-11.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenarios 12a/12b/12c: umbrella #323 fix round, codex adversarial gate
+    # P1 — OUTCOME-EVENT SPOOFING. The structured event exists so the console
+    # can trust a machine-readable statement of what a run did. That is only
+    # worth anything if the CALLER cannot write that statement themselves.
+    #
+    # The attack surface is Ansible's own precedence table: extra_vars sit at
+    # the TOP of it, outranking play vars, block/task vars, an include_role's
+    # own `vars:`, set_fact AND register alike. Every catalog job template
+    # has ask_variables_on_launch=true (dmf-infra awx-integration), so any
+    # name the emission path reads is a name a dispatcher can supply. This
+    # was verified empirically for this fix round rather than taken from the
+    # docs — a throwaway play confirmed `-e tok=X` beats both an include_role
+    # `vars: tok:` and a set_fact of the same name, and that `-e sent=true`
+    # turns `when: not (sent | default(false))` into a skip.
+    #
+    # The pre-fix play was therefore steerable two ways, and BOTH are
+    # reproduced here against the REAL playbook:
+    #   (12a) -e _switch_outcome_emitted=true  — the reserved-var assert
+    #         fires, the run lands in the outer rescue, and the catch-all's
+    #         own `when:` is now false: the ONLY outcome task in the play is
+    #         SKIPPED. Pre-fix result: a terminal exit emitting NO event at
+    #         all — the console's worst case, since silence is indistinguish-
+    #         able from a marker it failed to read.
+    #   (12b) -e l3_switch_outcome_token=... -e l3_switch_outcome_kv=... —
+    #         same refusal, but the catch-all renders the ATTACKER's strings.
+    #         Pre-fix result, verbatim: "DMF_L3_SWITCH_OUTCOME: attacker_token
+    #         attacker_detail=1".
+    #   (12c) all three names at once, with the sentinel set to FALSE and a
+    #         forged _switch_stage — the shape that defeats a naive fix.
+    #         Setting the sentinel false is what breaks any design that
+    #         "just" makes the guard set the sentinel before failing (the
+    #         extra_var still outranks that set_fact, so the outer rescue
+    #         would fire a SECOND, forged marker on top of the honest one),
+    #         and the forged stage is what breaks a detail= built from an
+    #         unguarded stage fact.
+    #
+    # What all three must now produce is the SAME thing: exactly one event,
+    # token EXACTLY `refused`, detail EXACTLY `reserved-var`, and — the
+    # positive proof that it came from the hard-coded literal emitter rather
+    # than the caller-parameterised one — NO run_id/request_id/
+    # receiver_instance fields at all, since _emit_switch_refused_literal.yml
+    # renders none. Each also proves nothing was touched: the coordinator
+    # ConfigMap is byte-identical afterwards and the facility lock was never
+    # created.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(12a) OUTCOME SPOOF — the exactly-once SENTINEL spoofed true — pre-fix this SKIPPED the only outcome task in the play and emitted nothing at all"
+      vars:
+        _se12a_run_id: "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"
+      block:
+        - name: "(12a) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-12a.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(12a) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-se-12a.json]
+          register: _se12a_start
+          changed_when: false
+
+        - name: "(12a) parse stub URLs"
+          ansible.builtin.set_fact:
+            _se12a_k8s_url: "{{ _se12a_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+
+        - name: "(12a) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-se-12a-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _se12a_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(12a) seed a LIVE, switchable coordinator ConfigMap — so 'nothing was touched' below is a real claim about a real resource, not a vacuous 404"
+          ansible.builtin.uri:
+            url: "{{ _se12a_k8s_url }}/api/v1/namespaces/mxl/configmaps/"
+            method: POST
+            body_format: json
+            body:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata: { name: mxl-coordinator, namespace: mxl }
+              data:
+                active-source: source-a
+                target-info: '{"pod_uid": "pre-switch-uid", "start_ts": "1000"}'
+                epoch: "pre-switch-uid:1000"
+            status_code: [201]
+
+        - name: "(12a) run the REAL switch playbook with the spoofing extra_vars — every other argument is a perfectly legitimate, working switch request (compare scenario 6's happy path), so the ONLY thing under test is the spoof"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/switch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _se12a_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - receiver_instance=mxl-videotest-view
+              - -e
+              - source_instance=source-b
+              - -e
+              - reason=test switch
+              - -e
+              - "{{ {'topology_params': _se_j1_topology_params_switched_to_b} | to_json }}"
+              - -e
+              - "l3_request_id={{ _se12a_run_id }}"
+              - -e
+              - _switch_outcome_emitted=true
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-se-12a-kubeconfig.yaml
+          register: _se12a_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(12a) ASSERT: the run FAILED and said so on the legacy stdout channel too (DMF_L3_SWITCH_REFUSED detail=reserved-var — dmf-cms's #320 bridge sees this refusal as well, not only the structured event)"
+          ansible.builtin.assert:
+            that:
+              - _se12a_run.rc != 0
+              - "'DMF_L3_SWITCH_REFUSED' in _se12a_run.stdout"
+              - "'detail=reserved-var' in _se12a_run.stdout"
+            fail_msg: "(12a) FAIL — expected a reserved-var refusal. rc={{ _se12a_run.rc }} stdout={{ _se12a_run.stdout }}"
+
+        - name: "(12a) collect the DMF_L3_SWITCH_OUTCOME markers"
+          ansible.builtin.set_fact:
+            _se12a_markers: "{{ (_se12a_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
+
+        - name: "(12a) assert EXACTLY ONE marker — never zero (the spoofed sentinel must not be able to silence the event) and never two (the honest literal must not be followed by a forged one from the outer rescue)"
+          ansible.builtin.assert:
+            that:
+              - _se12a_markers | length == 1
+            fail_msg: "(12a) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME marker, got {{ _se12a_markers | length }}: {{ _se12a_markers }}"
+
+        - name: "(12a) parse the marker's token + detail — EXACT fields, never a substring"
+          ansible.builtin.set_fact:
+            _se12a_token: "{{ (_se12a_markers[0] | regex_search('DMF_L3_SWITCH_OUTCOME: [A-Za-z0-9_]+') | default('DMF_L3_SWITCH_OUTCOME: <unparsed>', true)) | regex_replace('^DMF_L3_SWITCH_OUTCOME: ', '') }}"
+            _se12a_detail: "{{ (_se12a_markers[0] | regex_search('detail=[A-Za-z0-9_-]+') | default('detail=<no-detail-field>', true)) | regex_replace('^detail=', '') }}"
+
+        - name: "(12a) ASSERT the emitted event is the HARD-CODED one: token EXACTLY 'refused', detail EXACTLY 'reserved-var', no attacker-supplied content, and NO run_id/request_id/receiver_instance fields at all — that absence is the positive proof it came from _emit_switch_refused_literal.yml (a pure YAML literal) and not from the caller-parameterised emitter, which always renders those three"
+          ansible.builtin.assert:
+            that:
+              - _se12a_token == 'refused'
+              - _se12a_detail == 'reserved-var'
+              - "'run_id=' not in _se12a_markers[0]"
+              - "'request_id=' not in _se12a_markers[0]"
+              - "'receiver_instance=' not in _se12a_markers[0]"
+            fail_msg: "(12a) FAIL — expected the hard-coded literal refused/reserved-var marker. got token={{ _se12a_token }} detail={{ _se12a_detail }} markers={{ _se12a_markers }}"
+
+        - name: "(12a) ASSERT (via real HTTP against the stub): the coordinator ConfigMap is UNTOUCHED — the guard runs before switch_lock, so a spoofed run never reaches PHASE 1"
+          ansible.builtin.uri:
+            url: "{{ _se12a_k8s_url }}/api/v1/namespaces/mxl/configmaps/mxl-coordinator"
+            method: GET
+            return_content: true
+            validate_certs: false
+          register: _se12a_coordinator
+
+        - name: "(12a) assert the coordinator still carries its exact pre-run state"
+          ansible.builtin.assert:
+            that:
+              - _se12a_coordinator.json.data['active-source'] == 'source-a'
+              - _se12a_coordinator.json.data['epoch'] == 'pre-switch-uid:1000'
+            fail_msg: "(12a) FAIL — the coordinator was mutated by a refused run. got={{ _se12a_coordinator.json.data }}"
+
+        - name: "(12a) ASSERT (via real HTTP against the stub): the facility lock was NEVER created — this refusal happens before switch_lock even runs"
+          ansible.builtin.uri:
+            url: "{{ _se12a_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(12a) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-12a.json]
+          changed_when: false
+          failed_when: false
+
+    - name: "(12b) OUTCOME SPOOF — the EMITTER token/kv spoofed — pre-fix this rendered \"DMF_L3_SWITCH_OUTCOME: attacker_token attacker_detail=1\" as the run's own outcome"
+      vars:
+        _se12b_run_id: "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2"
+      block:
+        - name: "(12b) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-12b.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(12b) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-se-12b.json]
+          register: _se12b_start
+          changed_when: false
+
+        - name: "(12b) parse stub URLs"
+          ansible.builtin.set_fact:
+            _se12b_k8s_url: "{{ _se12b_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+
+        - name: "(12b) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-se-12b-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _se12b_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(12b) seed a LIVE, switchable coordinator ConfigMap — so 'nothing was touched' below is a real claim about a real resource, not a vacuous 404"
+          ansible.builtin.uri:
+            url: "{{ _se12b_k8s_url }}/api/v1/namespaces/mxl/configmaps/"
+            method: POST
+            body_format: json
+            body:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata: { name: mxl-coordinator, namespace: mxl }
+              data:
+                active-source: source-a
+                target-info: '{"pod_uid": "pre-switch-uid", "start_ts": "1000"}'
+                epoch: "pre-switch-uid:1000"
+            status_code: [201]
+
+        - name: "(12b) run the REAL switch playbook with the spoofing extra_vars — every other argument is a perfectly legitimate, working switch request (compare scenario 6's happy path), so the ONLY thing under test is the spoof"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/switch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _se12b_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - receiver_instance=mxl-videotest-view
+              - -e
+              - source_instance=source-b
+              - -e
+              - reason=test switch
+              - -e
+              - "{{ {'topology_params': _se_j1_topology_params_switched_to_b} | to_json }}"
+              - -e
+              - "l3_request_id={{ _se12b_run_id }}"
+              - -e
+              - l3_switch_outcome_token=attacker_token
+              - -e
+              - l3_switch_outcome_kv=attacker_detail=1
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-se-12b-kubeconfig.yaml
+          register: _se12b_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(12b) ASSERT: the run FAILED and said so on the legacy stdout channel too (DMF_L3_SWITCH_REFUSED detail=reserved-var — dmf-cms's #320 bridge sees this refusal as well, not only the structured event)"
+          ansible.builtin.assert:
+            that:
+              - _se12b_run.rc != 0
+              - "'DMF_L3_SWITCH_REFUSED' in _se12b_run.stdout"
+              - "'detail=reserved-var' in _se12b_run.stdout"
+            fail_msg: "(12b) FAIL — expected a reserved-var refusal. rc={{ _se12b_run.rc }} stdout={{ _se12b_run.stdout }}"
+
+        - name: "(12b) collect the DMF_L3_SWITCH_OUTCOME markers"
+          ansible.builtin.set_fact:
+            _se12b_markers: "{{ (_se12b_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
+
+        - name: "(12b) assert EXACTLY ONE marker — never zero (the spoofed sentinel must not be able to silence the event) and never two (the honest literal must not be followed by a forged one from the outer rescue)"
+          ansible.builtin.assert:
+            that:
+              - _se12b_markers | length == 1
+            fail_msg: "(12b) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME marker, got {{ _se12b_markers | length }}: {{ _se12b_markers }}"
+
+        - name: "(12b) parse the marker's token + detail — EXACT fields, never a substring"
+          ansible.builtin.set_fact:
+            _se12b_token: "{{ (_se12b_markers[0] | regex_search('DMF_L3_SWITCH_OUTCOME: [A-Za-z0-9_]+') | default('DMF_L3_SWITCH_OUTCOME: <unparsed>', true)) | regex_replace('^DMF_L3_SWITCH_OUTCOME: ', '') }}"
+            _se12b_detail: "{{ (_se12b_markers[0] | regex_search('detail=[A-Za-z0-9_-]+') | default('detail=<no-detail-field>', true)) | regex_replace('^detail=', '') }}"
+
+        - name: "(12b) ASSERT the emitted event is the HARD-CODED one: token EXACTLY 'refused', detail EXACTLY 'reserved-var', no attacker-supplied content, and NO run_id/request_id/receiver_instance fields at all — that absence is the positive proof it came from _emit_switch_refused_literal.yml (a pure YAML literal) and not from the caller-parameterised emitter, which always renders those three"
+          ansible.builtin.assert:
+            that:
+              - _se12b_token == 'refused'
+              - _se12b_detail == 'reserved-var'
+              - "'run_id=' not in _se12b_markers[0]"
+              - "'request_id=' not in _se12b_markers[0]"
+              - "'receiver_instance=' not in _se12b_markers[0]"
+              - "'attacker_token' not in _se12b_markers[0]"
+              - "'attacker_detail' not in _se12b_markers[0]"
+            fail_msg: "(12b) FAIL — expected the hard-coded literal refused/reserved-var marker. got token={{ _se12b_token }} detail={{ _se12b_detail }} markers={{ _se12b_markers }}"
+
+        - name: "(12b) ASSERT (via real HTTP against the stub): the coordinator ConfigMap is UNTOUCHED — the guard runs before switch_lock, so a spoofed run never reaches PHASE 1"
+          ansible.builtin.uri:
+            url: "{{ _se12b_k8s_url }}/api/v1/namespaces/mxl/configmaps/mxl-coordinator"
+            method: GET
+            return_content: true
+            validate_certs: false
+          register: _se12b_coordinator
+
+        - name: "(12b) assert the coordinator still carries its exact pre-run state"
+          ansible.builtin.assert:
+            that:
+              - _se12b_coordinator.json.data['active-source'] == 'source-a'
+              - _se12b_coordinator.json.data['epoch'] == 'pre-switch-uid:1000'
+            fail_msg: "(12b) FAIL — the coordinator was mutated by a refused run. got={{ _se12b_coordinator.json.data }}"
+
+        - name: "(12b) ASSERT (via real HTTP against the stub): the facility lock was NEVER created — this refusal happens before switch_lock even runs"
+          ansible.builtin.uri:
+            url: "{{ _se12b_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(12b) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-12b.json]
+          changed_when: false
+          failed_when: false
+
+    - name: "(12c) OUTCOME SPOOF — ALL THREE outcome-control names at once, sentinel spoofed FALSE (the shape that defeats a naive sentinel-setting fix) plus a forged _switch_stage (the shape that would let a caller choose detail=)"
+      vars:
+        _se12c_run_id: "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+      block:
+        - name: "(12c) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-12c.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(12c) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-se-12c.json]
+          register: _se12c_start
+          changed_when: false
+
+        - name: "(12c) parse stub URLs"
+          ansible.builtin.set_fact:
+            _se12c_k8s_url: "{{ _se12c_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+
+        - name: "(12c) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-se-12c-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _se12c_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(12c) seed a LIVE, switchable coordinator ConfigMap — so 'nothing was touched' below is a real claim about a real resource, not a vacuous 404"
+          ansible.builtin.uri:
+            url: "{{ _se12c_k8s_url }}/api/v1/namespaces/mxl/configmaps/"
+            method: POST
+            body_format: json
+            body:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata: { name: mxl-coordinator, namespace: mxl }
+              data:
+                active-source: source-a
+                target-info: '{"pod_uid": "pre-switch-uid", "start_ts": "1000"}'
+                epoch: "pre-switch-uid:1000"
+            status_code: [201]
+
+        - name: "(12c) run the REAL switch playbook with the spoofing extra_vars — every other argument is a perfectly legitimate, working switch request (compare scenario 6's happy path), so the ONLY thing under test is the spoof"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/switch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _se12c_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - receiver_instance=mxl-videotest-view
+              - -e
+              - source_instance=source-b
+              - -e
+              - reason=test switch
+              - -e
+              - "{{ {'topology_params': _se_j1_topology_params_switched_to_b} | to_json }}"
+              - -e
+              - "l3_request_id={{ _se12c_run_id }}"
+              - -e
+              - _switch_outcome_emitted=false
+              - -e
+              - l3_switch_outcome_token=attacker_token
+              - -e
+              - l3_switch_outcome_kv=attacker_detail=1
+              - -e
+              - _switch_stage=chart-resolve
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-se-12c-kubeconfig.yaml
+          register: _se12c_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(12c) ASSERT: the run FAILED and said so on the legacy stdout channel too (DMF_L3_SWITCH_REFUSED detail=reserved-var — dmf-cms's #320 bridge sees this refusal as well, not only the structured event)"
+          ansible.builtin.assert:
+            that:
+              - _se12c_run.rc != 0
+              - "'DMF_L3_SWITCH_REFUSED' in _se12c_run.stdout"
+              - "'detail=reserved-var' in _se12c_run.stdout"
+            fail_msg: "(12c) FAIL — expected a reserved-var refusal. rc={{ _se12c_run.rc }} stdout={{ _se12c_run.stdout }}"
+
+        - name: "(12c) collect the DMF_L3_SWITCH_OUTCOME markers"
+          ansible.builtin.set_fact:
+            _se12c_markers: "{{ (_se12c_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
+
+        - name: "(12c) assert EXACTLY ONE marker — never zero (the spoofed sentinel must not be able to silence the event) and never two (the honest literal must not be followed by a forged one from the outer rescue)"
+          ansible.builtin.assert:
+            that:
+              - _se12c_markers | length == 1
+            fail_msg: "(12c) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME marker, got {{ _se12c_markers | length }}: {{ _se12c_markers }}"
+
+        - name: "(12c) parse the marker's token + detail — EXACT fields, never a substring"
+          ansible.builtin.set_fact:
+            _se12c_token: "{{ (_se12c_markers[0] | regex_search('DMF_L3_SWITCH_OUTCOME: [A-Za-z0-9_]+') | default('DMF_L3_SWITCH_OUTCOME: <unparsed>', true)) | regex_replace('^DMF_L3_SWITCH_OUTCOME: ', '') }}"
+            _se12c_detail: "{{ (_se12c_markers[0] | regex_search('detail=[A-Za-z0-9_-]+') | default('detail=<no-detail-field>', true)) | regex_replace('^detail=', '') }}"
+
+        - name: "(12c) ASSERT the emitted event is the HARD-CODED one: token EXACTLY 'refused', detail EXACTLY 'reserved-var', no attacker-supplied content, and NO run_id/request_id/receiver_instance fields at all — that absence is the positive proof it came from _emit_switch_refused_literal.yml (a pure YAML literal) and not from the caller-parameterised emitter, which always renders those three"
+          ansible.builtin.assert:
+            that:
+              - _se12c_token == 'refused'
+              - _se12c_detail == 'reserved-var'
+              - "'run_id=' not in _se12c_markers[0]"
+              - "'request_id=' not in _se12c_markers[0]"
+              - "'receiver_instance=' not in _se12c_markers[0]"
+              - "'attacker_token' not in _se12c_markers[0]"
+              - "'attacker_detail' not in _se12c_markers[0]"
+              - "'chart-resolve' not in _se12c_markers[0]"
+            fail_msg: "(12c) FAIL — expected the hard-coded literal refused/reserved-var marker. got token={{ _se12c_token }} detail={{ _se12c_detail }} markers={{ _se12c_markers }}"
+
+        - name: "(12c) ASSERT (via real HTTP against the stub): the coordinator ConfigMap is UNTOUCHED — the guard runs before switch_lock, so a spoofed run never reaches PHASE 1"
+          ansible.builtin.uri:
+            url: "{{ _se12c_k8s_url }}/api/v1/namespaces/mxl/configmaps/mxl-coordinator"
+            method: GET
+            return_content: true
+            validate_certs: false
+          register: _se12c_coordinator
+
+        - name: "(12c) assert the coordinator still carries its exact pre-run state"
+          ansible.builtin.assert:
+            that:
+              - _se12c_coordinator.json.data['active-source'] == 'source-a'
+              - _se12c_coordinator.json.data['epoch'] == 'pre-switch-uid:1000'
+            fail_msg: "(12c) FAIL — the coordinator was mutated by a refused run. got={{ _se12c_coordinator.json.data }}"
+
+        - name: "(12c) ASSERT (via real HTTP against the stub): the facility lock was NEVER created — this refusal happens before switch_lock even runs"
+          ansible.builtin.uri:
+            url: "{{ _se12c_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(12c) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-12c.json]
           changed_when: false
           failed_when: false
 
@@ -2542,16 +3477,54 @@
           fixtures and set active-source=source-b — these three scenarios
           exist specifically so that cannot happen silently again.
 
-          Umbrella #323: every scenario above also asserts on the
-          DMF_L3_SWITCH_OUTCOME structured event directly (never merely the
-          legacy stdout prefixes) — exactly one marker per run, the correct
-          enum (refused for scenarios 1/2/3/4a/4b/4c's various pre-PHASE-2
-          refusal paths — all funneling through the SAME generic rescue
-          catch-all, asserted individually on each for uniform
-          belt-and-suspenders coverage; success for scenario 6's happy path;
-          rollback_verified_previous_source_restored for scenarios 5/7/8;
-          rollback_verification_failed for scenario 9) — proving a mutant
-          that drops the event entirely, or that double-emits across the
-          PHASE-2-verify-failed branch and the rescue's own generic
-          catch-all, fails here even if the legacy prefix text (kept
-          byte-for-byte unchanged, for dmf-cms's #320 bridge) still passes.
+          Umbrella #323: EVERY scenario that runs the real playbook
+          (1, 2, 3, 4a, 4b, 4c, 5, 6, 7, 8, 9, 10, 11, 12a, 12b, 12c —
+          i.e. all of them except scenario 0, which probes stub_helm.sh
+          directly and never starts a play) asserts on the
+          DMF_L3_SWITCH_OUTCOME structured event, never merely the legacy
+          stdout prefixes: exactly one marker per run, and the enum compared
+          EXACTLY. The token is parsed out of the line with a regex capture
+          and compared for equality — the fix round replaced the earlier
+          `'refused' in marker` substring checks, which a mutant emitting
+          'not_refused' (or any longer token sharing the prefix, or any kv
+          VALUE containing the word) satisfied just as well. Coverage:
+          refused for 1/2/3/4a/4b/4c's pre-PHASE-2 refusal paths, each ALSO
+          asserting the exact detail= stage the run died in (pre-lock,
+          pre-lock, coordinator-read, coordinator-read, quiesce, repoint) so
+          the stage vocabulary is proven wired, not merely present; success
+          for scenario 6's happy path;
+          rollback_verified_previous_source_restored for 5/7/8;
+          rollback_verified_no_previous_source for 11 (the fix round's own
+          P2a split — 7 and 11 differ ONLY in whether the pre-switch
+          coordinator had an active-source, and a substring check could not
+          have told the two tokens apart at all, since one is a prefix of
+          the other); rollback_verification_failed for 9 and 10. A mutant
+          that drops the event, double-emits across the PHASE-2-verify-
+          failed branch and the rescue's own catch-all, or reports the wrong
+          enum fails here even though the legacy prefix text — kept
+          byte-for-byte unchanged for dmf-cms's #320 bridge, and asserted
+          unchanged on BOTH verified-rollback exits — still passes.
+
+          Umbrella #323 fix round (codex adversarial gate P1): scenarios
+          12a/12b/12c prove the structured event cannot be written by its
+          own caller. Ansible extra_vars outrank task vars, set_fact and
+          register alike, so before this round a dispatcher could either
+          SILENCE the event (-e _switch_outcome_emitted=true skipped the
+          only outcome task in the play, emitting nothing at all) or DICTATE
+          it (-e l3_switch_outcome_token=... rendered "DMF_L3_SWITCH_OUTCOME:
+          attacker_token attacker_detail=1" as the run's own outcome) — and
+          could do so precisely BECAUSE the reserved-var refusal path ran
+          through the shadowed names. Each scenario runs the real playbook
+          with an otherwise perfectly valid switch request plus one spoof
+          shape (12a the sentinel, 12b the emitter token/kv, 12c all three
+          at once with the sentinel set FALSE and a forged _switch_stage —
+          the shape that defeats a naive sentinel-setting fix and an
+          unguarded detail= source), and each asserts the SAME outcome:
+          exactly one event, token EXACTLY 'refused', detail EXACTLY
+          'reserved-var', no attacker string anywhere in it, and no
+          run_id/request_id/receiver_instance fields at all — that absence
+          being the positive proof the event came from the hard-coded
+          literal emitter rather than the caller-parameterised one. All
+          three also confirm, over real HTTP, that the seeded coordinator
+          ConfigMap is byte-identical afterwards and the facility lock was
+          never created.
