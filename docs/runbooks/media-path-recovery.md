@@ -84,7 +84,7 @@ kubectl -n mxl patch cm mxl-coordinator --type merge \
 `<source-id>` is whatever source you are restoring transmission to — the
 value the switch's own PHASE 3 would have set
 (`topology_params.viewer.source_selection` on the receiver, projected by
-`switch_capture_baseline`/`switch_validate` into
+`switch_validate.yml` — the `l3_topology_viewer_projection` filter — into
 `_switch_target_projection.active_source`). If you do not already know it,
 the safest source is the coordinator's own pre-incident state (a prior
 `kubectl get cm ... -o jsonpath` capture, an AWX job's extra_vars for the
@@ -198,8 +198,8 @@ kubectl -n nmos get cm dmf-facility-lock -o jsonpath='{.data}'
 Fields (`roles/l3_run_guard/tasks/lock.yml`): `run_id`, `holder_attempt_id`,
 `holder` (the AWX job id, or the literal `direct` for an off-cluster
 `run-playbook.sh` run), `created_at` (unix epoch seconds), `ttl_seconds`.
-If the `get` returns nothing, no run currently holds the facility — nothing
-to do here.
+If the `get` errors `NotFound`, no run currently holds the facility —
+nothing to do here.
 
 Compute the lock's age against the TTL:
 
@@ -213,12 +213,19 @@ Age = `date +%s` output minus `created_at`. Compare against `ttl_seconds`
 
 ### Why a lock can be sitting there at all: it leaks by design
 
-`roles/l3_run_guard/tasks/lock_release.yml` only runs as part of a play's
-own `rescue:`/`always:` blocks. **A play that is killed mid-run (SIGKILL,
-node eviction, pod cycle) never reaches its own rescue and therefore never
-releases the lock it holds.** This is not a bug to work around — it is the
-documented tradeoff: the TTL is the backstop, not the release path, for
-that failure mode.
+`lock_release.yml` runs on every normal completion path — success
+(`launch_success.yml`, and the switch play's own success step at
+`playbooks/switch-mxl-fabrics-demo.yml:387-393`, both calling it from
+their own in-`block:` steps, before `rescue:` ever starts), refusal
+(`_refuse_pre_mutation.yml`), and rollback-terminal
+(`rollback_terminal.yml`, `rollback.yml`) — plus a universal
+`rescue:`/`always:` backstop (`roles/l3_run_guard/tasks/release.yml`,
+included from every launch/teardown/rollback playbook's outer block) that
+catches anything the on-path calls miss. **A play that is killed mid-run
+(SIGKILL, node eviction, pod cycle) reaches none of these — on-path or
+backstop — and therefore never releases the lock it holds.** This is not a
+bug to work around — it is the documented tradeoff: the TTL is the
+backstop for that failure mode, not the release path.
 
 ### When to WAIT
 
