@@ -293,6 +293,23 @@
           - _switch_rollback_verified is not defined
           - _switch_rollback_poll_attempt_done is not defined
           - _switch_final_readback is not defined
+          # umbrella #323: switch-mxl-fabrics-demo.yml's own structured
+          # outcome event (roles/l3_run_guard/tasks/_emit_switch_outcome.yml
+          # — a SEPARATE vocabulary from DMF_L3_OUTCOME, see that file's own
+          # header for why). _switch_outcome_emitted is the playbook-owned
+          # exactly-once sentinel (set immediately before either PHASE 2
+          # verify-failed branch emits its own marker, mirroring
+          # l3_pre_mutation_marker_emitted's role in gate_rescue.yml's own
+          # branch A) — a real set_fact target, so the R5a-1 scanner
+          # (tests/scripts/check_reserved_vars.py) requires it here.
+          # l3_switch_outcome_token/l3_switch_outcome_kv are never
+          # register:/set_fact: targets (only ever task-level `vars:` on the
+          # include_role call, exactly like l3_outcome_token/l3_outcome_kv
+          # above) — reserved anyway for the identical "emitter shadow"
+          # defense those two already document.
+          - _switch_outcome_emitted is not defined
+          - l3_switch_outcome_token is not defined
+          - l3_switch_outcome_kv is not defined
         fail_msg: >-
           L3 launcher refused: preflight-error (reserved-var). One or more
           reserved internal variables were supplied as extra_vars — these
