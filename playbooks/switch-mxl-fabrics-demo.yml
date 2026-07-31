@@ -128,6 +128,19 @@
 # caller-supplied free-text value (e.g. a receiver_instance containing
 # "detail=") appearing later in the same line.
 #
+# CONSOLE-SIDE ASSUMPTION (fix round, codex round-2 gate NIT — flagged, not
+# fixed here, this repo does not own the parser): run_id/request_id/
+# receiver_instance below are rendered UNSANITIZED — a caller-supplied
+# value could contain arbitrary characters, including a newline that makes
+# the AWX job-event message look like it contains a SECOND
+# "DMF_L3_SWITCH_OUTCOME:" line. Because the honest token+detail always
+# render FIRST (same discipline as the detail= placement above), a
+# dmf-cms-side parser that takes the FIRST "DMF_L3_SWITCH_OUTCOME:" match
+# in the event message is not fooled by this; a global/last-match scan
+# would be. This is a pre-existing property of the kv fields (unchanged by
+# this fix round) — noted here as the one-line confirmation the gate asked
+# for, not a change to this playbook.
+#
 # NON-FORGEABILITY OF ALL OF THE ABOVE (umbrella #323 fix round, codex gate
 # P1 — read roles/l3_run_guard/tasks/switch_outcome_guard.yml's own header
 # for the full story, it is the substance of this fix). Ansible extra_vars
