@@ -496,6 +496,12 @@ def _check_switch_outcome_marker() -> list[str]:
       5. (fix round, codex gate P1) switch_outcome_guard.yml still asserts
          EVERY outcome-decision variable is undefined. Dropping a name from
          that list is the other silent way to reopen the hole.
+
+    NOTE: this function proves the guard's CONTENT is intact. It does NOT
+    prove the guard's POSITION (first top-level task, outside the outer
+    block) — that is _check_switch_outcome_guard_position()'s job, split
+    out separately below because it walks the switch playbook's own
+    `tasks:` shape rather than the role's task files.
     """
     errors: list[str] = []
     emit_file = _ROLE_TASKS_DIR / _SWITCH_OUTCOME_EMIT_FILE
@@ -608,6 +614,101 @@ def _check_switch_outcome_marker() -> list[str]:
             f"{switch_playbook_path.relative_to(_REPO_ROOT)}: never calls "
             f"`include_role: ... tasks_from: {_SWITCH_OUTCOME_EMIT_FILE[:-4]}` "
             "— the structured outcome event is wired nowhere."
+        )
+
+    return errors
+
+
+def _check_switch_outcome_guard_position() -> list[str]:
+    """umbrella #323 fix round (codex round-2 adversarial gate, MINOR finding
+    — a static gate was missing entirely for this). The whole P1 fix is
+    load-bearing on TWO positional facts, neither of which
+    _check_switch_outcome_marker() above checks (it only proves the
+    guard's CONTENT — the six asserted names — is intact):
+
+      1. switch_outcome_guard.yml is the play's very FIRST top-level task.
+      2. it sits OUTSIDE the outer block's own block:/rescue:/always:
+         lists — i.e. it is a SIBLING before that block, never nested
+         inside it.
+
+    Why position matters (see switch-mxl-fabrics-demo.yml's own header and
+    switch_outcome_guard.yml's own header for the full story, condensed
+    here): if the guard were moved inside the outer block, its own
+    `ansible.builtin.fail` would be caught by that block's `rescue:` —
+    whose own emission the caller may have already shadowed via
+    `-e _switch_outcome_emitted=true` (P1(a)'s exact shape) — reopening
+    the hole this whole fix round exists to close. If a new task were
+    inserted ahead of the guard, that task would run before any caller
+    variable had been proven caller-free.
+
+    A refactor that "tidies" the guard into the block, or that inserts a
+    new task ahead of it, would pass every OTHER check in this file
+    (_check_switch_outcome_marker's requirement 5 only re-checks the
+    guard's asserted name list, not where it is called from) — so without
+    this function, that exact regression class ships silently.
+    """
+    errors: list[str] = []
+    path = _PLAYBOOKS_DIR / _SWITCH_PLAYBOOK
+    play, load_errors = _load_single_play(path)
+    if play is None:
+        return load_errors
+
+    tasks = play.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        return [f"{_SWITCH_PLAYBOOK}: play has no non-empty 'tasks:' list"]
+
+    first = tasks[0]
+    first_spec = _include_role_spec(first) if isinstance(first, dict) else None
+    guard_first = bool(
+        first_spec
+        and first_spec.get("name") == _GATE_ROLE
+        and first_spec.get("tasks_from") == "switch_outcome_guard"
+    )
+    if not guard_first:
+        errors.append(
+            f"{_SWITCH_PLAYBOOK}: the FIRST top-level task must be "
+            f"`include_role: name: {_GATE_ROLE} tasks_from: switch_outcome_guard` "
+            "(umbrella #323 fix round P1) — got "
+            f"{sorted(first.keys()) if isinstance(first, dict) else first!r}. "
+            "This position is load-bearing: outside the outer block, the "
+            "guard's own refusal can never be caught by a rescue: whose "
+            "emission the caller may have already shadowed, and nothing "
+            "can run ahead of it to consult a not-yet-proven-caller-free "
+            "variable."
+        )
+
+    # Belt-and-suspenders, independent of whether the tasks[0] check above
+    # passed: the guard must not ALSO (or ONLY) be reachable from inside
+    # the outer block's own block:/rescue:/always: lists — that would
+    # defeat the "runs before the block is ever entered" property even if
+    # a copy of it also happens to sit at tasks[0].
+    guard_inside_block = _find_include_role(
+        tasks, name=_GATE_ROLE, tasks_from="switch_outcome_guard"
+    )
+    # _find_include_role walks the WHOLE tasks tree including tasks[0]
+    # itself, so a single top-level hit at tasks[0] is expected and fine;
+    # more than one hit, or a hit whose only occurrence is NOT tasks[0],
+    # means a copy is reachable from inside a nested block/rescue/always.
+    if guard_first:
+        if len(guard_inside_block) != 1:
+            errors.append(
+                f"{_SWITCH_PLAYBOOK}: `include_role: ... tasks_from: "
+                "switch_outcome_guard` is reachable more than once "
+                f"({len(guard_inside_block)} occurrences) — expected "
+                "exactly one, at the top level as tasks[0]. A second "
+                "occurrence nested inside the outer block's own "
+                "block:/rescue:/always: would mean the guard can still run "
+                "on a path where the caller's own extra_vars are already "
+                "in scope for the whole block body."
+            )
+    elif guard_inside_block:
+        errors.append(
+            f"{_SWITCH_PLAYBOOK}: `include_role: ... tasks_from: "
+            "switch_outcome_guard` was found, but NOT as the play's first "
+            "top-level task — it is reachable only from somewhere nested "
+            "(the outer block's own block:/rescue:/always: lists), which "
+            "reopens the umbrella #323 fix round's own P1 hole (see this "
+            "function's own docstring)."
         )
 
     return errors
@@ -786,6 +887,7 @@ def main() -> int:
     all_errors.extend(_check_none_sentinel_antipattern(production_scan))
     all_errors.extend(_check_type_debug_antipattern(production_scan))
     all_errors.extend(_check_switch_outcome_marker())
+    all_errors.extend(_check_switch_outcome_guard_position())
 
     if all_errors:
         print(
@@ -818,7 +920,12 @@ def main() -> int:
         f"{_SWITCH_GUARD_FILE} still proves every outcome-decision variable "
         f"({len(_SWITCH_GUARD_NAMES)} names) caller-free, and the marker is "
         f"actually wired into {_SWITCH_PLAYBOOK} (see "
-        "_check_switch_outcome_marker's own docstring)."
+        "_check_switch_outcome_marker's own docstring). umbrella #323 fix "
+        f"round (codex round-2 gate): {_SWITCH_GUARD_FILE}'s own include is "
+        "still the play's first top-level task and is reachable nowhere "
+        "else, in particular not from inside the outer block's own "
+        "block:/rescue:/always: lists (see "
+        "_check_switch_outcome_guard_position's own docstring)."
     )
     return 0
 
