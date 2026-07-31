@@ -371,6 +371,16 @@
               - "'detail=switch-source-instance-mismatch' in _se2_run.stdout"
             fail_msg: "(2) FAIL — expected a switch-source-instance-mismatch refusal. stdout={{ _se2_run.stdout }}"
 
+        - name: "(2) ASSERT: exactly ONE DMF_L3_SWITCH_OUTCOME marker, token refused (umbrella #323 — this is the SAME generic rescue catch-all scenario 1 exercises; asserted here too for uniform belt-and-suspenders coverage across every pre-PHASE-2 refusal path)"
+          ansible.builtin.set_fact:
+            _se2_markers: "{{ (_se2_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
+
+        - ansible.builtin.assert:
+            that:
+              - _se2_markers | length == 1
+              - "'refused' in _se2_markers[0]"
+            fail_msg: "(2) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME refused marker, got: {{ _se2_markers }}"
+
         - name: "(2) ASSERT (via real HTTP against the stub): the facility lock was NEVER created (pre-lock refusal)"
           ansible.builtin.uri:
             url: "{{ _se2_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
@@ -467,6 +477,16 @@
               - _se3_run.rc != 0
               - "'detail=switch-coordinator-missing' in _se3_run.stdout"
             fail_msg: "(3) FAIL — expected a switch-coordinator-missing refusal. stdout={{ _se3_run.stdout }}"
+
+        - name: "(3) ASSERT: exactly ONE DMF_L3_SWITCH_OUTCOME marker, token refused (umbrella #323 — this refusal fires POST-lock, via the same generic rescue catch-all as scenarios 1/2; asserted for uniform coverage across every pre-PHASE-2 refusal path)"
+          ansible.builtin.set_fact:
+            _se3_markers: "{{ (_se3_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
+
+        - ansible.builtin.assert:
+            that:
+              - _se3_markers | length == 1
+              - "'refused' in _se3_markers[0]"
+            fail_msg: "(3) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME refused marker, got: {{ _se3_markers }}"
 
         - name: "(3) ASSERT (via real HTTP against the stub): the facility
             lock was acquired then RELEASED (this refusal fires AFTER
@@ -613,6 +633,16 @@
               - _se4a_run.rc != 0
             fail_msg: "(4a) FAIL — exited 0. stdout={{ _se4a_run.stdout }}"
 
+        - name: "(4a) ASSERT: exactly ONE DMF_L3_SWITCH_OUTCOME marker, token refused (umbrella #323 — the fault_inject boundary raises through the same generic rescue catch-all as scenarios 1/2/3; asserted for uniform coverage)"
+          ansible.builtin.set_fact:
+            _se4a_markers: "{{ (_se4a_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
+
+        - ansible.builtin.assert:
+            that:
+              - _se4a_markers | length == 1
+              - "'refused' in _se4a_markers[0]"
+            fail_msg: "(4a) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME refused marker, got: {{ _se4a_markers }}"
+
         - name: "(4a) ASSERT (via real HTTP against the stub): the coordinator is COMPLETELY UNCHANGED (no phase ever ran)"
           ansible.builtin.uri:
             url: "{{ _se4_k8s_url }}/api/v1/namespaces/mxl/configmaps/mxl-coordinator"
@@ -686,6 +716,16 @@
             that:
               - _se4b_run.rc != 0
             fail_msg: "(4b) FAIL — exited 0. stdout={{ _se4b_run.stdout }}"
+
+        - name: "(4b) ASSERT: exactly ONE DMF_L3_SWITCH_OUTCOME marker, token refused (umbrella #323 — the fault_inject boundary raises through the same generic rescue catch-all as scenarios 1/2/3/4a; asserted for uniform coverage)"
+          ansible.builtin.set_fact:
+            _se4b_markers: "{{ (_se4b_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
+
+        - ansible.builtin.assert:
+            that:
+              - _se4b_markers | length == 1
+              - "'refused' in _se4b_markers[0]"
+            fail_msg: "(4b) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME refused marker, got: {{ _se4b_markers }}"
 
         - name: "(4b) ASSERT (via real HTTP against the stub): the coordinator is QUIESCED (active-source/target-info/epoch all cleared) — phase 1 ran, phase 2/3 did not"
           ansible.builtin.uri:
@@ -800,6 +840,16 @@
             that:
               - _se4c_run.rc != 0
             fail_msg: "(4c) FAIL — exited 0. stdout={{ _se4c_run.stdout }}"
+
+        - name: "(4c) ASSERT: exactly ONE DMF_L3_SWITCH_OUTCOME marker, token refused (umbrella #323 — the fault_inject boundary raises through the same generic rescue catch-all as scenarios 1/2/3/4a/4b — the viewer's helm release WAS re-pointed by this point, but the outcome is still 'refused', never a PHASE-2-specific token, because this fault fires BEFORE PHASE 2 verify ever runs)"
+          ansible.builtin.set_fact:
+            _se4c_markers: "{{ (_se4c_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
+
+        - ansible.builtin.assert:
+            that:
+              - _se4c_markers | length == 1
+              - "'refused' in _se4c_markers[0]"
+            fail_msg: "(4c) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME refused marker, got: {{ _se4c_markers }}"
 
         - name: "(4c) ASSERT: the receiver's chart was resolved (umbrella #306
             — get metadata + pull, BEFORE the re-point), the pre-switch
@@ -2495,11 +2545,13 @@
           Umbrella #323: every scenario above also asserts on the
           DMF_L3_SWITCH_OUTCOME structured event directly (never merely the
           legacy stdout prefixes) — exactly one marker per run, the correct
-          enum (refused for scenario 1's pre-lock refusal, success for
-          scenario 6's happy path, rollback_verified_previous_source_restored
-          for scenarios 5/7/8, rollback_verification_failed for scenario 9)
-          — proving a mutant that drops the event entirely, or that
-          double-emits across the PHASE-2-verify-failed branch and the
-          rescue's own generic catch-all, fails here even if the legacy
-          prefix text (kept byte-for-byte unchanged, for dmf-cms's #320
-          bridge) still passes.
+          enum (refused for scenarios 1/2/3/4a/4b/4c's various pre-PHASE-2
+          refusal paths — all funneling through the SAME generic rescue
+          catch-all, asserted individually on each for uniform
+          belt-and-suspenders coverage; success for scenario 6's happy path;
+          rollback_verified_previous_source_restored for scenarios 5/7/8;
+          rollback_verification_failed for scenario 9) — proving a mutant
+          that drops the event entirely, or that double-emits across the
+          PHASE-2-verify-failed branch and the rescue's own generic
+          catch-all, fails here even if the legacy prefix text (kept
+          byte-for-byte unchanged, for dmf-cms's #320 bridge) still passes.
