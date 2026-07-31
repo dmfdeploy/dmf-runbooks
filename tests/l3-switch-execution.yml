@@ -263,6 +263,16 @@
               - "'detail=topology-invalid' in _se1_run.stdout"
             fail_msg: "(1) FAIL — expected a topology-invalid refusal. stdout={{ _se1_run.stdout }}"
 
+        - name: "(1) ASSERT: exactly ONE DMF_L3_SWITCH_OUTCOME marker, token refused (umbrella #323 — a pre-lock refusal never emits its own PHASE-2-specific token, so this proves the rescue:'s own generic catch-all fires exactly once; a mutant that drops the event entirely fails this, not just the legacy DMF_L3_SWITCH_REFUSED prefix assert above)"
+          ansible.builtin.set_fact:
+            _se1_markers: "{{ (_se1_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
+
+        - ansible.builtin.assert:
+            that:
+              - _se1_markers | length == 1
+              - "'refused' in _se1_markers[0]"
+            fail_msg: "(1) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME refused marker, got: {{ _se1_markers }}"
+
         - name: "(1) ASSERT (via real HTTP against the stub): the facility lock was NEVER created (pre-lock refusal)"
           ansible.builtin.uri:
             url: "{{ _se1_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
@@ -1092,6 +1102,17 @@
               - "'rollback_verification_failed:' not in _se5_run.stdout"
             fail_msg: "(5) FAIL — expected rollback_verified previous_source_restored despite the upgrade command's own rc!=0. stdout={{ _se5_run.stdout }}"
 
+        - name: "(5) ASSERT: exactly ONE DMF_L3_SWITCH_OUTCOME marker, token rollback_verified_previous_source_restored (umbrella #323 — asserts on the STRUCTURED event, not merely the legacy prefix above; a mutant that drops the event but leaves the legacy fail msg untouched fails only this)"
+          ansible.builtin.set_fact:
+            _se5_markers: "{{ (_se5_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
+
+        - ansible.builtin.assert:
+            that:
+              - _se5_markers | length == 1
+              - "'rollback_verified_previous_source_restored' in _se5_markers[0]"
+              - "'restored_active_source=source-a' in _se5_markers[0]"
+            fail_msg: "(5) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME rollback_verified_previous_source_restored marker, got: {{ _se5_markers }}"
+
         - name: "(5) ASSERT: chart resolution (umbrella #306) + the pre-switch
             baseline capture (umbrella #306 design round #2) ran and helm
             upgrade WAS attempted with the pulled tempdir chart arg,
@@ -1359,6 +1380,17 @@
             that:
               - _se6_run.rc == 0
             fail_msg: "(6) FAIL — expected a clean success. stdout={{ _se6_run.stdout }}"
+
+        - name: "(6) ASSERT: exactly ONE DMF_L3_SWITCH_OUTCOME marker, token success (umbrella #323 — proves the success emit is genuinely reached and fires exactly once on the happy path; a mutant that drops it, or that emits it BEFORE lock_release such that a later failure could still leave a stray success marker, fails this)"
+          ansible.builtin.set_fact:
+            _se6_markers: "{{ (_se6_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
+
+        - ansible.builtin.assert:
+            that:
+              - _se6_markers | length == 1
+              - "'success' in _se6_markers[0]"
+              - "'receiver_instance=mxl-videotest-view' in _se6_markers[0]"
+            fail_msg: "(6) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME success marker, got: {{ _se6_markers }}"
 
         - name: "(6) ASSERT: chart resolution ran (umbrella #306 — get metadata
             + pull), the pre-switch baseline was captured (umbrella #306
@@ -1686,6 +1718,18 @@
               - "'rollback_verification_failed:' not in _se7_run.stdout"
             fail_msg: "(7) FAIL — expected rollback_verified previous_source_restored. stdout={{ _se7_run.stdout }}"
 
+        - name: "(7) ASSERT: exactly ONE DMF_L3_SWITCH_OUTCOME marker, token rollback_verified_previous_source_restored (umbrella #323 — this is the MINIMUM-coverage scenario named in the issue; asserts on the STRUCTURED event, not merely the legacy prefix above)"
+          ansible.builtin.set_fact:
+            _se7_markers: "{{ (_se7_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
+
+        - ansible.builtin.assert:
+            that:
+              - _se7_markers | length == 1
+              - "'rollback_verified_previous_source_restored' in _se7_markers[0]"
+              - "'restored_active_source=source-a' in _se7_markers[0]"
+              - "'receiver_instance=mxl-videotest-view' in _se7_markers[0]"
+            fail_msg: "(7) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME rollback_verified_previous_source_restored marker, got: {{ _se7_markers }}"
+
         - name: "(7) ASSERT (via real HTTP against the stub): active-source was restored to the PREVIOUS source (source-a) — NEVER the switch target (source-b). This is the discriminating proof itself: the OLD (pre-#306-round-2) play never read the Deployment at all, so a helm rc=0 with a never-converging pod would have sailed straight to PHASE 3 and set active-source=source-b."
           ansible.builtin.uri:
             url: "{{ _se7_k8s_url }}/api/v1/namespaces/mxl/configmaps/mxl-coordinator"
@@ -1901,6 +1945,16 @@
               - "'rollback_verification_failed:' not in _se8_run.stdout"
             fail_msg: "(8) FAIL — expected rollback_verified previous_source_restored despite a late-converging rollback. stdout={{ _se8_run.stdout }}"
 
+        - name: "(8) ASSERT: exactly ONE DMF_L3_SWITCH_OUTCOME marker, token rollback_verified_previous_source_restored (umbrella #323 — proves a LATE-converging rollback still emits exactly one event, never a stray extra one per poll attempt)"
+          ansible.builtin.set_fact:
+            _se8_markers: "{{ (_se8_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
+
+        - ansible.builtin.assert:
+            that:
+              - _se8_markers | length == 1
+              - "'rollback_verified_previous_source_restored' in _se8_markers[0]"
+            fail_msg: "(8) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME rollback_verified_previous_source_restored marker, got: {{ _se8_markers }}"
+
         - name: "(8) ASSERT (via real HTTP against the stub): active-source restored to source-a, never the switch target"
           ansible.builtin.uri:
             url: "{{ _se8_k8s_url }}/api/v1/namespaces/mxl/configmaps/mxl-coordinator"
@@ -2075,6 +2129,19 @@
               - "'rollback_verification_failed:' in _se9_run.stdout"
               - "'rollback_verified previous_source_restored:' not in _se9_run.stdout"
             fail_msg: "(9) FAIL — expected rollback_verification_failed. stdout={{ _se9_run.stdout }}"
+
+        - name: "(9) ASSERT: exactly ONE DMF_L3_SWITCH_OUTCOME marker, token rollback_verification_failed (umbrella #323 — this is the SECOND minimum-coverage scenario named in the issue; asserts on the STRUCTURED event, not merely the legacy prefix above; also proves the marker carries NO restored_active_source kv, matching 'no restore was attempted')"
+          ansible.builtin.set_fact:
+            _se9_markers: "{{ (_se9_run.stdout_lines | select('match', '.*DMF_L3_SWITCH_OUTCOME:.*') | list) }}"
+
+        - ansible.builtin.assert:
+            that:
+              - _se9_markers | length == 1
+              - "'rollback_verification_failed' in _se9_markers[0]"
+              - "'rollback_verified_previous_source_restored' not in _se9_markers[0]"
+              - "'restored_active_source' not in _se9_markers[0]"
+              - "'receiver_instance=mxl-videotest-view' in _se9_markers[0]"
+            fail_msg: "(9) FAIL — expected exactly one DMF_L3_SWITCH_OUTCOME rollback_verification_failed marker, got: {{ _se9_markers }}"
 
         - name: "(9) ASSERT (via real HTTP against the stub): active-source stays ABSENT — no restore was attempted (rollback verification itself failed), and it is NEVER the switch target"
           ansible.builtin.uri:
@@ -2424,3 +2491,15 @@
           Deployment would sail straight to PHASE 3 on scenario 7/8's
           fixtures and set active-source=source-b — these three scenarios
           exist specifically so that cannot happen silently again.
+
+          Umbrella #323: every scenario above also asserts on the
+          DMF_L3_SWITCH_OUTCOME structured event directly (never merely the
+          legacy stdout prefixes) — exactly one marker per run, the correct
+          enum (refused for scenario 1's pre-lock refusal, success for
+          scenario 6's happy path, rollback_verified_previous_source_restored
+          for scenarios 5/7/8, rollback_verification_failed for scenario 9)
+          — proving a mutant that drops the event entirely, or that
+          double-emits across the PHASE-2-verify-failed branch and the
+          rescue's own generic catch-all, fails here even if the legacy
+          prefix text (kept byte-for-byte unchanged, for dmf-cms's #320
+          bridge) still passes.

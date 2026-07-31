@@ -54,6 +54,19 @@ None-sentinel Jinja template gated by `is [not] none`, and a `type_debug`
 result compared against a quoted type-name literal. See each function's
 own docstring for its full story.
 
+Also since umbrella #323: _check_switch_outcome_marker() — a structural
+floor for the switch playbook's own structured outcome event
+(playbooks/switch-mxl-fabrics-demo.yml, roles/l3_run_guard/tasks/
+_emit_switch_outcome.yml). Proves the marker-emission task exists,
+carries the exact `name:` the console filters AWX job events by, is
+UNIQUELY named across the whole role + the switch playbook (mirroring
+dmf-l3-outcome's own "ONE task file is the single named marker-emission
+point" discipline in _emit_outcome.yml), and that the switch playbook
+actually calls it at least once. This is a static floor only — it does
+NOT prove the marker fires on every terminal branch with the right enum;
+that's tests/l3-switch-execution.yml's own execution-test job (real
+ansible-playbook runs against the stub, asserting on real stdout).
+
 Usage:  python3 tests/scripts/check_playbook_structure.py
 Exit 0 = every playbook checked below has the expected outer-block shape,
 and no task file re-introduces the umbrella #272 or #273 anti-pattern.
@@ -115,6 +128,13 @@ _TEARDOWN_PLAYBOOKS = [
 _ROLLBACK_PLAYBOOK = "rollback-run.yml"
 
 _GATE_ROLE = "l3_run_guard"
+
+# umbrella #323 — the switch playbook's own structured-outcome-event
+# marker-emission point + the exact task name the console filters AWX job
+# events by (see _emit_switch_outcome.yml's own header).
+_SWITCH_PLAYBOOK = "switch-mxl-fabrics-demo.yml"
+_SWITCH_OUTCOME_EMIT_FILE = "_emit_switch_outcome.yml"
+_SWITCH_OUTCOME_MARKER_NAME = "dmf-l3-switch-outcome"
 
 # umbrella #272 (regression guard, added same round as the fix) — scan
 # scope for the None-sentinel anti-pattern below: this role's own task
@@ -350,6 +370,135 @@ def _check_type_debug_antipattern(scan: list[tuple[Path, list[str], str]]) -> li
     return errors
 
 
+def _iter_tasks(node: object):
+    """Recursively yield every task dict found in a task-list-shaped YAML
+    node — descending into any nested block:/rescue:/always: on each task,
+    the same recursion _find_include_role already does, but yielding the
+    RAW task dict itself rather than filtering to include_role tasks.
+    Shared by the umbrella #323 switch-outcome-marker check below, which
+    needs to find every task literally named _SWITCH_OUTCOME_MARKER_NAME
+    (uniqueness) and every _emit_switch_outcome caller (wiring), across
+    both role task files (a bare task list at the YAML top level) and the
+    switch playbook's own play (tasks nested under 'tasks:'/'block:'/
+    'rescue:'/'always:')."""
+    if not isinstance(node, list):
+        return
+    for t in node:
+        if not isinstance(t, dict):
+            continue
+        yield t
+        for key in ("block", "rescue", "always"):
+            if key in t:
+                yield from _iter_tasks(t[key])
+
+
+def _check_switch_outcome_marker() -> list[str]:
+    """umbrella #323 — structural floor for the switch playbook's own
+    structured outcome event (DMF_L3_SWITCH_OUTCOME, a vocabulary SEPARATE
+    from DMF_L3_OUTCOME — see playbooks/switch-mxl-fabrics-demo.yml's own
+    header and _emit_switch_outcome.yml's own header for why). Three
+    things, mirroring the exact discipline _emit_outcome.yml's own header
+    documents for dmf-l3-outcome:
+
+      1. roles/l3_run_guard/tasks/_emit_switch_outcome.yml exists, contains
+         EXACTLY ONE task, and that task is an ansible.builtin.debug task
+         whose `name:` is LITERALLY 'dmf-l3-switch-outcome' — the console
+         reads AWX job events filtered by this exact task name, not stdout.
+      2. that name is UNIQUE: no other task file under roles/l3_run_guard/
+         tasks/ and no task in the switch playbook itself reuses it — "ONE
+         task file is the single named marker-emission point" only holds if
+         nothing else can shadow it.
+      3. the switch playbook actually WIRES the marker in at least once
+         (an `include_role: ... tasks_from: _emit_switch_outcome` call
+         somewhere in its play) — a structural floor only; it does NOT
+         prove every terminal branch fires it with the correct enum, that
+         is tests/l3-switch-execution.yml's own execution-test job.
+    """
+    errors: list[str] = []
+    emit_file = _ROLE_TASKS_DIR / _SWITCH_OUTCOME_EMIT_FILE
+    if not emit_file.is_file():
+        return [
+            f"{emit_file.relative_to(_REPO_ROOT)}: umbrella #323's dedicated "
+            "switch-outcome marker-emission file is missing."
+        ]
+
+    try:
+        emit_tasks = yaml.safe_load(emit_file.read_text())
+    except yaml.YAMLError as exc:
+        return [f"{emit_file.relative_to(_REPO_ROOT)}: YAML parse error: {exc}"]
+
+    if not isinstance(emit_tasks, list) or len(emit_tasks) != 1:
+        errors.append(
+            f"{emit_file.relative_to(_REPO_ROOT)}: expected exactly ONE task "
+            "in this file (the single named marker-emission point, mirroring "
+            f"_emit_outcome.yml) — got "
+            f"{len(emit_tasks) if isinstance(emit_tasks, list) else type(emit_tasks).__name__}."
+        )
+    else:
+        only = emit_tasks[0]
+        if not isinstance(only, dict) or only.get("name") != _SWITCH_OUTCOME_MARKER_NAME:
+            errors.append(
+                f"{emit_file.relative_to(_REPO_ROOT)}: the single task's own "
+                f"`name:` must be literally '{_SWITCH_OUTCOME_MARKER_NAME}' — "
+                "the console filters AWX job events by this exact task name, "
+                "it does not scrape stdout."
+            )
+        elif "ansible.builtin.debug" not in only and "debug" not in only:
+            errors.append(
+                f"{emit_file.relative_to(_REPO_ROOT)}: the marker task must "
+                "be an ansible.builtin.debug task (event_data.res.msg is what "
+                "the console parses)."
+            )
+
+    # Uniqueness across every OTHER role task file + the switch playbook
+    # itself, and (piggybacking the same walk) count how many times the
+    # switch playbook actually calls this file.
+    other_paths = [p for p in sorted(_ROLE_TASKS_DIR.glob("*.yml")) if p.name != _SWITCH_OUTCOME_EMIT_FILE]
+    switch_playbook_path = _PLAYBOOKS_DIR / _SWITCH_PLAYBOOK
+    other_paths.append(switch_playbook_path)
+
+    dupes: list[str] = []
+    switch_playbook_calls = 0
+    for path in other_paths:
+        if not path.is_file():
+            continue
+        try:
+            doc = yaml.safe_load(path.read_text())
+        except yaml.YAMLError:
+            continue  # a parse error here is already reported by the umbrella #272/#273 scan above
+        # Role task files are a bare list of tasks at the YAML top level;
+        # the switch playbook is a single-play list — normalize both to
+        # "the task list to walk" the same way _load_single_play's own
+        # caller (_check_playbook) already relies on for plays.
+        if isinstance(doc, list) and doc and isinstance(doc[0], dict) and "tasks" in doc[0]:
+            task_list = doc[0].get("tasks", [])
+        else:
+            task_list = doc
+        for t in _iter_tasks(task_list):
+            if t.get("name") == _SWITCH_OUTCOME_MARKER_NAME:
+                dupes.append(str(path.relative_to(_REPO_ROOT)))
+            if path == switch_playbook_path:
+                spec = _include_role_spec(t)
+                if spec is not None and spec.get("tasks_from") == "_emit_switch_outcome":
+                    switch_playbook_calls += 1
+
+    if dupes:
+        errors.append(
+            f"a task literally named '{_SWITCH_OUTCOME_MARKER_NAME}' was "
+            f"found OUTSIDE {emit_file.relative_to(_REPO_ROOT)} too: {dupes} — "
+            "this must stay the ONE, single named marker-emission point."
+        )
+
+    if switch_playbook_calls == 0:
+        errors.append(
+            f"{switch_playbook_path.relative_to(_REPO_ROOT)}: never calls "
+            f"`include_role: ... tasks_from: {_SWITCH_OUTCOME_EMIT_FILE[:-4]}` "
+            "— the structured outcome event is wired nowhere."
+        )
+
+    return errors
+
+
 def _check_playbook(filename: str, flow: str) -> list[str]:
     """flow is one of 'launch', 'teardown', 'rollback'."""
     path = _PLAYBOOKS_DIR / filename
@@ -522,6 +671,7 @@ def main() -> int:
     production_scan = _iter_production_yaml_string_leaves()
     all_errors.extend(_check_none_sentinel_antipattern(production_scan))
     all_errors.extend(_check_type_debug_antipattern(production_scan))
+    all_errors.extend(_check_switch_outcome_marker())
 
     if all_errors:
         print(
@@ -547,6 +697,10 @@ def main() -> int:
         "[not] none` gate) either. umbrella #273: none contain the banned "
         "`type_debug` vs. quoted-type-name comparison either (same "
         "portability class — see _check_type_debug_antipattern's "
+        "docstring). umbrella #323: the switch playbook's own "
+        f"'{_SWITCH_OUTCOME_MARKER_NAME}' structured-outcome marker exists, "
+        "is uniquely named, and is actually wired into "
+        f"{_SWITCH_PLAYBOOK} (see _check_switch_outcome_marker's own "
         "docstring)."
     )
     return 0
