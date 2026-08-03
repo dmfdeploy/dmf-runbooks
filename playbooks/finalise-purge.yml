@@ -77,6 +77,29 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  vars:
+    # PR #37 fix round FIX-A2b.3 (operator review 2026-08-03): this play
+    # includes netbox_catalog_common directly (a role with no defaults of
+    # its own for this) rather than a role like roles/mxl that carries the
+    # netbox_api_token mapping in ITS OWN defaults/main.yml:14-17 — and
+    # l3_run_guard's OWN identical-looking default (defaults/main.yml:102)
+    # is private to that role's own include_role scope, so it never reaches
+    # this play's LATER, separate netbox_catalog_common include either. A
+    # real AWX launch (which supplies only the frozen JT contract's
+    # vault_netbox_catalog_token, never netbox_api_token directly) reached
+    # netbox_catalog_common's first NetBox URI with the var entirely
+    # undefined — masked in every nested test scenario by an explicit
+    # -e netbox_api_token override (global, always wins regardless of any
+    # mapping). Byte-same mapping semantics + comment posture as
+    # roles/mxl/defaults/main.yml:14-17 (ADR-0032: the scoped catalog-
+    # writer token, NO fallback to vault_netbox_api_token — the admin
+    # token — so an absent scoped token stays blank and
+    # _assert_netbox_token.yml's structural check refuses it, never a
+    # silent credential upgrade). Declared at PLAY scope (not a role
+    # default) specifically because play vars outrank role defaults AND
+    # are visible to every included task in this play, not just one
+    # role's own — real extra_vars still outrank both.
+    netbox_api_token: "{{ vault_netbox_catalog_token | default('') }}"
   tasks:
     # The ONE task that deliberately sits OUTSIDE the outer block below
     # (mirrors switch-mxl-fabrics-demo.yml's own umbrella #323 fix-round
