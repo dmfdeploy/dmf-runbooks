@@ -43,8 +43,17 @@ jobs:
     # #272/#273/#275 defect class (behavior differs between dev-harness
     # ansible-core 2.20 and the EE's ansible-core 2.15/py3.9) shipped through
     # 130 green tests (umbrella #274). This matrix runs the suites on both.
+    #
+    # umbrella #347 fix round FIX-A2b.1: bumped 30 -> 45. The new
+    # tests/l3-finalise-purge-execution.yml suite (12 scenarios, ~19 nested
+    # ansible-playbook subprocess invocations across its own stub-server
+    # lifecycles) pushed this job right to the old 30-minute ceiling — the
+    # ee-pinned leg passed at 29m15s, the latest leg was CANCELLED at
+    # 30m17s mid-way through that suite's own run, a CI time-budget problem,
+    # not a functional regression (the identical suite passes clean, real
+    # local runs, well under 5 minutes on this repo's own dev hardware).
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
