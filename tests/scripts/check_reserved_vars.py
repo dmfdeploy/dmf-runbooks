@@ -28,11 +28,20 @@ a capacity/install divergence, the exact class of bug this whole mechanism
 exists to close. Every launch-*.yml/teardown-*.yml/rollback-run.yml
 playbook's own register:/set_fact: targets are now in scope too.
 
+umbrella #347 fix round FIX-A2b.1 (P1-1, codex GATE-A2b.1): the identical
+scoping gap D2 closed for playbooks/ reopened for
+roles/netbox_catalog_common/tasks/*.yml — the finalise-purge launcher's own
+shared tasks live there, and codex's executed forge probe
+(`-e '{"_purge_final_remaining_member_ids": [], "_purge_final_tag_present":
+false}'`) made the launcher emit DMF_L3_PURGE_OUTCOME: success against a
+genuinely dirty NetBox precisely because this script never saw those
+set_fact targets. That directory is now in scope too.
+
 Usage:  python3 tests/scripts/check_reserved_vars.py
-Exit 0 = every register:/set_fact: target in roles/l3_run_guard/tasks/*.yml
-AND playbooks/*.yml is present in _assert_reserved_vars.yml's blocklist (or
-is one of the explicitly-documented, deliberately-excluded caller-input
-names).
+Exit 0 = every register:/set_fact: target in roles/l3_run_guard/tasks/*.yml,
+playbooks/*.yml, AND roles/netbox_catalog_common/tasks/*.yml is present in
+_assert_reserved_vars.yml's blocklist (or is one of the explicitly-
+documented, deliberately-excluded caller-input names).
 Exit 1 = something is missing — printed, with the exact names.
 """
 from __future__ import annotations
@@ -45,6 +54,20 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _TASKS_DIR = _REPO_ROOT / "roles" / "l3_run_guard" / "tasks"
 _PLAYBOOKS_DIR = _REPO_ROOT / "playbooks"
 _RESERVED_FILE = _TASKS_DIR / "_assert_reserved_vars.yml"
+
+# umbrella #347 fix round FIX-A2b.1 (P1-1, codex GATE-A2b.1) — this script
+# used to scan ONLY roles/l3_run_guard/tasks/*.yml + playbooks/*.yml, so
+# every register:/set_fact: target the finalise-purge launcher's own shared
+# tasks produce in roles/netbox_catalog_common/tasks/*.yml (the final
+# source-read verdict, the dirty count, per-record delete results, the tag
+# id/result) was invisible to this scanner and therefore never reserved —
+# codex's executed forge probe (`-e '{"_purge_final_remaining_member_ids":
+# [], "_purge_final_tag_present": false}'`) exploited exactly that gap to
+# make the launcher emit DMF_L3_PURGE_OUTCOME: success against a genuinely
+# dirty NetBox. Scanning this directory too closes that hole the same way
+# umbrella #201 WP3's own fix-round D2 closed the identical gap for
+# playbooks/*.yml (see this file's own module docstring above).
+_PURGE_TASKS_DIR = _REPO_ROOT / "roles" / "netbox_catalog_common" / "tasks"
 
 _REGISTER_RE = re.compile(r"^\s*register:\s*([A-Za-z_][A-Za-z0-9_]*)\s*$")
 _SETFACT_HEADER_RE = re.compile(r"ansible\.builtin\.set_fact:\s*$")
@@ -77,7 +100,11 @@ _LEGITIMATE_CALLER_INPUTS = {
 def _find_register_and_setfact_names() -> tuple[set[str], set[str]]:
     register_names: set[str] = set()
     setfact_names: set[str] = set()
-    paths = sorted(_TASKS_DIR.glob("*.yml")) + sorted(_PLAYBOOKS_DIR.glob("*.yml"))
+    paths = (
+        sorted(_TASKS_DIR.glob("*.yml"))
+        + sorted(_PLAYBOOKS_DIR.glob("*.yml"))
+        + sorted(_PURGE_TASKS_DIR.glob("*.yml"))
+    )
     for path in paths:
         lines = path.read_text().splitlines(keepends=True)
         for i, line in enumerate(lines):
@@ -120,7 +147,8 @@ def main() -> int:
     if missing:
         print(
             f"FAIL: {len(missing)} register:/set_fact: name(s) found in "
-            f"roles/l3_run_guard/tasks/*.yml or playbooks/*.yml are NOT in "
+            f"roles/l3_run_guard/tasks/*.yml, playbooks/*.yml, or "
+            f"roles/netbox_catalog_common/tasks/*.yml are NOT in "
             f"_assert_reserved_vars.yml's blocklist:",
             file=sys.stderr,
         )

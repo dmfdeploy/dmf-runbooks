@@ -207,6 +207,16 @@ _PURGE_GUARD_NAMES = (
     "l3_purge_outcome_token",
     "l3_purge_outcome_kv",
     "_purge_stage",
+    # umbrella #347 fix round FIX-A2b.1 (P1-1, codex GATE-A2b.1) — the six
+    # success-decision facts belt-and-braced on top of the reserved-var
+    # blocklist (see purge_outcome_guard.yml's own header for the per-name
+    # rationale and the forge probe this closes).
+    "_purge_final_remaining_member_ids",
+    "_purge_final_tag_present",
+    "_purge_dirty_count",
+    "_purge_member_results",
+    "_purge_tag_result",
+    "_purge_tag_id",
 )
 
 # umbrella #272 (regression guard, added same round as the fix) — scan
@@ -971,6 +981,89 @@ def _check_purge_outcome_guard_position() -> list[str]:
     return errors
 
 
+def _check_purge_success_after_lock_release() -> list[str]:
+    """umbrella #347 fix round FIX-A2b.1 (P3-1, codex GATE-A2b.1 NOTED DEBT)
+    — a POSITION check, not just a presence check: within finalise-purge.yml's
+    own outer block's `block:` list, the success-path
+    `include_role: ... tasks_from: _emit_purge_outcome` (token: success) must
+    come AFTER `include_role: ... tasks_from: lock_release` — never before
+    it. playbooks/finalise-purge.yml's own header explains why: "the LAST
+    task in this block, deliberately AFTER lock_release above: if anything
+    from here down could still fail the run, this stays unreached and the
+    failure is reported honestly through rescue: instead — never a success
+    marker followed by a FAILED AWX job." _check_purge_outcome_marker()
+    above only proves the generic emitter is wired in AT LEAST ONCE
+    somewhere in the play — it does not check WHERE. Codex's own executed
+    probe (GATE-A2b.1 P3-1) synthetically moved the success emitter ahead of
+    lock_release and re-ran tests/l3-playbook-structure.yml: it still
+    passed, because nothing encoded this ordering. A refactor that silently
+    reorders these two includes would ship a success marker even when the
+    trailing lock-release itself fails — this function is what makes that
+    regression a structural failure here instead of a live incident.
+    """
+    errors: list[str] = []
+    path = _PLAYBOOKS_DIR / _PURGE_PLAYBOOK
+    play, load_errors = _load_single_play(path)
+    if play is None:
+        return load_errors
+
+    tasks = play.get("tasks")
+    if not isinstance(tasks, list) or len(tasks) < 2:
+        return [f"{_PURGE_PLAYBOOK}: play has no outer block at index 1"]
+
+    outer = tasks[1]
+    inner_block = outer.get("block") if isinstance(outer, dict) else None
+    if not isinstance(inner_block, list):
+        return [f"{_PURGE_PLAYBOOK}: outer task's own `block:` is not a list"]
+
+    lock_release_index = None
+    success_emit_index = None
+    for i, t in enumerate(inner_block):
+        if not isinstance(t, dict):
+            continue
+        spec = _include_role_spec(t)
+        if spec is None:
+            continue
+        if (
+            spec.get("name") == _GATE_ROLE
+            and spec.get("tasks_from") == "lock_release"
+            and lock_release_index is None
+        ):
+            lock_release_index = i
+        if spec.get("name") == _GATE_ROLE and spec.get("tasks_from") == "_emit_purge_outcome":
+            success_emit_index = i
+
+    if lock_release_index is None:
+        errors.append(
+            f"{_PURGE_PLAYBOOK}: outer block's own `block:` never calls "
+            f"`include_role: name: {_GATE_ROLE} tasks_from: lock_release` "
+            "(the success-path lock release)."
+        )
+    if success_emit_index is None:
+        errors.append(
+            f"{_PURGE_PLAYBOOK}: outer block's own `block:` never calls "
+            f"`include_role: name: {_GATE_ROLE} tasks_from: _emit_purge_outcome` "
+            "(the success-path outcome emit)."
+        )
+    if (
+        lock_release_index is not None
+        and success_emit_index is not None
+        and success_emit_index <= lock_release_index
+    ):
+        errors.append(
+            f"{_PURGE_PLAYBOOK}: the success-path `_emit_purge_outcome` "
+            f"include (block index {success_emit_index}) is not AFTER the "
+            f"`lock_release` include (block index {lock_release_index}) — "
+            "umbrella #347 fix round P3-1. A success marker must never be "
+            "emitted before the facility lock is actually released; if "
+            "anything after lock_release could still fail, the success "
+            "marker must stay unreached and the failure reported honestly "
+            "through rescue: instead."
+        )
+
+    return errors
+
+
 def _check_playbook(filename: str, flow: str, *, outer_index: int = 0) -> list[str]:
     """flow is one of 'launch', 'teardown', 'rollback', 'purge'.
 
@@ -1167,6 +1260,7 @@ def main() -> int:
     all_errors.extend(_check_switch_outcome_guard_position())
     all_errors.extend(_check_purge_outcome_marker())
     all_errors.extend(_check_purge_outcome_guard_position())
+    all_errors.extend(_check_purge_success_after_lock_release())
 
     if all_errors:
         print(
@@ -1212,7 +1306,11 @@ def main() -> int:
         f"{len(_PURGE_GUARD_NAMES)} outcome-decision names caller-free, and "
         f"{_PURGE_GUARD_FILE}'s own include still tasks[0]) plus a "
         "teardown-shaped rescue:=gate_rescue/always:=release check whose own "
-        "outer block sits at tasks[1] instead of tasks[0]."
+        "outer block sits at tasks[1] instead of tasks[0]. umbrella #347 fix "
+        "round FIX-A2b.1 (P3-1): the success-path _emit_purge_outcome include "
+        "is still positioned AFTER the lock_release include within the outer "
+        "block (a position check, not just presence — see "
+        "_check_purge_success_after_lock_release's own docstring)."
     )
     return 0
 

@@ -347,6 +347,63 @@
           # refused marker instead of one rendered through the shadowed
           # values. See that file's header for the full argument.
           - _switch_stage is not defined
+          # umbrella #347 fix round FIX-A2b.1 (P1-1, codex GATE-A2b.1) —
+          # EVERY register:/set_fact: target roles/netbox_catalog_common/
+          # tasks/*.yml's own task files produce, now that
+          # tests/scripts/check_reserved_vars.py scans that directory too
+          # (see that script's own module docstring for the finding: codex's
+          # executed forge probe, `-e '{"_purge_final_remaining_member_ids":
+          # [], "_purge_final_tag_present": false}'`, made finalise-purge.yml
+          # emit DMF_L3_PURGE_OUTCOME: success against a genuinely dirty
+          # NetBox, because these names were never reserved anywhere). This
+          # reservation is the PRIMARY defense — it runs here, inside
+          # identity.yml, inside lock_only, which is the FIRST task inside
+          # finalise-purge.yml's own outer block: a caller-supplied extra_var
+          # of any of these names refuses immediately, before ANY purge logic
+          # (or ANY other launcher's own netbox_catalog_common include) ever
+          # runs. purge_outcome_guard.yml's own extended assert (see its own
+          # header) is belt-and-braces on top of this, for the same
+          # emitter-shadow reason the switch/purge outcome token names above
+          # need their own pre-block guard in addition to being reserved
+          # here.
+          #
+          # This reservation rides lock_only's shared guard chain, so it ALSO
+          # hardens launch/teardown/switch (and every OTHER netbox_catalog_common
+          # caller) against the SAME names — that is intended defense-in-
+          # depth, not scope creep: _merged_tags (merge_owned_tags.yml,
+          # shared by every catalog role's finalise/rollback stage) and
+          # _workload_tags/netbox_catalog_common_workload_tag_lookup/_create/
+          # _recheck (ensure_workload_tag.yml, the #239 workload-tag stamp
+          # every launch-*.yml provision stage runs) were EQUALLY forgeable
+          # before this fix round — the scanner just never looked at the
+          # directory they live in.
+          - _merged_tags is not defined
+          - _workload_tags is not defined
+          - netbox_catalog_common_workload_tag_lookup is not defined
+          - netbox_catalog_common_workload_tag_create is not defined
+          - netbox_catalog_common_workload_tag_recheck is not defined
+          - _purge_page_results is not defined
+          - _purge_page_next_url is not defined
+          - _purge_page_truncated is not defined
+          - _purge_page_fetch is not defined
+          - _purge_found_members is not defined
+          - _purge_violations is not defined
+          - _purge_found_ids is not defined
+          - _purge_missing_ids is not defined
+          - _purge_missing_check is not defined
+          - _purge_stale_live_ids is not defined
+          - _purge_member_delete is not defined
+          - _purge_member_readback is not defined
+          - _purge_member_results is not defined
+          - _purge_dirty_count is not defined
+          - _purge_tag_lookup is not defined
+          - _purge_tag_id is not defined
+          - _purge_tag_delete is not defined
+          - _purge_tag_readback is not defined
+          - _purge_tag_result is not defined
+          - _purge_final_remaining_member_ids is not defined
+          - _purge_final_tag_lookup is not defined
+          - _purge_final_tag_present is not defined
         fail_msg: >-
           L3 launcher refused: preflight-error (reserved-var). One or more
           reserved internal variables were supplied as extra_vars — these

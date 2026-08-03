@@ -7,6 +7,28 @@
 # facility lock, after the L3 gate's own lock_checkpoint (frozen behavior
 # #1 — every NetBox write here happens with a checkpointed lock).
 #
+# umbrella #347 fix round FIX-A2b.1 (codex GATE-A2b.1 P1-2, P2-1) —
+# restructured on two fronts from the original WO-A2b-1 shape:
+#
+#   P1-2: the DELETE loop below only EVER touches ids that appear in the
+#   FRESH workload membership itself (_purge_found_ids — already validated
+#   against the expected set + lifecycle). An expected id NOT in that fresh
+#   membership is NEVER deleted directly anymore — "not currently grouped
+#   under this workload" is not the same fact as "the record is gone" (a
+#   live service can be retagged to a DIFFERENT workload between the
+#   console's preflight and this run). Each such id gets its own GET-by-id
+#   via _purge_check_missing_member.yml: a clean 404 is genuinely absent
+#   (tolerated, frozen behavior #4's own already-gone convergence); a live
+#   200 (or a failed read) is a fail-closed violation — refuse the WHOLE
+#   run, delete nothing.
+#
+#   P2-1: the fresh membership read is now PAGINATED (paginate_services.yml,
+#   bounded at 100 pages) instead of trusting the first ?limit=500 page as
+#   the whole world — a global dmf-catalog query, not scoped to this
+#   workload, so an unexpected/bad-lifecycle member for THIS workload could
+#   otherwise sit past the 500th dmf-catalog record anywhere in the
+#   facility and never be seen by the fail-closed validation below.
+#
 # Inputs (facts the caller sets before including):
 #   workload_slug              — already validated by the playbook's own
 #                                asserts (the #239 slug rule) before this is
@@ -19,49 +41,68 @@
 #   _purge_found_members  — this stage's OWN fresh read (workload-tagged
 #                           members, l3_workload_members's own output) —
 #                           exposed for the outcome event's kv.
-#   _purge_member_results — one {id, result} dict per purge_expected_service_ids
-#                           entry, result in {"deleted", "already-gone",
-#                           "dirty"} — see _purge_delete_one_member.yml.
+#   _purge_member_results — one {id, result} dict per id this stage ever
+#                           formed an opinion about — the FOUND+validated
+#                           ids (via the delete+readback loop) UNION the
+#                           missing ids confirmed genuinely absent (via
+#                           their own GET-by-id) — result in {"deleted",
+#                           "already-gone", "dirty"}.
 #   _purge_dirty_count    — count of "dirty" entries in _purge_member_results.
 #                           The caller (finalise-purge.yml) gates the Tag
 #                           delete on this being exactly 0 (frozen behavior
 #                           #6 — Tag object LAST, only after every member is
 #                           readback-confirmed absent).
 #
-# FAIL CLOSED (frozen behavior #4): the fresh-read violation check below
-# runs, and its assert fires, BEFORE the delete loop — zero DELETE calls are
-# ever issued when a found member is outside the expected set or carries a
-# lifecycle tag other than exactly `lifecycle:bootstrapped` (0 or >1
-# lifecycle:* tags included). An expected id NOT present in this fresh read
-# is tolerated (already-gone convergence, frozen behavior #4's own last
-# sentence) — the delete loop below still readback-confirms it below, same
-# as every other expected id, so a genuine reappearance-race is not silently
-# trusted either.
+# FAIL CLOSED (frozen behavior #4 + P1-2): the fresh-read violation check
+# below runs, and its assert fires, BEFORE the delete loop — zero DELETE
+# calls are ever issued when a found member is outside the expected set,
+# carries a lifecycle tag other than exactly `lifecycle:bootstrapped`, OR an
+# expected-but-not-found id turns out to still be a LIVE record.
 
-- name: "L3 purge: fresh membership read (workload:{{ workload_slug }} tag members, dmf-catalog-tagged services — mirrors dmf-cms's own list_workloads_grouped query exactly, see l3_workload_members's own docstring)"
-  ansible.builtin.uri:
-    url: "{{ netbox_api_url }}/api/ipam/services/?tag=dmf-catalog&limit=500"
-    method: GET
-    headers:
-      Authorization: "Token {{ netbox_api_token }}"
-    validate_certs: false
-    return_content: true
-  register: _purge_services_lookup
-  no_log: true
+- name: "L3 purge: fresh membership read — paginated (bounded, hard cap 100 pages, P2-1 — mirrors dmf-cms's own list_workloads_grouped query, see l3_workload_members's own docstring)"
+  ansible.builtin.include_tasks: paginate_services.yml
+  vars:
+    _purge_page_start_url: "{{ netbox_api_url }}/api/ipam/services/?tag=dmf-catalog&limit=500"
+
+- name: "L3 purge: refuse if the fresh membership read was truncated (P2-1 — never proceed on a partial view)"
+  ansible.builtin.assert:
+    that:
+      - not _purge_page_truncated
+    fail_msg: >-
+      L3 purge refused for workload_slug={{ workload_slug }}: the fresh
+      dmf-catalog membership read hit the 100-page pagination cap while
+      NetBox still had a further page (`next` non-empty) — refusing to
+      proceed on a truncated view rather than risk missing an unexpected or
+      bad-lifecycle member on a later page.
 
 - name: "L3 purge: filter to this workload's own members (pure — l3_workload_members)"
   ansible.builtin.set_fact:
-    _purge_found_members: "{{ _purge_services_lookup.json.results | default([]) | l3_workload_members(workload_slug) }}"
+    _purge_found_members: "{{ _purge_page_results | l3_workload_members(workload_slug) }}"
 
 - name: "L3 purge: compute fail-closed violations against the fresh read (pure — l3_purge_fail_closed_violations)"
   ansible.builtin.set_fact:
     _purge_violations: "{{ _purge_found_members | l3_purge_fail_closed_violations(purge_expected_service_ids) }}"
 
-- name: "L3 purge: FAIL CLOSED — refuse before any delete if the fresh read disagrees with the expected set or an unexpected lifecycle tag is present (frozen behavior #4)"
+- name: "L3 purge: compute the found-id set + the expected ids NOT present in this fresh read (P1-2 — these are NOT automatically 'already-gone')"
+  ansible.builtin.set_fact:
+    _purge_found_ids: "{{ _purge_found_members | map(attribute='id') | list }}"
+
+- name: "L3 purge: derive the missing-id set (pure — Ansible's own difference filter)"
+  ansible.builtin.set_fact:
+    _purge_missing_ids: "{{ purge_expected_service_ids | difference(_purge_found_ids) }}"
+
+- name: "L3 purge: an expected id NOT in the fresh workload grouping is NOT automatically 'already gone' (P1-2) — GET-by-id each one directly; a LIVE record means the preflight is stale (Console Constitution Art. 1), regardless of what its tags now say"
+  ansible.builtin.include_tasks: _purge_check_missing_member.yml
+  loop: "{{ _purge_missing_ids }}"
+  loop_control:
+    loop_var: _purge_member_id
+
+- name: "L3 purge: FAIL CLOSED — refuse before any delete if the fresh read disagrees with the expected set, an unexpected lifecycle tag is present, OR an expected-but-not-found id is actually still a LIVE record (frozen behavior #4 + P1-2)"
   ansible.builtin.assert:
     that:
       - _purge_violations.unexpected | length == 0
       - _purge_violations.bad_lifecycle | length == 0
+      - (_purge_stale_live_ids | default([])) | length == 0
     fail_msg: >-
       L3 purge refused for workload_slug={{ workload_slug }}: the fresh
       NetBox read disagrees with the console's own preflight
@@ -70,13 +111,19 @@
       workload:{{ workload_slug }}, but NOT in the expected set — stale
       preflight, Console Constitution Art. 1) bad_lifecycle_member_ids=
       {{ _purge_violations.bad_lifecycle }} (0 or >1 lifecycle:* tags, or a
-      lifecycle:* tag other than exactly lifecycle:bootstrapped). Deleting
-      NOTHING — a re-run after the console's preflight is refreshed will
-      converge.
+      lifecycle:* tag other than exactly lifecycle:bootstrapped)
+      stale_live_ids={{ _purge_stale_live_ids | default([]) }} (expected but
+      NOT in this workload's own fresh grouping, yet a direct GET-by-id
+      shows the record still exists — "not currently grouped under this
+      workload" is never trusted as "gone"; the record may have been
+      retagged to a DIFFERENT workload since the console's own preflight
+      read, and deleting it would destroy that OTHER workload's own SoT
+      record). Deleting NOTHING — a re-run after the console's preflight is
+      refreshed will converge.
 
-- name: "L3 purge: delete + readback-confirm each expected member (idempotent per id — already-gone tolerated, dirty tracked but never crashes the loop)"
+- name: "L3 purge: delete + readback-confirm each FOUND, validated member (idempotent per id — the delete set is scoped to the fresh membership itself, never the raw expected list, P1-2; already-gone tolerated, dirty tracked but never crashes the loop)"
   ansible.builtin.include_tasks: _purge_delete_one_member.yml
-  loop: "{{ purge_expected_service_ids }}"
+  loop: "{{ _purge_found_ids }}"
   loop_control:
     loop_var: _purge_member_id
 

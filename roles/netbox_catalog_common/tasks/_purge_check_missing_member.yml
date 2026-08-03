@@ -1,0 +1,56 @@
+---
+# umbrella #347 fix round FIX-A2b.1 (P1-2, codex GATE-A2b.1) — one bounded
+# GET-by-id check for an expected id that the fresh membership read did NOT
+# find, invoked via loop+include_tasks from purge_workload_records.yml.
+# `_purge_member_id` is one entry of _purge_missing_ids (loop_control.loop_var).
+#
+# THE BUG THIS CLOSES: "not currently grouped under workload:<slug>" is NOT
+# the same fact as "the record is gone". codex's executed probe retagged a
+# still-live, still-seeded service from workload:demo-d to
+# workload:other-workload while leaving its id in purge_expected_service_ids
+# — the OLD code treated "not found in this workload's own fresh read" as
+# "already-gone convergence" and DELETEd it directly, without ever reading
+# the record itself. This file makes that distinction the ONLY authority:
+# a GET-by-id that comes back a clean 404 is genuinely absent (tolerated,
+# frozen behavior #4's own "already-gone convergence" — nothing to delete,
+# this file's own readback IS the proof); anything else — a live 200
+# (regardless of what its tags now say), or the read itself failing — means
+# the console's preflight is stale (Console Constitution Art. 1) and the
+# WHOLE run must refuse before deleting anything. Reuses
+# l3_netbox_delete_dirty's own "clean 404 only" authority (l3_budget.py,
+# roles/l3_run_guard/filter_plugins) for that exact classification —
+# identical discipline to _purge_delete_one_member.yml's own readback,
+# applied here to a GET instead of a DELETE-then-GET pair.
+#
+# NEVER calls DELETE — issuing one here would be exactly the P1-2 bug this
+# file exists to close (deleting an id this run never actually observed as
+# a member of the requested workload).
+
+- name: "L3 purge: GET-by-id for expected-but-not-found member {{ _purge_member_id }}/ (P1-2 — 'not in this workload's fresh grouping' is never trusted as 'absent')"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/{{ _purge_member_id }}/"
+    method: GET
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+    validate_certs: false
+    status_code: [200, 404]
+  register: _purge_missing_check
+  ignore_errors: true
+  no_log: true
+
+- name: "L3 purge: classify this missing id — a CLEAN 404 is tolerated (already-gone, recorded directly, no DELETE call needed); a live 200 OR a failed read is a fail-closed violation (P1-2, readback-authoritative via l3_netbox_delete_dirty)"
+  ansible.builtin.set_fact:
+    _purge_member_results: >-
+      {{
+        (_purge_member_results | default([]))
+        + ([{'id': _purge_member_id, 'result': 'already-gone'}]
+           if not (_purge_missing_check.status | default(0) | l3_netbox_delete_dirty(_purge_missing_check.failed | default(true)))
+           else [])
+      }}
+    _purge_stale_live_ids: >-
+      {{
+        (_purge_stale_live_ids | default([]))
+        + ([_purge_member_id]
+           if (_purge_missing_check.status | default(0) | l3_netbox_delete_dirty(_purge_missing_check.failed | default(true)))
+           else [])
+      }}

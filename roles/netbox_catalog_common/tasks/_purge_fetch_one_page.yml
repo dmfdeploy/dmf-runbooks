@@ -1,0 +1,54 @@
+---
+# umbrella #347 fix round FIX-A2b.1 (P2-1) — one bounded page fetch,
+# invoked via a NATIVE loop+include_tasks from paginate_services.yml (never
+# recursion — see that file's own header for why: a self-referencing
+# include_tasks passing its own loop state forward hits Ansible's own
+# "Recursive loop detected in template" wall, reproduced live in this exact
+# repo for the facility lock's own bounded-retry mechanism,
+# roles/l3_run_guard/tasks/_lock_acquire_one_attempt.yml).
+#
+# Re-guards INSIDE its own block for the identical reason
+# _lock_acquire_one_attempt.yml's own header documents: a looped
+# include_tasks' `when:` is not reliably able to see a PRIOR iteration's own
+# set_fact by the time the NEXT iteration's `when:` is evaluated — the
+# caller's own loop `when:` is kept too (belt-and-suspenders, cheap) but
+# this file does not trust it alone.
+#
+# `| default('', true)` — NEVER the one-argument `| default('')` — on every
+# read of `.json.next`: NetBox (and this harness's own stub) returns a JSON
+# `next` key that is EXPLICITLY `null` on the last page, not an ABSENT key.
+# Jinja's `default()` filter only substitutes for genuinely UNDEFINED
+# values unless its second (boolean) argument is true, in which case it
+# ALSO substitutes for any falsy value, including `None`. The one-argument
+# form found this live: `_purge_page_next_url` ended up the Python value
+# `None` (not `undefined`), so `(_purge_page_next_url | default('')) !=
+# ''` evaluated `None != ''` — True — and the loop tried to fetch a SECOND
+# page with `url: ""`, failing hard on a happy-path single-page run. This
+# is the SAME class of bug umbrella #272's own None-sentinel ban guards
+# against elsewhere in this role, one filter argument away.
+
+- name: "L3 purge: paginate — one page (guarded again, INSIDE the include — see this file's own header)"
+  when: (_purge_page_next_url | default('', true)) != ''
+  block:
+    - name: "L3 purge: paginate — fetch page {{ _purge_page_attempt }}/100"
+      ansible.builtin.uri:
+        url: "{{ _purge_page_next_url }}"
+        method: GET
+        headers:
+          Authorization: "Token {{ netbox_api_token }}"
+        validate_certs: false
+        return_content: true
+      register: _purge_page_fetch
+      no_log: true
+
+    - name: "L3 purge: paginate — accumulate this page + advance to the next (or stop, when NetBox reports no further page)"
+      ansible.builtin.set_fact:
+        _purge_page_results: "{{ _purge_page_results + (_purge_page_fetch.json.results | default([])) }}"
+        _purge_page_next_url: "{{ _purge_page_fetch.json.next | default('', true) }}"
+
+    - name: "L3 purge: paginate — mark truncated if the cap is reached while a next page still remains (the caller refuses on this, never proceeding on a partial view)"
+      ansible.builtin.set_fact:
+        _purge_page_truncated: true
+      when:
+        - _purge_page_attempt == 100
+        - (_purge_page_next_url | default('', true)) != ''

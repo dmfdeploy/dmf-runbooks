@@ -7,6 +7,13 @@
 # Constitution Art. 1: absence is established only by refreshed source
 # reads, "call-success never equals clean").
 #
+# umbrella #347 fix round FIX-A2b.1 (P2-1, codex GATE-A2b.1) — the services
+# re-fetch is now PAGINATED (paginate_services.yml, bounded at 100 pages)
+# instead of trusting a single ?limit=500 page — a global dmf-catalog query,
+# not scoped to this workload, so residue for THIS workload could otherwise
+# sit past the 500th dmf-catalog record anywhere in the facility and never
+# be seen by the success claim this file exists to make honest.
+#
 # Deliberately exposes plain booleans/lists here (not requiring the caller
 # to invoke this role's own l3_workload_members filter at PLAYBOOK level) —
 # every raw NetBox call and every custom-filter use for this launcher stays
@@ -21,22 +28,27 @@
 #   _purge_final_tag_present          — true iff the Tag object by name is
 #                                       still present.
 
-- name: "L3 purge: final source read — re-fetch dmf-catalog services"
-  ansible.builtin.uri:
-    url: "{{ netbox_api_url }}/api/ipam/services/?tag=dmf-catalog&limit=500"
-    method: GET
-    headers:
-      Authorization: "Token {{ netbox_api_token }}"
-    validate_certs: false
-    return_content: true
-  register: _purge_final_services_lookup
-  no_log: true
+- name: "L3 purge: final source read — re-fetch dmf-catalog services (paginated, bounded, hard cap 100 pages, P2-1)"
+  ansible.builtin.include_tasks: paginate_services.yml
+  vars:
+    _purge_page_start_url: "{{ netbox_api_url }}/api/ipam/services/?tag=dmf-catalog&limit=500"
+
+- name: "L3 purge: final source read — refuse if truncated (P2-1 — never claim success on a partial view)"
+  ansible.builtin.assert:
+    that:
+      - not _purge_page_truncated
+    fail_msg: >-
+      L3 purge FAILED final source read for workload_slug={{ workload_slug }}:
+      the re-fetch hit the 100-page pagination cap while NetBox still had a
+      further page (`next` non-empty) — refusing to claim success on a
+      truncated view. Nothing further was mutated after the last successful
+      step; a re-run converges (frozen behavior #9).
 
 - name: "L3 purge: final source read — remaining workload:{{ workload_slug }} members (pure — l3_workload_members)"
   ansible.builtin.set_fact:
     _purge_final_remaining_member_ids: >-
       {{
-        _purge_final_services_lookup.json.results | default([])
+        _purge_page_results
         | l3_workload_members(workload_slug)
         | map(attribute='id') | list
       }}

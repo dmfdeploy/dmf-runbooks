@@ -19,6 +19,8 @@
 # extra happened" assertions are read against. Scenario (8) proves the
 # convergence claim (frozen behavior #9) directly: a re-run after scenario
 # (6)'s own partial failure reaches success against the SAME stub state.
+# Scenarios (9)-(12) are the fix round's own permanent probe pins — see
+# the DISCRIMINATING-MUTATION TABLE's own fix-round addendum below.
 #
 # DISCRIMINATING-MUTATION TABLE (WO's own required disclosure — which
 # plausibly-mutated implementation each scenario catches):
@@ -59,6 +61,28 @@
 # mutant that always returns an empty "unexpected" list, and scenario (7)
 # against a `_purge_delete_one_member.yml` mutant that classifies purely
 # from the DELETE call's own status (never the readback GET).
+#
+# umbrella #347 fix round FIX-A2b.1 (codex GATE-A2b.1) — four PERMANENT
+# scenarios pinning each of codex's own executed probes forever, so none of
+# these regressions can ship silently again:
+#   scenario (9)  — P1-1: codex's exact forged-final-read-facts probe
+#     (`-e {"_purge_final_remaining_member_ids": [], "_purge_final_tag_present":
+#     false}`) against an otherwise-legitimate purge. Catches a mutant that
+#     drops/weakens the reserved-var coverage of roles/netbox_catalog_common/
+#     tasks/*.yml or purge_outcome_guard.yml's own extended assert.
+#   scenario (10) — P1-2: codex's exact retag probe (a live service, its id
+#     still in purge_expected_service_ids, retagged to a DIFFERENT workload).
+#     Catches a mutant that treats "not in this workload's fresh grouping"
+#     as "already-gone" again, instead of GET-by-id-then-refuse-on-200.
+#   scenario (11) — P2-1: pagination, both directions — (11a) a bad-lifecycle
+#     member on the LAST of 3 pages must still refuse (catches a mutant that
+#     only reads the first page); (11b) a clean multi-page purge succeeds
+#     AND the final read's own multi-page walk never mistakes unrelated
+#     dmf-catalog residue for this workload's own leftovers.
+#   scenario (12) — P2-2: codex's exact int-typed-actor probe
+#     (`{"purge_actor": 123}`). Catches a mutant that drops the `is string`
+#     checks (Jinja's `trim` filter silently coerces non-strings, so the
+#     bare `(x | trim) != ''` check alone never discriminates this).
 #
 # Run:  ansible-playbook tests/l3-finalise-purge-execution.yml
 # (LONG — fresh stub servers per scenario, real nested ansible-playbook
@@ -1401,13 +1425,641 @@
           changed_when: false
           failed_when: false
 
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 9 (umbrella #347 fix round FIX-A2b.1, P1-1) — PERMANENT PIN
+    # of codex's own executed GATE-A2b.1 forge probe: an otherwise-legitimate
+    # sticky-dirty-member run (scenario 7's own fixture shape) with
+    # `-e {"_purge_final_remaining_member_ids": [], "_purge_final_tag_present":
+    # false}` — the exact forged pair that used to make the launcher emit
+    # DMF_L3_PURGE_OUTCOME: success against a genuinely dirty NetBox. Both
+    # names are now reserved (roles/l3_run_guard/tasks/_assert_reserved_vars.yml)
+    # and additionally guarded by purge_outcome_guard.yml — this must now
+    # refuse BEFORE the facility lock is even acquired (the reserved-var
+    # check is identity.yml's own first substantive step, inside lock_only,
+    # ahead of lock.yml's own acquire), delete nothing, and emit
+    # DMF_L3_PURGE_OUTCOME: refused.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(9) PIN codex's P1-1 forge probe — forged final-read facts must refuse pre-lock, never fabricate success"
+      vars:
+        _fpe9_run_id: "99999999999999999999999999999999"
+      block:
+        - name: "(9) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-fpe-9.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(9) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-fpe-9.json]
+          register: _fpe9_start
+          changed_when: false
+
+        - name: "(9) parse stub URLs"
+          ansible.builtin.set_fact:
+            _fpe9_k8s_url: "{{ _fpe9_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _fpe9_netbox_url: "{{ _fpe9_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(9) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-fpe-9-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _fpe9_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(9) seed two clean workload members + the Tag (an otherwise perfectly legitimate purge request)"
+          ansible.builtin.uri:
+            url: "{{ _fpe9_netbox_url }}/api/ipam/services/"
+            method: POST
+            body_format: json
+            body:
+              name: "mxl-demo-g-{{ item }}"
+              tags:
+                - {name: "dmf-catalog"}
+                - {name: "app:mxl"}
+                - {name: "lifecycle:bootstrapped"}
+                - {name: "workload:demo-g"}
+              custom_fields: {}
+            status_code: [201]
+          loop: [1, 2]
+          register: _fpe9_seed_services
+
+        - name: "(9) seed the workload Tag object"
+          ansible.builtin.uri:
+            url: "{{ _fpe9_netbox_url }}/api/extras/tags/"
+            method: POST
+            body_format: json
+            body:
+              name: "workload:demo-g"
+              slug: "workload-demo-g"
+            status_code: [201]
+
+        - name: "(9) run the REAL finalise-purge playbook WITH codex's own forged final-read facts as extra extra_vars"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/finalise-purge.yml"
+              - -e
+              - "l3_kube_api_url={{ _fpe9_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _fpe9_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - workload_slug=demo-g
+              - -e
+              - "{{ {'purge_expected_service_ids': [_fpe9_seed_services.results[0].json.id, _fpe9_seed_services.results[1].json.id]} | to_json }}"
+              - -e
+              - purge_actor=test-actor
+              - -e
+              - purge_role=test-role
+              - -e
+              - "purge_reason=P1-1 forge pin"
+              - -e
+              - "l3_request_id={{ _fpe9_run_id }}"
+              - -e
+              - '{"_purge_final_remaining_member_ids": [], "_purge_final_tag_present": false}'
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            KUBECONFIG: /tmp/l3-fpe-9-kubeconfig.yaml
+          register: _fpe9_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(9) ASSERT: refused BEFORE lock acquisition — never a fabricated success (P1-1)"
+          ansible.builtin.assert:
+            that:
+              - _fpe9_run.rc != 0
+              - "'DMF_L3_PURGE_OUTCOME: refused' in _fpe9_run.stdout"
+              - "'DMF_L3_PURGE_OUTCOME: success' not in _fpe9_run.stdout"
+            fail_msg: "(9) FAIL — expected the forged final-read facts to refuse pre-lock, never fabricate success. stdout={{ _fpe9_run.stdout }}"
+
+        - name: "(9) ASSERT (real HTTP): the facility lock was NEVER created (the reserved-var refusal fires before lock.yml's own acquire step even runs)"
+          ansible.builtin.uri:
+            url: "{{ _fpe9_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+
+        - name: "(9) ASSERT (real HTTP): both member Services are still present — nothing deleted"
+          ansible.builtin.uri:
+            url: "{{ _fpe9_netbox_url }}/api/ipam/services/{{ item }}/"
+            method: GET
+            status_code: [200]
+          loop: "{{ [_fpe9_seed_services.results[0].json.id, _fpe9_seed_services.results[1].json.id] }}"
+
+        - name: "(9) ASSERT (real HTTP): the workload Tag is still present"
+          ansible.builtin.uri:
+            url: "{{ _fpe9_netbox_url }}/api/extras/tags/?name=workload:demo-g"
+            method: GET
+            return_content: true
+          register: _fpe9_tag_check
+
+        - name: "(9) assert the tag lookup still finds it"
+          ansible.builtin.assert:
+            that:
+              - (_fpe9_tag_check.json.results | default([])) | length == 1
+            fail_msg: "(9) FAIL — the workload Tag was deleted despite the forge attempt: {{ _fpe9_tag_check.json }}"
+      always:
+        - name: "(9) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-fpe-9.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 10 (umbrella #347 fix round FIX-A2b.1, P1-2) — PERMANENT PIN
+    # of codex's own executed GATE-A2b.1 retag probe: a service that WAS a
+    # member of the requested workload at the console's own preflight time
+    # (its id is in purge_expected_service_ids) has since been retagged to
+    # `workload:other-workload` — a live, still-real record, just no longer
+    # grouped under the workload this run was asked to purge. The old code
+    # treated "not found in this workload's own fresh grouping" as
+    # "already-gone convergence" and DELETEd it directly; the fix makes the
+    # launcher GET-by-id it first and refuse the whole run on a live 200.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(10) PIN codex's P1-2 retag probe — a stale expected id now belonging to ANOTHER workload must refuse, never be deleted"
+      vars:
+        _fpe10_run_id: "10101010101010101010101010101010"
+      block:
+        - name: "(10) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-fpe-10.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(10) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-fpe-10.json]
+          register: _fpe10_start
+          changed_when: false
+
+        - name: "(10) parse stub URLs"
+          ansible.builtin.set_fact:
+            _fpe10_k8s_url: "{{ _fpe10_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _fpe10_netbox_url: "{{ _fpe10_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(10) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-fpe-10-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _fpe10_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(10) seed a service ALREADY retagged to a DIFFERENT workload (codex's own probe: the console's preflight named it for demo-h, it now belongs to other-workload)"
+          ansible.builtin.uri:
+            url: "{{ _fpe10_netbox_url }}/api/ipam/services/"
+            method: POST
+            body_format: json
+            body:
+              name: "mxl-demo-h-retagged"
+              tags:
+                - {name: "dmf-catalog"}
+                - {name: "app:mxl"}
+                - {name: "lifecycle:bootstrapped"}
+                - {name: "workload:other-workload"}
+              custom_fields: {}
+            status_code: [201]
+          register: _fpe10_seed
+
+        - name: "(10) run the REAL finalise-purge playbook — workload_slug=demo-h (the console's own stale preflight), expected id = the now-retagged service"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/finalise-purge.yml"
+              - -e
+              - "l3_kube_api_url={{ _fpe10_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _fpe10_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - workload_slug=demo-h
+              - -e
+              - "{{ {'purge_expected_service_ids': [_fpe10_seed.json.id]} | to_json }}"
+              - -e
+              - purge_actor=test-actor
+              - -e
+              - purge_role=test-role
+              - -e
+              - "purge_reason=P1-2 retag pin"
+              - -e
+              - "l3_request_id={{ _fpe10_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            KUBECONFIG: /tmp/l3-fpe-10-kubeconfig.yaml
+          register: _fpe10_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(10) ASSERT: refused, detail=member-purge — a live record outside the requested workload's grouping is NEVER treated as already-gone (P1-2)"
+          ansible.builtin.assert:
+            that:
+              - _fpe10_run.rc != 0
+              - "'DMF_L3_PURGE_OUTCOME: refused' in _fpe10_run.stdout"
+              - "'detail=member-purge' in _fpe10_run.stdout"
+            fail_msg: "(10) FAIL — expected a member-purge-stage refusal for a stale expected id now belonging to another workload. stdout={{ _fpe10_run.stdout }}"
+
+        - name: "(10) ASSERT (real HTTP): the retagged service is STILL PRESENT, completely unchanged — the other workload's own SoT record was never touched"
+          ansible.builtin.uri:
+            url: "{{ _fpe10_netbox_url }}/api/ipam/services/{{ _fpe10_seed.json.id }}/"
+            method: GET
+            return_content: true
+          register: _fpe10_readback
+
+        - name: "(10) assert the retagged service's own tags are byte-identical to what was seeded"
+          ansible.builtin.assert:
+            that:
+              - _fpe10_readback.json.tags == _fpe10_seed.json.tags
+            fail_msg: "(10) FAIL — the cross-workload service was mutated. got={{ _fpe10_readback.json.tags }} expected={{ _fpe10_seed.json.tags }}"
+      always:
+        - name: "(10) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-fpe-10.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 11 (umbrella #347 fix round FIX-A2b.1, P2-1) — pagination.
+    # $L3_STUB_NETBOX_PAGE_SIZE forces a 2-record page size regardless of
+    # this launcher's own ?limit=500 request, so a handful of seeded
+    # fixture records genuinely spans multiple pages.
+    #   (11a) a bad-lifecycle member on the LAST page (page 3 of 3) must
+    #         still be caught — proves the fail-closed validation sees
+    #         late pages, not just the first.
+    #   (11b) a clean multi-page purge succeeds, AND the final source read
+    #         (which also paginates) correctly walks multiple pages of
+    #         UNRELATED dmf-catalog residue afterwards without mistaking
+    #         it for this workload's own leftovers.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(11) pagination — start fresh stubs with a forced small page size"
+      block:
+        - name: "(11) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-fpe-11.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(11) start stubs (L3_STUB_NETBOX_PAGE_SIZE=2 — the detached stub process inherits this at spawn time)"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-fpe-11.json]
+          register: _fpe11_start
+          changed_when: false
+          environment:
+            L3_STUB_NETBOX_PAGE_SIZE: "2"
+
+        - name: "(11) parse stub URLs"
+          ansible.builtin.set_fact:
+            _fpe11_k8s_url: "{{ _fpe11_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _fpe11_netbox_url: "{{ _fpe11_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(11) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-fpe-11-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _fpe11_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(11a) seed 5 workload:demo-page-a members — 4 clean, the 5th (deterministically LAST at page size 2 -> page 3) carries a bad lifecycle tag"
+          ansible.builtin.uri:
+            url: "{{ _fpe11_netbox_url }}/api/ipam/services/"
+            method: POST
+            body_format: json
+            body:
+              name: "mxl-demo-page-a-{{ item }}"
+              tags:
+                - {name: "dmf-catalog"}
+                - {name: "app:mxl"}
+                - {name: "{{ 'lifecycle:configured' if item == 5 else 'lifecycle:bootstrapped' }}"}
+                - {name: "workload:demo-page-a"}
+              custom_fields: {}
+            status_code: [201]
+          loop: [1, 2, 3, 4, 5]
+          register: _fpe11a_seed
+
+        - name: "(11a) run the REAL finalise-purge playbook — spans 3 pages at page size 2"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/finalise-purge.yml"
+              - -e
+              - "l3_kube_api_url={{ _fpe11_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _fpe11_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - workload_slug=demo-page-a
+              - -e
+              - "{{ {'purge_expected_service_ids': _fpe11a_seed.results | map(attribute='json') | map(attribute='id') | list} | to_json }}"
+              - -e
+              - purge_actor=test-actor
+              - -e
+              - purge_role=test-role
+              - -e
+              - "purge_reason=pagination late-page violation"
+              - -e
+              - l3_request_id=11111111111111111111111111111a11
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            KUBECONFIG: /tmp/l3-fpe-11-kubeconfig.yaml
+          register: _fpe11a_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(11a) ASSERT: refused — the bad-lifecycle member on the LAST page was still validated"
+          ansible.builtin.assert:
+            that:
+              - _fpe11a_run.rc != 0
+              - "'DMF_L3_PURGE_OUTCOME: refused' in _fpe11a_run.stdout"
+              - "'detail=member-purge' in _fpe11a_run.stdout"
+            fail_msg: "(11a) FAIL — expected the last-page bad-lifecycle member to be caught. stdout={{ _fpe11a_run.stdout }}"
+
+        - name: "(11a) ASSERT (real HTTP): all 5 members still present — zero deletes on a fail-closed refusal"
+          ansible.builtin.uri:
+            url: "{{ _fpe11_netbox_url }}/api/ipam/services/{{ item.json.id }}/"
+            method: GET
+            status_code: [200]
+          loop: "{{ _fpe11a_seed.results }}"
+          loop_control:
+            label: "{{ item.json.id }}"
+
+        - name: "(11b) seed 4 clean workload:demo-page-b members (2 pages) + the Tag"
+          ansible.builtin.uri:
+            url: "{{ _fpe11_netbox_url }}/api/ipam/services/"
+            method: POST
+            body_format: json
+            body:
+              name: "mxl-demo-page-b-{{ item }}"
+              tags:
+                - {name: "dmf-catalog"}
+                - {name: "app:mxl"}
+                - {name: "lifecycle:bootstrapped"}
+                - {name: "workload:demo-page-b"}
+              custom_fields: {}
+            status_code: [201]
+          loop: [1, 2, 3, 4]
+          register: _fpe11b_seed
+
+        - name: "(11b) seed the workload Tag object"
+          ansible.builtin.uri:
+            url: "{{ _fpe11_netbox_url }}/api/extras/tags/"
+            method: POST
+            body_format: json
+            body:
+              name: "workload:demo-page-b"
+              slug: "workload-demo-page-b"
+            status_code: [201]
+
+        - name: "(11b) seed 3 UNRELATED dmf-catalog services (a different workload, never purged) — forces the FINAL source read to also span multiple pages after demo-page-b's own 4 are deleted"
+          ansible.builtin.uri:
+            url: "{{ _fpe11_netbox_url }}/api/ipam/services/"
+            method: POST
+            body_format: json
+            body:
+              name: "mxl-unrelated-{{ item }}"
+              tags:
+                - {name: "dmf-catalog"}
+                - {name: "app:mxl"}
+                - {name: "lifecycle:active"}
+                - {name: "workload:demo-page-other"}
+              custom_fields: {}
+            status_code: [201]
+          loop: [1, 2, 3]
+          register: _fpe11b_unrelated_seed
+
+        - name: "(11b) run the REAL finalise-purge playbook — clean multi-page purge, cross-workload isolation under pagination"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/finalise-purge.yml"
+              - -e
+              - "l3_kube_api_url={{ _fpe11_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _fpe11_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - workload_slug=demo-page-b
+              - -e
+              - "{{ {'purge_expected_service_ids': _fpe11b_seed.results | map(attribute='json') | map(attribute='id') | list} | to_json }}"
+              - -e
+              - purge_actor=test-actor
+              - -e
+              - purge_role=test-role
+              - -e
+              - "purge_reason=pagination clean multi-page"
+              - -e
+              - l3_request_id=11111111111111111111111111111b11
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            KUBECONFIG: /tmp/l3-fpe-11-kubeconfig.yaml
+          register: _fpe11b_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(11b) ASSERT: SUCCEEDED — the clean multi-page purge converged"
+          ansible.builtin.assert:
+            that:
+              - _fpe11b_run.rc == 0
+              - "'DMF_L3_PURGE_OUTCOME: success' in _fpe11b_run.stdout"
+            fail_msg: "(11b) FAIL — expected the clean multi-page purge to succeed. rc={{ _fpe11b_run.rc }} stdout={{ _fpe11b_run.stdout }}"
+
+        - name: "(11b) ASSERT (real HTTP): all 4 demo-page-b members are genuinely gone"
+          ansible.builtin.uri:
+            url: "{{ _fpe11_netbox_url }}/api/ipam/services/{{ item.json.id }}/"
+            method: GET
+            status_code: [404]
+          loop: "{{ _fpe11b_seed.results }}"
+          loop_control:
+            label: "{{ item.json.id }}"
+
+        - name: "(11b) ASSERT (real HTTP): all 3 unrelated services are STILL PRESENT, untouched — the final read's own pagination across 2 pages of residue never mistook them for this workload's leftovers"
+          ansible.builtin.uri:
+            url: "{{ _fpe11_netbox_url }}/api/ipam/services/{{ item.json.id }}/"
+            method: GET
+            status_code: [200]
+          loop: "{{ _fpe11b_unrelated_seed.results }}"
+          loop_control:
+            label: "{{ item.json.id }}"
+      always:
+        - name: "(11) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-fpe-11.json]
+          changed_when: false
+          failed_when: false
+
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 12 (umbrella #347 fix round FIX-A2b.1, P2-2) — PERMANENT PIN
+    # of codex's own executed GATE-A2b.1 int-typed-actor probe: native JSON
+    # `{"purge_actor": 123}` — Jinja's `trim` filter silently coerced the
+    # int without the (now-added) `is string` check.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(12) PIN codex's P2-2 int-typed-actor probe — a non-string purge_actor must refuse, never coerce"
+      block:
+        - name: "(12) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-fpe-12.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(12) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-fpe-12.json]
+          register: _fpe12_start
+          changed_when: false
+
+        - name: "(12) parse stub URLs"
+          ansible.builtin.set_fact:
+            _fpe12_k8s_url: "{{ _fpe12_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _fpe12_netbox_url: "{{ _fpe12_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(12) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-fpe-12-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _fpe12_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(12) run the REAL finalise-purge playbook — purge_actor supplied as a native JSON int, codex's exact probe"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/finalise-purge.yml"
+              - -e
+              - "l3_kube_api_url={{ _fpe12_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _fpe12_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - workload_slug=demo-quartet-2
+              - -e
+              - '{"purge_expected_service_ids": []}'
+              - -e
+              - '{"purge_actor": 123}'
+              - -e
+              - purge_role=test-role
+              - -e
+              - "purge_reason=P2-2 int actor pin"
+              - -e
+              - l3_request_id=12121212121212121212121212121212
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            KUBECONFIG: /tmp/l3-fpe-12-kubeconfig.yaml
+          register: _fpe12_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(12) ASSERT: refused, detail=preflight — a non-string purge_actor is never silently coerced (P2-2)"
+          ansible.builtin.assert:
+            that:
+              - _fpe12_run.rc != 0
+              - "'DMF_L3_PURGE_OUTCOME: refused' in _fpe12_run.stdout"
+              - "'detail=preflight' in _fpe12_run.stdout"
+            fail_msg: "(12) FAIL — expected a preflight refusal for a non-string purge_actor. stdout={{ _fpe12_run.stdout }}"
+      always:
+        - name: "(12) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-fpe-12.json]
+          changed_when: false
+          failed_when: false
+
     - name: "ALL finalise-purge EXECUTION SCENARIOS PASSED"
       ansible.builtin.debug:
         msg: >-
-          umbrella #347 (Arc 2b): playbooks/finalise-purge.yml's happy
-          path, frozen-contract quartet + malformed-ids refusals,
-          fail-closed unexpected-member and bad-lifecycle refusals,
-          already-gone convergence, tag-delete-last ordering (including a
-          genuinely dirty member), and re-run convergence are all proven by
-          real ansible-playbook execution against the stub harness — not
-          just static structure checks.
+          umbrella #347 (Arc 2b) + fix round FIX-A2b.1: playbooks/
+          finalise-purge.yml's happy path, frozen-contract quartet +
+          malformed-ids refusals, fail-closed unexpected-member and
+          bad-lifecycle refusals, already-gone convergence, tag-delete-last
+          ordering (including a genuinely dirty member), re-run
+          convergence, AND all four of codex's own GATE-A2b.1 executed
+          probes (forged final-read facts, a cross-workload retag, a
+          bad-lifecycle member on a late pagination page, a non-string
+          purge_actor) are all proven refused/caught by real
+          ansible-playbook execution against the stub harness — not just
+          static structure checks.
