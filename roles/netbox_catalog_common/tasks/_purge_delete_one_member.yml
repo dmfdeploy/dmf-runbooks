@@ -1,0 +1,56 @@
+---
+# umbrella #347 (Arc 2b) — one iteration of the member-delete+readback loop,
+# invoked via loop+include_tasks from purge_workload_records.yml (the SAME
+# idiom roles/l3_run_guard/tasks/_rollback_netbox_delete_one.yml already
+# uses for its own per-item delete+readback — read that file's header for
+# the "call-success never equals clean" discipline this mirrors). `_purge_member_id`
+# is one entry of purge_expected_service_ids (loop_control.loop_var, not the
+# bare `item`, so a nested loop elsewhere in the caller can never shadow it).
+#
+# DELETE is idempotent (204 or 404 both accepted, exactly like
+# _rollback_netbox_delete_one.yml's own delete task) — an expected id that
+# the fresh read never found (already-gone convergence, frozen behavior #4's
+# last sentence) still reaches this same DELETE call, harmlessly 404s, and
+# still gets its own readback below. ignore_errors on both calls: one item's
+# HTTP hiccup must not abort the whole loop and strand the rest of the
+# expected set undeleted — each item's own dirty state is decided purely by
+# its OWN readback, never by whether the DELETE call itself "succeeded".
+
+- name: "L3 purge: DELETE member service {{ _purge_member_id }}/ (idempotent — 404 tolerated as already-gone)"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/{{ _purge_member_id }}/"
+    method: DELETE
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+    validate_certs: false
+    status_code: [204, 404]
+  register: _purge_member_delete
+  ignore_errors: true
+  no_log: true
+
+- name: "L3 purge: readback — fresh GET after the delete (expects 404; call-success never equals clean)"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/{{ _purge_member_id }}/"
+    method: GET
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+    validate_certs: false
+    status_code: [200, 404]
+  register: _purge_member_readback
+  ignore_errors: true
+  no_log: true
+
+- name: "L3 purge: classify this member's result (pure — deleted / already-gone / dirty, readback-authoritative via l3_netbox_delete_dirty)"
+  ansible.builtin.set_fact:
+    _purge_member_results: >-
+      {{
+        (_purge_member_results | default([]))
+        + [{
+             'id': _purge_member_id,
+             'result': (
+               'dirty'
+               if (_purge_member_readback.status | default(0) | l3_netbox_delete_dirty(_purge_member_readback.failed | default(true)))
+               else ('deleted' if (_purge_member_delete.status | default(0) == 204) else 'already-gone')
+             ),
+           }]
+      }}

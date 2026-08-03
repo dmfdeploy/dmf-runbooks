@@ -1,0 +1,279 @@
+---
+# umbrella #347 (Arc 2b, demo-journey UI track) — finalise-purge: the
+# "delete permanently" SoT removal of a fully finalised media workload's
+# residual dmf-catalog NetBox records (operator ruling 2026-08-02). Residue
+# = the ipam.Service members left at lifecycle:bootstrapped carrying the
+# preserved workload:<slug> tag, plus the Tag object workload:<slug> itself
+# — deleted LAST, only after every member reference is confirmed gone.
+#
+# Lane: CONSULT-D1b (ADR-0013/0025) — this launcher owns NetBox mutation;
+# the console never touches NetBox directly. NetBox-only: NO Helm/k8s
+# workload steps — a finalised workload has nothing left running to remove,
+# only its SoT bookkeeping.
+#
+# Launch-time extra_vars (frozen contract, dmf-cms codes against this
+# byte-for-byte):
+#   workload_slug              — required, the #239 slug rule.
+#   purge_expected_service_ids — required, list of positive ints, MAY be
+#                                empty (tag-only residue after a prior
+#                                partial purge).
+#   purge_actor                — required non-empty string (C5 audit).
+#   purge_role                 — required non-empty string (C5 audit).
+#   purge_reason                — required non-empty string; NO default
+#                                anywhere (JT-level or role defaults) — same
+#                                posture as rollback-run.yml's
+#                                l3_rollback_reason.
+#   l3_request_id                — console request id, hex32 — validated by
+#                                the existing l3_run_guard identity seam
+#                                (identity.yml); deliberately NOT re-asserted
+#                                here as a purge_* var.
+# Static JT vars (registered later in dmf-infra, a SEPARATE change):
+# netbox_api_url, vault_netbox_catalog_token (scoped catalog token, never
+# admin — ADR-0032), exactly like every existing media-finalise-* JT entry.
+# JT name is frozen as media-finalise-purge.
+#
+# SHAPE: mirrors playbooks/teardown-mxl-fabrics-demo.yml's single outer
+# block/rescue/always exactly — lock_only -> this playbook's own asserts ->
+# l3_mutation_started: true -> fault-inject boundaries -> mutations with a
+# lock_checkpoint before each NetBox write group -> lock_release on success;
+# rescue: = gate_rescue + re-raise fail; always: = release. Nothing in this
+# repo purges NetBox-only state without holding the L3 lock; this playbook
+# holds it too.
+#
+# STRUCTURED OUTCOME EVENT (mirrors the switch-outcome mechanism shipped in
+# 0.4.4, umbrella #323, exactly — see roles/l3_run_guard/tasks/
+# _emit_purge_outcome.yml's own header for the full non-forgeability
+# argument, condensed here): this playbook emits DMF_L3_PURGE_OUTCOME on
+# every terminal exit, ADDITIONALLY to (never instead of) the legacy
+# DMF_L3_OUTCOME marker lock_only's own shared identity.yml/lock.yml
+# refusal paths may still emit via _refuse_pre_mutation.yml. A small,
+# two-token vocabulary — genuinely simpler than the switch playbook's own
+# five, because finalise-purge has no PHASE-2/rollback branching:
+#   success  — the final source read (frozen behavior #7) confirmed every
+#              member AND the workload Tag absent. Emitted as the LAST task
+#              in the block, after lock_release, so nothing later can still
+#              fail the run out from under an already-emitted success
+#              marker.
+#   refused  — every other terminal exit: a pre-lock guard/reserved-var
+#              refusal, this playbook's own frozen-contract assert failing,
+#              a fail-closed preflight violation (purge_workload_records.yml's
+#              own assert), or a final-read mismatch after a partial delete.
+#              Carries detail=<stage> (this playbook's own _purge_stage
+#              fact, proven caller-free by purge_outcome_guard.yml — see
+#              that file's header) as the FIRST kv field, so a caller-
+#              supplied free-text value elsewhere in the line (e.g.
+#              purge_reason) can never splice a second detail= field ahead
+#              of the honest one.
+# This playbook's own rescue: is UNCHANGED as gate_rescue.yml + re-raise
+# fail (the frozen L3 gate shape) — the purge-outcome emit is layered on
+# top, as the FIRST task in rescue, matching gate_rescue.yml's own
+# emit-then-release internal ordering.
+#
+# CONVERGENCE (frozen behavior #9): a re-run after any partial failure
+# converges to success — already-deleted/already-gone member records and an
+# already-absent Tag are tolerated at every step; only the final source read
+# decides success, never any individual DELETE call's own reported status.
+- name: DMF finalise-purge — permanent SoT removal of workload residue
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    # The ONE task that deliberately sits OUTSIDE the outer block below
+    # (mirrors switch-mxl-fabrics-demo.yml's own umbrella #323 fix-round
+    # placement exactly — see purge_outcome_guard.yml's own header for why
+    # a variable-based fix is impossible against extra_vars, and why this
+    # position is load-bearing).
+    - name: "L3 purge outcome-control guard (umbrella #347 — MUST stay the first task of this play, and outside the outer block)"
+      ansible.builtin.include_role:
+        name: l3_run_guard
+        tasks_from: purge_outcome_guard
+
+    - name: "L3 gate through terminal — ONE outer block/rescue/always
+        (mirrors teardown-mxl-fabrics-demo.yml's own R4a Backbone shape:
+        this playbook's own rescue: sees every failure in the whole span,
+        and the always: lock-release is an unconditional backstop)"
+      block:
+        - name: L3 purge-lock guard (identity/netbox-token/lock — shared with teardown, lock_only.yml)
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: lock_only
+
+        - name: "L3 purge stage -> preflight (facility lock now HELD; this playbook's own frozen-contract asserts run next)"
+          ansible.builtin.set_fact:
+            _purge_stage: preflight
+
+        - name: "Assert the frozen purge extra_vars contract (house style —
+            single direct literal assert:, no intermediate set_fact/vars:;
+            the rejected value is withheld for workload_slug/purge_* since
+            they land in AWX job logs and are operator-supplied)"
+          ansible.builtin.assert:
+            that:
+              - workload_slug is defined
+              - workload_slug is match('\A[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?\Z')
+              - purge_expected_service_ids is defined
+              - purge_expected_service_ids is sequence
+              - purge_expected_service_ids is not string
+              - purge_expected_service_ids | select('integer') | list | length == purge_expected_service_ids | length
+              - purge_expected_service_ids | select('gt', 0) | list | length == purge_expected_service_ids | length
+              - purge_actor is defined
+              - (purge_actor | trim) != ''
+              - purge_role is defined
+              - (purge_role | trim) != ''
+              - purge_reason is defined
+              - (purge_reason | trim) != ''
+            fail_msg: >-
+              L3 purge refused: preflight-error. One or more required
+              extra_vars are missing or malformed — workload_slug (the #239
+              slug rule), purge_expected_service_ids (a list of positive
+              ints, may be empty), purge_actor/purge_role/purge_reason
+              (non-empty strings, C5 audit). See the frozen contract in this
+              playbook's own header.
+
+        - name: "L3 purge: mark mutation as STARTED (everything from here on is a real mutating action)"
+          ansible.builtin.set_fact:
+            l3_mutation_started: true
+
+        - name: "L3: test-only fault injection boundary (post-mutation-start — shared boundary name with launch/teardown)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: fault_inject
+          vars:
+            l3_fault_inject_boundary: post-mutation-start
+
+        - name: "L3 purge: lock checkpoint + supersede sweep before first mutation (reuses teardown's own pre-mutation checkpoint — generic lock_checkpoint + _supersede_sweep + fault_inject(pre-mutation-start), no Helm/mxl-specific content)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: teardown_pre_mutation
+
+        - name: "L3 purge stage -> member-purge (the first real mutation: fresh membership read, fail-closed validation, then delete+readback each expected member)"
+          ansible.builtin.set_fact:
+            _purge_stage: member-purge
+
+        - name: "Purge this workload's member Service records (netbox_catalog_common — fresh read, fail-closed assert, delete+readback loop)"
+          ansible.builtin.include_role:
+            name: netbox_catalog_common
+            tasks_from: purge_workload_records
+
+        - name: "L3: test-only fault injection boundary (post-purge-members —
+            proves a failure here leaves the Tag object intact: frozen
+            behavior #6/#9, the exact ordering claude1's WO requires a
+            discriminating test for)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: fault_inject
+          vars:
+            l3_fault_inject_boundary: post-purge-members
+
+        - name: "L3 purge: lock checkpoint before the Tag object delete (every NetBox write here happens under a checkpointed lock — skipped, along with the tag delete itself, when any member is dirty)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: lock_checkpoint
+          when: _purge_dirty_count | int == 0
+
+        - name: "L3 purge stage -> tag-purge (only reached when every member is readback-confirmed absent)"
+          ansible.builtin.set_fact:
+            _purge_stage: tag-purge
+          when: _purge_dirty_count | int == 0
+
+        - name: "Delete the workload Tag object — ONLY once every member is readback-confirmed absent (frozen behavior #6, Tag object LAST)"
+          ansible.builtin.include_role:
+            name: netbox_catalog_common
+            tasks_from: purge_workload_tag
+          when: _purge_dirty_count | int == 0
+
+        - name: "L3 purge stage -> final-read (the closest-to-done exit the catch-all can report; this read is the ONLY basis for success, frozen behavior #7)"
+          ansible.builtin.set_fact:
+            _purge_stage: final-read
+
+        - name: "Final source read (netbox_catalog_common) — re-fetch services + re-GET the Tag by name"
+          ansible.builtin.include_role:
+            name: netbox_catalog_common
+            tasks_from: purge_final_read
+
+        - name: "Final source read: assert zero members AND the Tag absent — NOT the DELETE statuses (frozen behavior #7)"
+          ansible.builtin.assert:
+            that:
+              - _purge_final_remaining_member_ids | length == 0
+              - not _purge_final_tag_present
+            fail_msg: >-
+              L3 purge FAILED final source read for workload_slug={{ workload_slug }}:
+              remaining_member_ids={{ _purge_final_remaining_member_ids }}
+              tag_still_present={{ _purge_final_tag_present }}. Nothing
+              further was mutated after the last successful step; a re-run
+              converges (frozen behavior #9).
+
+        - name: "L3 purge success — release the lock"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: lock_release
+
+        - name: "L3 purge outcome: emit success (umbrella #347) — the LAST
+            task in this block, deliberately AFTER lock_release above: if
+            anything from here down could still fail the run, this stays
+            unreached and the failure is reported honestly through rescue:
+            instead."
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: _emit_purge_outcome
+          vars:
+            l3_purge_outcome_token: success
+            # purge_reason is caller-supplied free text and renders LAST, on
+            # purpose — same discipline switch-mxl-fabrics-demo.yml's own
+            # header documents for receiver_instance (this repo's parser is
+            # not owned here; noted, not solved, matching that precedent).
+            l3_purge_outcome_kv: >-
+              workload_slug={{ workload_slug }}
+              actor={{ purge_actor }}
+              role={{ purge_role }}
+              request_id={{ l3_request_id | default(l3_run_id) }}
+              deleted={{ (_purge_member_results | default([]) | selectattr('result', 'equalto', 'deleted') | map(attribute='id') | list) | join(',') }}
+              already_gone={{ (_purge_member_results | default([]) | selectattr('result', 'equalto', 'already-gone') | map(attribute='id') | list) | join(',') }}
+              tag_result={{ _purge_tag_result | default('already-gone') }}
+              final_read=confirmed_absent
+              reason={{ purge_reason }}
+      rescue:
+        - name: "L3 purge outcome: emit refused (umbrella #347) — the
+            generic catch-all for every failure: a pre-lock guard/reserved-
+            var refusal, this playbook's own frozen-contract assert, a
+            fail-closed preflight violation, or a final-read mismatch. Runs
+            FIRST in this rescue, before gate_rescue below, matching
+            gate_rescue.yml's own emit-then-release internal ordering."
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: _emit_purge_outcome
+          vars:
+            l3_purge_outcome_token: refused
+            # detail= FIRST, immediately after the token: purge_reason/
+            # workload_slug are caller extra_vars and may carry free text,
+            # so a parser that reads the FIRST detail= can never be spliced
+            # by a value planted later in the line. _purge_stage is proven
+            # caller-free by this play's own first task (purge_outcome_guard)
+            # — see that file's own header.
+            l3_purge_outcome_kv: >-
+              detail={{ _purge_stage | default('pre-lock') }}
+              workload_slug={{ workload_slug | default('<unknown>') }}
+              run_id={{ l3_run_id | default('<unknown>') }}
+              request_id={{ l3_request_id | default('<unknown>') }}
+
+        - name: "L3 gate rescue — shared launch/teardown cleanup (R4a Backbone: informational
+            preflight-error/post-mutation-failed marker — this playbook never
+            auto-triggers rollback from this, purely for operator legibility)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: gate_rescue
+
+        - name: Re-raise (gate_rescue.yml only does cleanup, never terminates the play itself)
+          ansible.builtin.fail:
+            msg: >-
+              DMF finalise-purge failed for
+              workload_slug={{ workload_slug | default('<unknown>') }}
+              run_id={{ l3_run_id | default('<unknown>') }}. See the task
+              error above for the root cause; the L3 gate's own cleanup
+              (facility lock released) has already run. A re-run converges
+              (frozen behavior #9) — already-deleted/already-gone member
+              records and an already-absent Tag are tolerated at every step.
+      always:
+        - name: "L3 release — idempotent lock-release backstop (R4a Backbone)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: release

@@ -1,0 +1,81 @@
+---
+# umbrella #347 (Arc 2b, finalise-purge launcher) — the purge play's VERY
+# FIRST task, ahead of lock_only and ahead of the outer block/rescue/always
+# entirely. Mirrors switch_outcome_guard.yml's own construction exactly
+# (read that file's header first if you haven't) — the same non-forgeability
+# argument applies here byte for byte, only the name set is smaller because
+# finalise-purge's own outcome vocabulary has no PHASE-2-style branching
+# (see _emit_purge_outcome.yml's own header for why: two tokens only,
+# success/refused, and the rescue's own refused-emit is unconditional — no
+# sentinel-gated skip exists to exploit, so no exactly-once sentinel is
+# reserved here at all. Case (a) from the switch precedent — "-e
+# _switch_outcome_emitted=true suppresses the only outcome task" — has no
+# analogue on this playbook: there is nothing a caller could set to make the
+# rescue's own emit task skip, because it never carries a `when:` on any
+# caller-reachable name).
+#
+# THE RULE THIS FILE ENFORCES: every variable the purge-outcome decision
+# READS must be proven caller-free before this play does anything at all.
+# _assert_reserved_vars.yml already reserves l3_purge_outcome_token/
+# l3_purge_outcome_kv/_purge_stage too (belt-and-suspenders, matching the
+# switch precedent's own layered defense) — but that check runs INSIDE
+# lock_only -> identity.yml, so ITS OWN refusal raises into finalise-purge.yml's
+# outer rescue, and that rescue's own emit call is exactly what would render
+# the shadowed values. Only a guard that runs OUTSIDE the block, ahead of any
+# code path that could consult these names, closes that hole — same
+# reasoning as switch_outcome_guard.yml's own header, condensed here rather
+# than re-derived.
+#
+# WHY EACH NAME IS ON THE LIST:
+#   l3_purge_outcome_token   — the token _emit_purge_outcome.yml renders
+#   l3_purge_outcome_kv        verbatim from task-level `vars:`. A caller
+#                             extra_var of either name outranks that `vars:`
+#                             identically to every other include_role call in
+#                             this role (Ansible precedence, not a bug local
+#                             to this file).
+#   _purge_stage             — this play's own in-flight-stage fact, and
+#                             therefore the SOURCE of detail= on the refused
+#                             event. Reserved additively in
+#                             _assert_reserved_vars.yml as well (a real
+#                             set_fact target, so the R5a-1 scanner requires
+#                             it there); guarded HERE because the reserved-var
+#                             refusal path itself would otherwise read the
+#                             shadowed value and let a caller choose which
+#                             stage the console is told the run died in.
+#
+# The assert is a SINGLE DIRECT assert with every name spelled out in-line,
+# for the identical reason _assert_reserved_vars.yml's own header gives: an
+# intermediate fact/var of ANY kind (even a differently-named boolean) just
+# relocates the same bypass, since extra_vars outrank a task's own `vars:`
+# too. The block/rescue (never a `when:`) is what routes a failed assert to
+# the emitting cleanup: the ONLY way into `rescue:` is a genuine assert
+# failure, so there is no condition here a caller could shadow to skip the
+# emission while still letting the assert fail closed.
+
+- name: "L3 purge outcome-control guard (umbrella #347) — the outcome-decision variables must be UNDEFINED at play entry"
+  block:
+    - name: "L3 purge outcome-control guard: single direct assert, no shadowable intermediate (mirrors switch_outcome_guard.yml's own shape)"
+      ansible.builtin.assert:
+        that:
+          - l3_purge_outcome_token is not defined
+          - l3_purge_outcome_kv is not defined
+          - _purge_stage is not defined
+        fail_msg: >-
+          DMF_L3_PURGE_OUTCOME: refused detail=reserved-var
+          One or more of this purge play's own outcome-decision variables
+          (l3_purge_outcome_token, l3_purge_outcome_kv, _purge_stage) were
+          supplied as extra_vars. These are set exclusively by this play's
+          own logic and must never be caller-supplied — a caller who
+          controls them controls what the console is told this run's
+          outcome was. Structural precondition — cannot be overridden.
+  rescue:
+    - name: "L3 purge outcome-control guard: emit the HARD-CODED refused marker (literal token+detail, see _emit_purge_refused_literal.yml — deliberately not _emit_purge_outcome.yml, whose token is exactly what a caller may have just shadowed)"
+      ansible.builtin.include_tasks: _emit_purge_refused_literal.yml
+
+    - name: "L3 purge outcome-control guard: fail the play (nothing to release — this runs before the facility lock and any NetBox mutation)"
+      ansible.builtin.fail:
+        msg: >-
+          finalise-purge refused before entry: reserved outcome-decision
+          variables were supplied as extra_vars. No facility lock was
+          acquired and no NetBox record was touched. Structural
+          precondition — cannot be overridden.
