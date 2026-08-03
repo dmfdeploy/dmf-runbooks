@@ -116,10 +116,13 @@
               - purge_expected_service_ids | select('integer') | list | length == purge_expected_service_ids | length
               - purge_expected_service_ids | select('gt', 0) | list | length == purge_expected_service_ids | length
               - purge_actor is defined
+              - purge_actor is string
               - (purge_actor | trim) != ''
               - purge_role is defined
+              - purge_role is string
               - (purge_role | trim) != ''
               - purge_reason is defined
+              - purge_reason is string
               - (purge_reason | trim) != ''
             fail_msg: >-
               L3 purge refused: preflight-error. One or more required

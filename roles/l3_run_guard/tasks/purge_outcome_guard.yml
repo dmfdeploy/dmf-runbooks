@@ -43,6 +43,32 @@
 #                             shadowed value and let a caller choose which
 #                             stage the console is told the run died in.
 #
+# umbrella #347 fix round FIX-A2b.1 (P1-1, codex GATE-A2b.1) — the six
+# success-decision facts below, belt-and-braces on top of
+# _assert_reserved_vars.yml now ALSO reserving every netbox_catalog_common
+# register:/set_fact: target (see that file's own new comment block, and
+# tests/scripts/check_reserved_vars.py's own module docstring, for codex's
+# executed forge probe this closes). These are the facts
+# playbooks/finalise-purge.yml's own success claim is BUILT FROM — a caller
+# who controls them controls whether the run claims success regardless of
+# what NetBox actually looks like:
+#   _purge_final_remaining_member_ids / _purge_final_tag_present — the final
+#     source read itself (frozen behavior #7 — "this read, not the DELETE
+#     statuses, is the ONLY basis for the playbook's success claim"; codex's
+#     own probe forged exactly this pair to claim a clean read against a
+#     genuinely dirty NetBox).
+#   _purge_dirty_count       — gates whether the Tag-purge stage runs at all
+#                             (frozen behavior #6, Tag object LAST); a forged
+#                             0 would let the Tag get deleted despite a real
+#                             dirty member.
+#   _purge_member_results    — the per-record deleted/already-gone/dirty
+#                             classifications _purge_dirty_count is itself
+#                             computed from, and part of the success event's
+#                             own payload.
+#   _purge_tag_result/_purge_tag_id — the Tag-object delete's own outcome and
+#                             which Tag id was targeted; part of the success
+#                             event's own payload.
+#
 # The assert is a SINGLE DIRECT assert with every name spelled out in-line,
 # for the identical reason _assert_reserved_vars.yml's own header gives: an
 # intermediate fact/var of ANY kind (even a differently-named boolean) just
@@ -60,14 +86,23 @@
           - l3_purge_outcome_token is not defined
           - l3_purge_outcome_kv is not defined
           - _purge_stage is not defined
+          - _purge_final_remaining_member_ids is not defined
+          - _purge_final_tag_present is not defined
+          - _purge_dirty_count is not defined
+          - _purge_member_results is not defined
+          - _purge_tag_result is not defined
+          - _purge_tag_id is not defined
         fail_msg: >-
           DMF_L3_PURGE_OUTCOME: refused detail=reserved-var
           One or more of this purge play's own outcome-decision variables
-          (l3_purge_outcome_token, l3_purge_outcome_kv, _purge_stage) were
-          supplied as extra_vars. These are set exclusively by this play's
-          own logic and must never be caller-supplied — a caller who
-          controls them controls what the console is told this run's
-          outcome was. Structural precondition — cannot be overridden.
+          (l3_purge_outcome_token, l3_purge_outcome_kv, _purge_stage,
+          _purge_final_remaining_member_ids, _purge_final_tag_present,
+          _purge_dirty_count, _purge_member_results, _purge_tag_result,
+          _purge_tag_id) were supplied as extra_vars. These are set
+          exclusively by this play's own logic and must never be
+          caller-supplied — a caller who controls them controls what the
+          console is told this run's outcome was. Structural precondition —
+          cannot be overridden.
   rescue:
     - name: "L3 purge outcome-control guard: emit the HARD-CODED refused marker (literal token+detail, see _emit_purge_refused_literal.yml — deliberately not _emit_purge_outcome.yml, whose token is exactly what a caller may have just shadowed)"
       ansible.builtin.include_tasks: _emit_purge_refused_literal.yml

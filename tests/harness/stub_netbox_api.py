@@ -73,6 +73,17 @@ WITHOUT actually removing the record — simulating a real "delete didn't
 take" backend inconsistency so a test can drive a genuine `dirty`
 per-record classification (see _delete_service's own comment).
 
+umbrella #347 fix round FIX-A2b.1 (P2-1): `/api/ipam/services/` GET now
+genuinely honors `limit`/`offset` and returns a real, absolute `next` URL
+(built from the request's own Host header) whenever more results remain —
+default behavior is unchanged when no `limit` is supplied (degrades to
+"return everything in one page", this stub's own pre-P2-1 shape).
+`L3_STUB_NETBOX_PAGE_SIZE` (a detached-process env var, same mechanism as
+the above) FORCES a smaller page size than whatever `limit` the caller
+actually requested — the pagination-scenario's own fixture knob, since
+production code always requests `limit=500` and no test fixture seeds
+anywhere near 500 records.
+
 No third-party dependencies. Same reset_state()/STATE/start_server()/
 stop_server() shape as stub_k8s_api.py for consistency — see
 tests/harness/README.md.
@@ -84,7 +95,7 @@ import os
 import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 
 def _log_services_request(line: str) -> None:
@@ -238,6 +249,20 @@ class StubNetBoxHandler(BaseHTTPRequestHandler):
     # -- handlers --------------------------------------------------------
 
     def _list_services(self, query: dict):
+        # umbrella #347 fix round FIX-A2b.1 (P2-1) — this used to ignore
+        # limit/offset entirely and return every matching result in one
+        # response, which meant no test on this harness could ever exercise
+        # a caller's own pagination logic. Now genuinely paginates: `limit`
+        # (from the query string, or $L3_STUB_NETBOX_PAGE_SIZE forcing a
+        # SMALLER page regardless of what the caller requested — the
+        # pagination-scenario's own fixture knob, since production code
+        # always requests limit=500) + `offset`, with a real `next` URL
+        # (absolute, built from the request's own Host header) whenever more
+        # results remain. Default behavior (no limit param, no forced
+        # override) is UNCHANGED — every existing fixture in this harness
+        # seeds at most a handful of services, so `limit` degrades to
+        # `total` and the whole result set still comes back as one page,
+        # exactly as before this fix round.
         name_filter = query.get("name", [None])[0]
         tag_filter = query.get("tag", [None])[0]
 
@@ -253,7 +278,39 @@ class StubNetBoxHandler(BaseHTTPRequestHandler):
                 for s in results
                 if tag_filter in [t.get("name") for t in (s.get("tags") or [])]
             ]
-        self._write_json(200, {"count": len(results), "results": results})
+
+        total = len(results)
+        try:
+            offset = int(query.get("offset", ["0"])[0])
+        except (TypeError, ValueError):
+            offset = 0
+
+        forced_page_size = os.environ.get("L3_STUB_NETBOX_PAGE_SIZE")
+        requested_limit = query.get("limit", [None])[0]
+        if forced_page_size:
+            limit = int(forced_page_size)
+        elif requested_limit is not None:
+            limit = int(requested_limit)
+        else:
+            limit = total  # unbounded — this stub's own pre-P2-1 default
+
+        if limit <= 0:
+            limit = total or 1  # never a 0-size page — that would never converge
+
+        page = results[offset : offset + limit]
+
+        next_url = None
+        if offset + limit < total:
+            next_query = {k: list(v) for k, v in query.items()}
+            next_query["offset"] = [str(offset + limit)]
+            next_query["limit"] = [str(limit)]
+            next_qs = urlencode({k: v[0] for k, v in next_query.items()})
+            host = self.headers.get("Host", "")
+            next_url = f"http://{host}{urlparse(self.path).path}?{next_qs}"
+
+        self._write_json(
+            200, {"count": total, "results": page, "next": next_url, "previous": None}
+        )
 
     def _get_service(self, service_id: int):
         svc = STATE["services"].get(service_id)

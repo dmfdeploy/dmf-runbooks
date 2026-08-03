@@ -1,0 +1,55 @@
+---
+# umbrella #347 fix round FIX-A2b.1 (P2-1, codex GATE-A2b.1) — bounded
+# pagination for every NetBox ipam.services list read the finalise-purge
+# launcher makes. Follows NetBox's own `next` links to exhaustion, hard-
+# capped at 100 pages; the CALLER (purge_workload_records.yml,
+# purge_final_read.yml) asserts `not _purge_page_truncated` immediately
+# after including this file and refuses AT ITS OWN STAGE if the cap was
+# reached while `next` still pointed somewhere — this file itself never
+# decides to refuse, it only reports truncation honestly (same separation
+# of concerns as the fail-closed violation computation elsewhere in this
+# role: compute here, assert at the call site).
+#
+# Codex's own finding (P2-1): both reads previously sent a single
+# `?tag=dmf-catalog&limit=500` GET and trusted the first page as the whole
+# world — a global dmf-catalog query (not scoped to one workload), so an
+# unexpected/bad-lifecycle member for THIS workload sitting past the 500th
+# dmf-catalog record anywhere in the facility was invisible to both the
+# fail-closed validation and the final source read. "Matching the console's
+# own limit=500" does not make a destructive launcher fail closed.
+#
+# NATIVE bounded loop over a fixed range, NEVER a recursive include_tasks —
+# mirrors roles/l3_run_guard/tasks/lock.yml's own bounded-retry mechanism
+# exactly (see _purge_fetch_one_page.yml's own header, and
+# _lock_acquire_one_attempt.yml's header, for the full "Recursive loop
+# detected in template" story this avoids). Each iteration's own
+# `_purge_fetch_one_page.yml` re-guards on `_purge_page_next_url` INSIDE its
+# own block for the identical reason lock.yml's own one-attempt file
+# re-guards: a looped include_tasks' `when:` is not reliably able to see a
+# PRIOR iteration's own set_fact by the time the NEXT iteration's `when:` is
+# evaluated (a documented Ansible gotcha, proven live against this exact
+# role's own lock-acquire loop, R5a).
+#
+# Inputs: _purge_page_start_url — the full first-page URL (tag/name filter
+# + limit already applied by the caller).
+# Outputs:
+#   _purge_page_results   — accumulated .results across every page fetched.
+#   _purge_page_truncated — true iff the 100-page cap was reached while
+#                           NetBox's own `next` still pointed somewhere. The
+#                           caller MUST refuse in that case — this file
+#                           never proceeds past the cap itself, and never
+#                           silently returns a partial view as if it were
+#                           complete.
+
+- name: "L3 purge: paginate — reset the accumulator before the bounded fetch loop"
+  ansible.builtin.set_fact:
+    _purge_page_results: []
+    _purge_page_next_url: "{{ _purge_page_start_url }}"
+    _purge_page_truncated: false
+
+- name: "L3 purge: paginate — bounded fetch loop (hard cap 100 pages, NATIVE loop — never recursion, see this file's own header)"
+  ansible.builtin.include_tasks: _purge_fetch_one_page.yml
+  loop: "{{ range(1, 101) | list }}"
+  loop_control:
+    loop_var: _purge_page_attempt
+  when: (_purge_page_next_url | default('', true)) != ''
