@@ -1,0 +1,57 @@
+---
+# umbrella #347 (Arc 2b, finalise-purge launcher) — frozen behavior #7's
+# "final source read": re-fetch services and re-GET the Tag object by name,
+# and expose PLAIN facts for the caller to assert on. This read — not any
+# earlier DELETE call's own reported status — is the ONLY basis
+# playbooks/finalise-purge.yml uses for its own success claim (Console
+# Constitution Art. 1: absence is established only by refreshed source
+# reads, "call-success never equals clean").
+#
+# Deliberately exposes plain booleans/lists here (not requiring the caller
+# to invoke this role's own l3_workload_members filter at PLAYBOOK level) —
+# every raw NetBox call and every custom-filter use for this launcher stays
+# inside this role's own task files, the same discipline
+# purge_workload_records.yml/purge_workload_tag.yml already follow.
+#
+# Inputs: workload_slug.
+# Outputs:
+#   _purge_final_remaining_member_ids — ids still carrying workload:<slug>
+#                                       after every delete attempt; empty on
+#                                       a clean purge.
+#   _purge_final_tag_present          — true iff the Tag object by name is
+#                                       still present.
+
+- name: "L3 purge: final source read — re-fetch dmf-catalog services"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/?tag=dmf-catalog&limit=500"
+    method: GET
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+    validate_certs: false
+    return_content: true
+  register: _purge_final_services_lookup
+  no_log: true
+
+- name: "L3 purge: final source read — remaining workload:{{ workload_slug }} members (pure — l3_workload_members)"
+  ansible.builtin.set_fact:
+    _purge_final_remaining_member_ids: >-
+      {{
+        _purge_final_services_lookup.json.results | default([])
+        | l3_workload_members(workload_slug)
+        | map(attribute='id') | list
+      }}
+
+- name: "L3 purge: final source read — re-GET the Tag object by name"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/extras/tags/?name={{ ('workload:' ~ workload_slug) | urlencode }}"
+    method: GET
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+    validate_certs: false
+    return_content: true
+  register: _purge_final_tag_lookup
+  no_log: true
+
+- name: "L3 purge: final source read — tag-still-present fact"
+  ansible.builtin.set_fact:
+    _purge_final_tag_present: "{{ (_purge_final_tag_lookup.json.results | default([])) | length > 0 }}"

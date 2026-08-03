@@ -24,6 +24,12 @@ touches ipam.services):
     honored, used by netbox_catalog_common's ensure_workload_tag.yml)
   * POST /api/extras/tags/                  (create one, 201, echoes the
     request body's name/slug/color/description back with a fresh id)
+  * GET  /api/extras/tags/{id}/             (get one, 404 when absent —
+    added for umbrella #347's finalise-purge launcher, which readback-
+    confirms a Tag object's own DELETE the same way
+    _rollback_netbox_delete_one.yml already does for ipam.services)
+  * DELETE /api/extras/tags/{id}/           (delete, 204/404 idempotent —
+    umbrella #347: a Tag-object DELETE is genuinely new in this repo)
   * GET  /api/dcim/devices/?name=<x>        (single hardcoded device,
     `{"id": 1, "name": <x>}`, returned for ANY name query — good enough
     for the provision stage's own "device exists" assert; not a real
@@ -59,6 +65,13 @@ each caller (e.g. snapshot.yml's own pre-run lookup vs. a catalog role's
 own provision.yml lookup-then-create) actually used — the NetBox-axis
 analogue of stub_helm.sh's L3_STUB_HELM_LOG (scenario 10's own
 mechanism, this is scenario 11's).
+
+umbrella #347 (finalise-purge launcher): `L3_STUB_NETBOX_STICKY_SERVICE_IDS`
+(comma-separated ipam.services ids, same detached-process env-var
+mechanism as L3_STUB_NETBOX_LOG) makes DELETE against those ids report 204
+WITHOUT actually removing the record — simulating a real "delete didn't
+take" backend inconsistency so a test can drive a genuine `dirty`
+per-record classification (see _delete_service's own comment).
 
 No third-party dependencies. Same reset_state()/STATE/start_server()/
 stop_server() shape as stub_k8s_api.py for consistency — see
@@ -128,6 +141,7 @@ def reset_state() -> None:
 _COLLECTION_RE = re.compile(r"^/api/ipam/services/?$")
 _ITEM_RE = re.compile(r"^/api/ipam/services/(?P<id>\d+)/?$")
 _TAGS_COLLECTION_RE = re.compile(r"^/api/extras/tags/?$")
+_TAGS_ITEM_RE = re.compile(r"^/api/extras/tags/(?P<id>\d+)/?$")
 _DEVICES_COLLECTION_RE = re.compile(r"^/api/dcim/devices/?$")
 _SITES_COLLECTION_RE = re.compile(r"^/api/dcim/sites/?$")
 
@@ -179,6 +193,10 @@ class StubNetBoxHandler(BaseHTTPRequestHandler):
         if _COLLECTION_RE.match(parsed.path):
             return self._list_services(query)
 
+        m = _TAGS_ITEM_RE.match(parsed.path)
+        if m:
+            return self._get_tag(int(m.group("id")))
+
         if _TAGS_COLLECTION_RE.match(parsed.path):
             return self._list_tags(query)
 
@@ -212,6 +230,9 @@ class StubNetBoxHandler(BaseHTTPRequestHandler):
         m = _ITEM_RE.match(parsed.path)
         if m:
             return self._delete_service(int(m.group("id")))
+        m = _TAGS_ITEM_RE.match(parsed.path)
+        if m:
+            return self._delete_tag(int(m.group("id")))
         self._write_json(404, {"detail": f"no route for DELETE {parsed.path}"})
 
     # -- handlers --------------------------------------------------------
@@ -270,10 +291,25 @@ class StubNetBoxHandler(BaseHTTPRequestHandler):
         self._write_json(201, svc)
 
     def _delete_service(self, service_id: int):
+        # umbrella #347 — finalise-purge's own "call-success never equals
+        # clean" readback discipline needs a way to simulate a DELETE that
+        # REPORTS 204 but doesn't actually take (a real backend
+        # inconsistency class, not something this stub can otherwise
+        # produce — every other path here genuinely deletes on 204). A
+        # scenario opts a specific id in via
+        # $L3_STUB_NETBOX_STICKY_SERVICE_IDS (comma-separated ids, an env
+        # var on the DETACHED stub process, same mechanism as
+        # L3_STUB_NETBOX_LOG) — the record survives in STATE, so the
+        # caller's own readback GET still returns 200, producing a genuine
+        # "dirty" classification via l3_netbox_delete_dirty.
+        sticky = {
+            int(x) for x in os.environ.get("L3_STUB_NETBOX_STICKY_SERVICE_IDS", "").split(",") if x.strip()
+        }
         with _STATE_LOCK:
             if service_id not in STATE["services"]:
                 return self._write_json(404, {"detail": "Not found."})
-            del STATE["services"][service_id]
+            if service_id not in sticky:
+                del STATE["services"][service_id]
         self._write_empty(204)
 
     def _list_tags(self, query: dict):
@@ -297,6 +333,24 @@ class StubNetBoxHandler(BaseHTTPRequestHandler):
             }
             STATE["tags"][tag_id] = tag
         self._write_json(201, tag)
+
+    def _get_tag(self, tag_id: int):
+        # umbrella #347 — finalise-purge's own Tag-object DELETE readback
+        # (api/extras/tags/{id}/, expects 404 once gone) needs a real
+        # get-one-by-id route, mirroring _get_service's own shape.
+        tag = STATE["tags"].get(tag_id)
+        if tag is None:
+            return self._write_json(404, {"detail": "Not found."})
+        self._write_json(200, tag)
+
+    def _delete_tag(self, tag_id: int):
+        # umbrella #347 — a Tag-object DELETE is genuinely new in this
+        # repo; idempotent (204/404), mirrors _delete_service's own shape.
+        with _STATE_LOCK:
+            if tag_id not in STATE["tags"]:
+                return self._write_json(404, {"detail": "Not found."})
+            del STATE["tags"][tag_id]
+        self._write_empty(204)
 
     def _list_devices(self, query: dict):
         # dcim.Device lookup — real callers filter by exact ?name=; this

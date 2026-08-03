@@ -1,0 +1,48 @@
+---
+# umbrella #347 (Arc 2b) — the SINGLE named marker-emission task for the
+# finalise-purge playbook's own structured outcome event. Mirrors
+# _emit_switch_outcome.yml's shape and discipline exactly (read that file's
+# header first if you haven't): one ansible.builtin.debug task, literally
+# named 'dmf-l3-purge-outcome', because the console reads AWX job events
+# FILTERED BY THAT TASK NAME and parses event_data.res.msg — it does not
+# scrape stdout.
+#
+# WHY A SEPARATE MARKER, NOT DMF_L3_OUTCOME OR DMF_L3_SWITCH_OUTCOME:
+# finalise-purge is a NetBox-only, permanent SoT removal — it shares none of
+# launch/teardown's snapshot-based OperationState model (no snapshot is ever
+# captured) and none of switch's PHASE-2/rollback machinery. Its own
+# vocabulary is genuinely small: `success` (the final source read confirmed
+# every member AND the workload tag absent) or `refused` (every other
+# terminal exit — a pre-lock guard refusal, a fail-closed preflight
+# violation, or a final-read mismatch after a partial delete). Reusing
+# either existing vocabulary would force a misleading fit onto a model
+# neither was designed for — the same reasoning umbrella #323 already gives
+# for why DMF_L3_SWITCH_OUTCOME is its own vocabulary; see
+# playbooks/finalise-purge.yml's own header for the full per-token story.
+#
+# Callers set l3_purge_outcome_token (required) and l3_purge_outcome_kv
+# (optional, a pre-built "key=value key2=value2" string — kv assembly is the
+# CALLER's job, this file only renders the final marker line verbatim,
+# exactly like _emit_outcome.yml/_emit_switch_outcome.yml). The marker
+# STRING FORMAT mirrors both existing contracts:
+# "DMF_L3_PURGE_OUTCOME: <token> [<kv>]".
+#
+# l3_purge_outcome_token/l3_purge_outcome_kv/_purge_stage are reserved in
+# _assert_reserved_vars.yml for the same "emitter shadow" reason
+# l3_switch_outcome_token/l3_switch_outcome_kv already are — AND proven
+# caller-free by purge_outcome_guard.yml, run as finalise-purge.yml's own
+# FIRST task, ahead of its outer block, for the identical reason
+# switch_outcome_guard.yml exists (see that file's own header, and
+# purge_outcome_guard.yml's own, for the full non-forgeability argument).
+# The one route that cannot use this file is that guard's own refusal — it
+# fires precisely when these names may be shadowed — so it emits through
+# _emit_purge_refused_literal.yml instead: the same 'dmf-l3-purge-outcome'
+# task name, but a msg that is a pure YAML literal with no Jinja at all.
+# Those two files are the COMPLETE, enumerated set of DMF_L3_PURGE_OUTCOME
+# emission points, and tests/scripts/check_playbook_structure.py gates
+# exactly that — mirroring its own switch-outcome checks.
+
+- name: dmf-l3-purge-outcome
+  ansible.builtin.debug:
+    msg: >-
+      DMF_L3_PURGE_OUTCOME: {{ l3_purge_outcome_token }}{{ (' ' ~ l3_purge_outcome_kv) if (l3_purge_outcome_kv | default('')) else '' }}

@@ -97,6 +97,8 @@ jobs:
         run: ansible-playbook tests/l3-topology-execution.yml
       - name: l3-switch-execution
         run: ansible-playbook tests/l3-switch-execution.yml
+      - name: l3-finalise-purge-execution
+        run: ansible-playbook tests/l3-finalise-purge-execution.yml
 
   working-model:
     # Working-model block sync (umbrella issue dmfdeploy/dmfdeploy#32): the

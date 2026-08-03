@@ -310,6 +310,27 @@
           - _switch_outcome_emitted is not defined
           - l3_switch_outcome_token is not defined
           - l3_switch_outcome_kv is not defined
+          # umbrella #347 (Arc 2b, finalise-purge launcher): the SAME
+          # "emitter shadow" defense as l3_switch_outcome_token/
+          # l3_switch_outcome_kv above, for finalise-purge.yml's own
+          # DMF_L3_PURGE_OUTCOME event (roles/l3_run_guard/tasks/
+          # _emit_purge_outcome.yml — a separate vocabulary, see that file's
+          # own header). _purge_stage is finalise-purge.yml's own in-flight
+          # stage fact (a real set_fact target, so the R5a-1 scanner
+          # requires it here) — the source of detail= on its refused event.
+          # Reserving these here is necessary but NOT sufficient on its own
+          # (same reasoning as the switch tokens' own comment) — finalise-
+          # purge.yml therefore ALSO runs roles/l3_run_guard/tasks/
+          # purge_outcome_guard.yml as its first task, ahead of its outer
+          # block, exactly mirroring switch_outcome_guard.yml's own
+          # construction. Unlike switch, there is no _purge_outcome_emitted
+          # sentinel here — finalise-purge's own rescue has exactly one,
+          # unconditional emit point (no PHASE-2-style branching to
+          # de-duplicate against), so there is no caller-shadowable skip
+          # condition to defend — see purge_outcome_guard.yml's own header.
+          - l3_purge_outcome_token is not defined
+          - l3_purge_outcome_kv is not defined
+          - _purge_stage is not defined
           # umbrella #323 fix round (codex adversarial gate, P1):
           # _switch_stage is switch-mxl-fabrics-demo.yml's own in-flight
           # stage fact, and therefore the SOURCE of detail= on every

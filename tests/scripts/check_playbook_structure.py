@@ -67,6 +67,19 @@ NOT prove the marker fires on every terminal branch with the right enum;
 that's tests/l3-switch-execution.yml's own execution-test job (real
 ansible-playbook runs against the stub, asserting on real stdout).
 
+Also since umbrella #347 (Arc 2b, finalise-purge launcher):
+_check_purge_outcome_marker() / _check_purge_outcome_guard_position() —
+the SAME two structural floors, mirroring the switch-outcome checks above
+byte-for-byte, for playbooks/finalise-purge.yml's own DMF_L3_PURGE_OUTCOME
+event (roles/l3_run_guard/tasks/_emit_purge_outcome.yml,
+purge_outcome_guard.yml). finalise-purge.yml also gets a
+_check_playbook(..., flow="purge") pass, mirroring the teardown flow's own
+rescue:=gate_rescue/always:=release requirements — the one structural
+difference from every other flow is that finalise-purge.yml's own outer
+gate block is NOT tasks[0]: its umbrella #347 outcome-control guard sits
+there instead (mirroring switch's own guard-before-the-block placement),
+so the outer block is checked at tasks[1] (`outer_index=1`).
+
 Usage:  python3 tests/scripts/check_playbook_structure.py
 Exit 0 = every playbook checked below has the expected outer-block shape,
 and no task file re-introduces the umbrella #272 or #273 anti-pattern.
@@ -127,6 +140,14 @@ _TEARDOWN_PLAYBOOKS = [
 ]
 _ROLLBACK_PLAYBOOK = "rollback-run.yml"
 
+# umbrella #347 (Arc 2b) — finalise-purge.yml mirrors teardown's own
+# rescue:=gate_rescue/always:=release shape (checked via flow="purge" below,
+# same requirements as _TEARDOWN_PLAYBOOKS), but its outer block sits at
+# tasks[1], not tasks[0] — see _check_playbook's own outer_index parameter.
+_PURGE_PLAYBOOKS = [
+    "finalise-purge.yml",
+]
+
 _GATE_ROLE = "l3_run_guard"
 
 # umbrella #323 — the switch playbook's own structured-outcome-event
@@ -165,6 +186,27 @@ _SWITCH_GUARD_NAMES = (
     "_switch_stage",
     "_switch_upgrade_verify_ready",
     "_switch_rollback_verified",
+)
+
+# umbrella #347 (Arc 2b, finalise-purge launcher) — the SAME structural
+# floor as the switch-outcome block above, for finalise-purge.yml's own
+# DMF_L3_PURGE_OUTCOME event. See _emit_purge_outcome.yml/
+# purge_outcome_guard.yml's own headers for the per-name rationale — the
+# name set is smaller than the switch one because this playbook has no
+# PHASE-2-style branching (no exactly-once sentinel is reserved: its own
+# rescue has exactly one, unconditional emit point, so there is no
+# caller-shadowable skip condition to defend).
+_PURGE_PLAYBOOK = "finalise-purge.yml"
+_PURGE_OUTCOME_EMIT_FILE = "_emit_purge_outcome.yml"
+_PURGE_OUTCOME_MARKER_NAME = "dmf-l3-purge-outcome"
+_PURGE_OUTCOME_LITERAL_FILE = "_emit_purge_refused_literal.yml"
+_PURGE_OUTCOME_LITERAL_MSG = "DMF_L3_PURGE_OUTCOME: refused detail=reserved-var"
+_PURGE_OUTCOME_EMIT_FILES = (_PURGE_OUTCOME_EMIT_FILE, _PURGE_OUTCOME_LITERAL_FILE)
+_PURGE_GUARD_FILE = "purge_outcome_guard.yml"
+_PURGE_GUARD_NAMES = (
+    "l3_purge_outcome_token",
+    "l3_purge_outcome_kv",
+    "_purge_stage",
 )
 
 # umbrella #272 (regression guard, added same round as the fix) — scan
@@ -714,8 +756,233 @@ def _check_switch_outcome_guard_position() -> list[str]:
     return errors
 
 
-def _check_playbook(filename: str, flow: str) -> list[str]:
-    """flow is one of 'launch', 'teardown', 'rollback'."""
+def _check_one_purge_emit_file(path: Path) -> list[str]:
+    """Shared shape check for a sanctioned DMF_L3_PURGE_OUTCOME emission
+    file — mirrors _check_one_switch_emit_file exactly: exactly ONE task,
+    named literally 'dmf-l3-purge-outcome', and an ansible.builtin.debug
+    task."""
+    errors: list[str] = []
+    rel = path.relative_to(_REPO_ROOT)
+    try:
+        emit_tasks = yaml.safe_load(path.read_text())
+    except yaml.YAMLError as exc:
+        return [f"{rel}: YAML parse error: {exc}"]
+
+    if not isinstance(emit_tasks, list) or len(emit_tasks) != 1:
+        errors.append(
+            f"{rel}: expected exactly ONE task in this file (a sanctioned "
+            "named marker-emission point, mirroring _emit_outcome.yml) — got "
+            f"{len(emit_tasks) if isinstance(emit_tasks, list) else type(emit_tasks).__name__}."
+        )
+        return errors
+
+    only = emit_tasks[0]
+    if not isinstance(only, dict) or only.get("name") != _PURGE_OUTCOME_MARKER_NAME:
+        errors.append(
+            f"{rel}: the single task's own `name:` must be literally "
+            f"'{_PURGE_OUTCOME_MARKER_NAME}' — the console filters AWX job "
+            "events by this exact task name, it does not scrape stdout."
+        )
+    elif "ansible.builtin.debug" not in only and "debug" not in only:
+        errors.append(
+            f"{rel}: the marker task must be an ansible.builtin.debug task "
+            "(event_data.res.msg is what the console parses)."
+        )
+    return errors
+
+
+def _check_purge_outcome_marker() -> list[str]:
+    """umbrella #347 (Arc 2b, finalise-purge launcher) — the SAME structural
+    floor as _check_switch_outcome_marker() above, for
+    playbooks/finalise-purge.yml's own DMF_L3_PURGE_OUTCOME event. See that
+    function's own docstring for the full five-point rationale — condensed
+    here: both sanctioned emission files exist and are correctly shaped,
+    the marker name is unique outside that pair, finalise-purge.yml wires
+    the generic emitter in at least once, the literal emitter is genuinely
+    literal, and purge_outcome_guard.yml still asserts every
+    outcome-decision name."""
+    errors: list[str] = []
+    emit_file = _ROLE_TASKS_DIR / _PURGE_OUTCOME_EMIT_FILE
+    literal_file = _ROLE_TASKS_DIR / _PURGE_OUTCOME_LITERAL_FILE
+
+    missing = [p for p in (emit_file, literal_file) if not p.is_file()]
+    if missing:
+        return [
+            f"{p.relative_to(_REPO_ROOT)}: a sanctioned umbrella #347 "
+            "purge-outcome marker-emission file is missing."
+            for p in missing
+        ]
+
+    errors.extend(_check_one_purge_emit_file(emit_file))
+    errors.extend(_check_one_purge_emit_file(literal_file))
+
+    try:
+        literal_tasks = yaml.safe_load(literal_file.read_text())
+    except yaml.YAMLError:
+        literal_tasks = None
+    if isinstance(literal_tasks, list) and len(literal_tasks) == 1 and isinstance(literal_tasks[0], dict):
+        debug_spec = literal_tasks[0].get("ansible.builtin.debug") or literal_tasks[0].get("debug") or {}
+        msg = debug_spec.get("msg") if isinstance(debug_spec, dict) else None
+        if not isinstance(msg, str) or "{{" in msg or "{%" in msg:
+            errors.append(
+                f"{literal_file.relative_to(_REPO_ROOT)}: this file's marker "
+                "msg MUST be a plain string literal with no Jinja — it is the "
+                "one emission path that runs while l3_purge_outcome_token / "
+                "l3_purge_outcome_kv may be caller-shadowed, and extra_vars "
+                "outrank every variable source, so anything rendered here is "
+                f"forgeable. got: {msg!r}"
+            )
+        elif msg.strip() != _PURGE_OUTCOME_LITERAL_MSG:
+            errors.append(
+                f"{literal_file.relative_to(_REPO_ROOT)}: expected the marker "
+                f"msg to be exactly {_PURGE_OUTCOME_LITERAL_MSG!r} — got "
+                f"{msg.strip()!r}."
+            )
+
+    guard_file = _ROLE_TASKS_DIR / _PURGE_GUARD_FILE
+    if not guard_file.is_file():
+        errors.append(
+            f"roles/l3_run_guard/tasks/{_PURGE_GUARD_FILE}: the purge play's "
+            "outcome-control guard is missing — without it the reserved-var "
+            "refusal path renders the very variables the caller shadowed."
+        )
+    else:
+        guard_text = guard_file.read_text()
+        unguarded = [
+            n for n in _PURGE_GUARD_NAMES if f"{n} is not defined" not in guard_text
+        ]
+        if unguarded:
+            errors.append(
+                f"roles/l3_run_guard/tasks/{_PURGE_GUARD_FILE}: no "
+                f"'<name> is not defined' assertion for {unguarded} — every "
+                "variable the structured-outcome decision reads must be proven "
+                "caller-free before the play does anything (umbrella #347, "
+                "mirroring the umbrella #323 switch fix round's own P1)."
+            )
+
+    other_paths = [
+        p for p in sorted(_ROLE_TASKS_DIR.glob("*.yml"))
+        if p.name not in _PURGE_OUTCOME_EMIT_FILES
+    ]
+    purge_playbook_path = _PLAYBOOKS_DIR / _PURGE_PLAYBOOK
+    other_paths.append(purge_playbook_path)
+
+    dupes: list[str] = []
+    purge_playbook_calls = 0
+    for path in other_paths:
+        if not path.is_file():
+            continue
+        try:
+            doc = yaml.safe_load(path.read_text())
+        except yaml.YAMLError:
+            continue  # a parse error here is already reported by the umbrella #272/#273 scan above
+        if isinstance(doc, list) and doc and isinstance(doc[0], dict) and "tasks" in doc[0]:
+            task_list = doc[0].get("tasks", [])
+        else:
+            task_list = doc
+        for t in _iter_tasks(task_list):
+            if t.get("name") == _PURGE_OUTCOME_MARKER_NAME:
+                dupes.append(str(path.relative_to(_REPO_ROOT)))
+            if path == purge_playbook_path:
+                spec = _include_role_spec(t)
+                if spec is not None and spec.get("tasks_from") == "_emit_purge_outcome":
+                    purge_playbook_calls += 1
+
+    if dupes:
+        errors.append(
+            f"a task literally named '{_PURGE_OUTCOME_MARKER_NAME}' was "
+            f"found outside the two sanctioned emission files "
+            f"({', '.join(_PURGE_OUTCOME_EMIT_FILES)}): {dupes} — the "
+            "emission-point set is closed and enumerated; a third one is how "
+            "a run silently starts reporting two different outcomes."
+        )
+
+    if purge_playbook_calls == 0:
+        errors.append(
+            f"{purge_playbook_path.relative_to(_REPO_ROOT)}: never calls "
+            f"`include_role: ... tasks_from: {_PURGE_OUTCOME_EMIT_FILE[:-4]}` "
+            "— the structured outcome event is wired nowhere."
+        )
+
+    return errors
+
+
+def _check_purge_outcome_guard_position() -> list[str]:
+    """umbrella #347 (Arc 2b) — the SAME two positional facts
+    _check_switch_outcome_guard_position() proves for the switch playbook,
+    for finalise-purge.yml's own purge_outcome_guard: (1) it is the play's
+    very FIRST top-level task; (2) it sits OUTSIDE the outer block's own
+    block:/rescue:/always: lists."""
+    errors: list[str] = []
+    path = _PLAYBOOKS_DIR / _PURGE_PLAYBOOK
+    play, load_errors = _load_single_play(path)
+    if play is None:
+        return load_errors
+
+    tasks = play.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        return [f"{_PURGE_PLAYBOOK}: play has no non-empty 'tasks:' list"]
+
+    first = tasks[0]
+    first_spec = _include_role_spec(first) if isinstance(first, dict) else None
+    guard_first = bool(
+        first_spec
+        and first_spec.get("name") == _GATE_ROLE
+        and first_spec.get("tasks_from") == "purge_outcome_guard"
+    )
+    if not guard_first:
+        errors.append(
+            f"{_PURGE_PLAYBOOK}: the FIRST top-level task must be "
+            f"`include_role: name: {_GATE_ROLE} tasks_from: purge_outcome_guard` "
+            "(umbrella #347) — got "
+            f"{sorted(first.keys()) if isinstance(first, dict) else first!r}. "
+            "This position is load-bearing: outside the outer block, the "
+            "guard's own refusal can never be caught by a rescue: whose "
+            "emission the caller may have already shadowed, and nothing "
+            "can run ahead of it to consult a not-yet-proven-caller-free "
+            "variable."
+        )
+
+    guard_inside_block = _find_include_role(
+        tasks, name=_GATE_ROLE, tasks_from="purge_outcome_guard"
+    )
+    if guard_first:
+        if len(guard_inside_block) != 1:
+            errors.append(
+                f"{_PURGE_PLAYBOOK}: `include_role: ... tasks_from: "
+                "purge_outcome_guard` is reachable more than once "
+                f"({len(guard_inside_block)} occurrences) — expected "
+                "exactly one, at the top level as tasks[0]. A second "
+                "occurrence nested inside the outer block's own "
+                "block:/rescue:/always: would mean the guard can still run "
+                "on a path where the caller's own extra_vars are already "
+                "in scope for the whole block body."
+            )
+    elif guard_inside_block:
+        errors.append(
+            f"{_PURGE_PLAYBOOK}: `include_role: ... tasks_from: "
+            "purge_outcome_guard` was found, but NOT as the play's first "
+            "top-level task — it is reachable only from somewhere nested "
+            "(the outer block's own block:/rescue:/always: lists), which "
+            "reopens the umbrella #347 hole (see this function's own "
+            "docstring)."
+        )
+
+    return errors
+
+
+def _check_playbook(filename: str, flow: str, *, outer_index: int = 0) -> list[str]:
+    """flow is one of 'launch', 'teardown', 'rollback', 'purge'.
+
+    outer_index: which top-level task IS the outer gate-through-terminal
+    block. 0 for every flow except 'purge' — finalise-purge.yml's own
+    umbrella #347 outcome-control guard (purge_outcome_guard.yml) runs as
+    tasks[0], ahead of the outer block, mirroring
+    switch-mxl-fabrics-demo.yml's own switch_outcome_guard placement
+    exactly (that guard's OWN position is checked separately, by
+    _check_purge_outcome_guard_position() below — this parameter only
+    tells this function where to find the block it still fully checks the
+    rescue:/always: shape of)."""
     path = _PLAYBOOKS_DIR / filename
     if not path.is_file():
         return [f"{filename}: file not found under {_PLAYBOOKS_DIR}"]
@@ -725,23 +992,30 @@ def _check_playbook(filename: str, flow: str) -> list[str]:
         return errors
 
     tasks = play.get("tasks")
-    if not isinstance(tasks, list) or not tasks:
-        errors.append(f"{filename}: play has no non-empty 'tasks:' list")
+    if not isinstance(tasks, list) or len(tasks) <= outer_index:
+        errors.append(
+            f"{filename}: play has no 'tasks:' list with a top-level entry "
+            f"at index {outer_index}"
+        )
         return errors
 
     # ── Requirement 1: the outer gate-through-terminal block is the FIRST
     #    top-level task — no task may precede it (this is exactly the
     #    class of bug that let the crosspoint credential-check bug through
-    #    undetected: it used to sit before the block, R5a-3). We also
-    #    check it's the ONLY top-level task, matching every real
-    #    playbook's current shape — a future second top-level task
-    #    (sibling to the block, e.g. in a stray pre_tasks/post_tasks) would
-    #    sit outside the block's own rescue/always fate-sharing, the same
-    #    structural risk as something sneaking in BEFORE it. ─────────────
-    outer = tasks[0]
+    #    undetected: it used to sit before the block, R5a-3) — or, for
+    #    flow='purge', the task immediately after its own outcome-control
+    #    guard (outer_index=1; see this function's own docstring above). We
+    #    also check it's the ONLY top-level task from outer_index on,
+    #    matching every real playbook's current shape — a future extra
+    #    top-level task (sibling to the block, e.g. in a stray
+    #    pre_tasks/post_tasks) would sit outside the block's own
+    #    rescue/always fate-sharing, the same structural risk as something
+    #    sneaking in BEFORE it. ─────────────────────────────────────────
+    outer = tasks[outer_index]
     if not isinstance(outer, dict) or "block" not in outer:
         errors.append(
-            f"{filename}: the FIRST top-level task is not a `block:` — got "
+            f"{filename}: the top-level task at index {outer_index} is not "
+            f"a `block:` — got "
             f"{sorted(outer.keys()) if isinstance(outer, dict) else outer!r}. "
             "No task may precede the L3 gate-through-terminal block (R5a-3: "
             "a credential assert used to sit here in "
@@ -751,12 +1025,12 @@ def _check_playbook(filename: str, flow: str) -> list[str]:
         )
         return errors
 
-    if len(tasks) != 1:
+    if len(tasks) != outer_index + 1:
         errors.append(
             f"{filename}: the outer gate block is not the ONLY top-level "
-            f"task — {len(tasks)} top-level tasks found under `tasks:`. "
-            "Anything else at this level sits outside the block's own "
-            "rescue:/always: fate-sharing."
+            f"task after index {outer_index} — {len(tasks)} top-level "
+            "tasks found under `tasks:`. Anything else at this level sits "
+            "outside the block's own rescue:/always: fate-sharing."
         )
 
     inner_block = outer.get("block")
@@ -768,12 +1042,13 @@ def _check_playbook(filename: str, flow: str) -> list[str]:
     has_always = "always" in outer
 
     # ── Requirement 2: rescue:/always: — expectations differ by flow. ────
-    if flow in ("launch", "teardown"):
+    if flow in ("launch", "teardown", "purge"):
         if not has_rescue:
             errors.append(
                 f"{filename}: outer block has no `rescue:` key — "
-                "launch/teardown playbooks must share l3_run_guard's "
-                "gate_rescue.yml here (R4a Backbone)."
+                "launch/teardown/purge playbooks must share l3_run_guard's "
+                "gate_rescue.yml here (R4a Backbone; umbrella #347 for the "
+                "purge flow)."
             )
         elif not _find_include_role(outer.get("rescue"), tasks_from="gate_rescue"):
             errors.append(
@@ -880,14 +1155,18 @@ def main() -> int:
     for fn in _TEARDOWN_PLAYBOOKS:
         all_errors.extend(_check_playbook(fn, "teardown"))
     all_errors.extend(_check_playbook(_ROLLBACK_PLAYBOOK, "rollback"))
+    for fn in _PURGE_PLAYBOOKS:
+        all_errors.extend(_check_playbook(fn, "purge", outer_index=1))
 
-    total = len(_LAUNCH_PLAYBOOKS) + len(_TEARDOWN_PLAYBOOKS) + 1
+    total = len(_LAUNCH_PLAYBOOKS) + len(_TEARDOWN_PLAYBOOKS) + 1 + len(_PURGE_PLAYBOOKS)
 
     production_scan = _iter_production_yaml_string_leaves()
     all_errors.extend(_check_none_sentinel_antipattern(production_scan))
     all_errors.extend(_check_type_debug_antipattern(production_scan))
     all_errors.extend(_check_switch_outcome_marker())
     all_errors.extend(_check_switch_outcome_guard_position())
+    all_errors.extend(_check_purge_outcome_marker())
+    all_errors.extend(_check_purge_outcome_guard_position())
 
     if all_errors:
         print(
@@ -925,7 +1204,15 @@ def main() -> int:
         "still the play's first top-level task and is reachable nowhere "
         "else, in particular not from inside the outer block's own "
         "block:/rescue:/always: lists (see "
-        "_check_switch_outcome_guard_position's own docstring)."
+        "_check_switch_outcome_guard_position's own docstring). "
+        f"umbrella #347 (Arc 2b): {_PURGE_PLAYBOOK} gets the SAME two "
+        f"outcome-marker/guard-position checks as the switch playbook "
+        f"(mirroring '{_PURGE_OUTCOME_MARKER_NAME}' across "
+        f"{', '.join(_PURGE_OUTCOME_EMIT_FILES)}, {_PURGE_GUARD_FILE} proving "
+        f"{len(_PURGE_GUARD_NAMES)} outcome-decision names caller-free, and "
+        f"{_PURGE_GUARD_FILE}'s own include still tasks[0]) plus a "
+        "teardown-shaped rescue:=gate_rescue/always:=release check whose own "
+        "outer block sits at tasks[1] instead of tasks[0]."
     )
     return 0
 

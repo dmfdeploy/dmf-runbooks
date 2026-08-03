@@ -1,0 +1,73 @@
+---
+# umbrella #347 (Arc 2b, finalise-purge launcher) — delete the NetBox Tag
+# object `workload:<slug>` itself. Invoked via `include_role: name:
+# netbox_catalog_common, tasks_from: purge_workload_tag` ONLY after the
+# caller (playbooks/finalise-purge.yml) has confirmed EVERY member is
+# readback-confirmed absent (_purge_dirty_count == 0, purge_workload_records.yml's
+# own output) — frozen behavior #6, "Tag object LAST". A Tag-object DELETE
+# is genuinely new in this repo (every prior launcher only ever created
+# tags, never deleted one) — same ansible.builtin.uri/no_log style as every
+# other raw NetBox call in this role, per the WO's own instruction.
+#
+# Idempotent (204 or 404 both accepted on the delete, exactly like the
+# member-delete idiom) — a re-run after a prior attempt already removed the
+# tag converges cleanly rather than erroring on a second delete.
+#
+# Inputs: workload_slug.
+# Outputs: _purge_tag_result — "deleted" / "already-gone" / "dirty"
+#   (readback-authoritative, same three-way classification as
+#   _purge_delete_one_member.yml, reused here via the same
+#   l3_netbox_delete_dirty filter — dirty here means the tag object survived
+#   the DELETE, which the caller's own FINAL source read (frozen behavior
+#   #7) treats as authoritative regardless of what this fact says; this is
+#   exposed for the outcome event's kv only, never a second source of
+#   truth).
+
+- name: "L3 purge: look up the workload Tag object by NAME (api/extras/tags/?name=)"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/extras/tags/?name={{ ('workload:' ~ workload_slug) | urlencode }}"
+    method: GET
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+    validate_certs: false
+    return_content: true
+  register: _purge_tag_lookup
+  no_log: true
+
+- name: "L3 purge: set the tag id fact (0 when already absent — DELETE against id 0 below then correctly 404s, converging idempotently)"
+  ansible.builtin.set_fact:
+    _purge_tag_id: "{{ (_purge_tag_lookup.json.results | default([]) | first | default({})).id | default(0) }}"
+  no_log: true
+
+- name: "L3 purge: DELETE the Tag object (idempotent — 404 tolerated as already-gone; a no-op call when _purge_tag_id is 0)"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/extras/tags/{{ _purge_tag_id }}/"
+    method: DELETE
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+    validate_certs: false
+    status_code: [204, 404]
+  register: _purge_tag_delete
+  ignore_errors: true
+  no_log: true
+
+- name: "L3 purge: readback — fresh GET-by-id after the delete (expects 404; call-success never equals clean)"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/extras/tags/{{ _purge_tag_id }}/"
+    method: GET
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+    validate_certs: false
+    status_code: [200, 404]
+  register: _purge_tag_readback
+  ignore_errors: true
+  no_log: true
+
+- name: "L3 purge: classify the tag delete result (pure — deleted / already-gone / dirty, readback-authoritative)"
+  ansible.builtin.set_fact:
+    _purge_tag_result: >-
+      {{
+        'dirty'
+        if (_purge_tag_readback.status | default(0) | l3_netbox_delete_dirty(_purge_tag_readback.failed | default(true)))
+        else ('deleted' if (_purge_tag_delete.status | default(0) == 204) else 'already-gone')
+      }}

@@ -1,0 +1,31 @@
+---
+# umbrella #347 (Arc 2b) — the SECOND, and deliberately the ONLY other,
+# sanctioned DMF_L3_PURGE_OUTCOME emission point: a marker whose ENTIRE
+# payload is a YAML string literal, carrying no Jinja at all. Mirrors
+# _emit_switch_refused_literal.yml's construction exactly — see that file's
+# own header for the full non-forgeability argument (extra_vars outrank
+# task-level vars/set_fact/register identically everywhere in Ansible, so
+# the ONE path that must emit while l3_purge_outcome_token/l3_purge_outcome_kv
+# may be caller-shadowed cannot render either name; only a literal in a
+# task's own module args is genuinely unreachable to a caller).
+#
+# purge_outcome_guard.yml's rescue includes this file, and the whole
+# marker — token AND detail — is spelled out here, byte for byte, before any
+# shadowed value is ever consulted.
+#
+# NO KV, ON PURPOSE — same reasoning as the switch precedent: this fires
+# exactly when the caller has been caught trying to forge this play's own
+# internal state, and echoing any caller-supplied string back into a
+# structured event the console parses is precisely the wrong instinct there.
+# Nothing real is lost: the console correlates the event to its own dispatch
+# by AWX job id, not by this kv.
+#
+# The task NAME is the same 'dmf-l3-purge-outcome' the console filters AWX
+# job events by. tests/scripts/check_playbook_structure.py's own uniqueness
+# check sanctions exactly TWO emission files by name (this one and
+# _emit_purge_outcome.yml) and verifies the shape of each, mirroring its
+# existing switch-outcome checks.
+
+- name: dmf-l3-purge-outcome
+  ansible.builtin.debug:
+    msg: "DMF_L3_PURGE_OUTCOME: refused detail=reserved-var"
