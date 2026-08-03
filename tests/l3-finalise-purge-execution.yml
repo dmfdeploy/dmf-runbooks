@@ -84,6 +84,20 @@
 #     checks (Jinja's `trim` filter silently coerces non-strings, so the
 #     bare `(x | trim) != ''` check alone never discriminates this).
 #
+# umbrella #347 fix round FIX-A2b.3 (operator review 2026-08-03) — every
+# scenario above now invokes the DECLARED JT-contract shape: only
+# vault_netbox_catalog_token (never netbox_api_token directly — the
+# playbook's own play-level `vars:` mapping resolves it, see
+# playbooks/finalise-purge.yml's header). Scenario (13) is this round's own
+# new probe:
+#   scenario (13) — a blank vault_netbox_catalog_token must refuse
+#     pre-lock (detail=pre-lock, the legacy preflight-error marker),
+#     before any NetBox call. Catches a mutant that maps netbox_api_token
+#     with a non-empty fallback (defeating ADR-0032's no-silent-upgrade
+#     posture), or that maps it only as a ROLE default instead of a PLAY
+#     var (which this exact bug proved does not reach
+#     netbox_catalog_common's later, separate include_role).
+#
 # Run:  ansible-playbook tests/l3-finalise-purge-execution.yml
 # (LONG — fresh stub servers per scenario, real nested ansible-playbook
 # subprocess runs; run it detached and poll rather than in a foreground
@@ -188,7 +202,7 @@
               - -e
               - "netbox_api_url={{ _fpe1_netbox_url }}"
               - -e
-              - netbox_api_token=fake-netbox-token
+              - vault_netbox_catalog_token=fake-netbox-token
               - -e
               - workload_slug=demo-a
               - -e
@@ -342,7 +356,7 @@
               - -e
               - "netbox_api_url={{ _fpe2_netbox_url }}"
               - -e
-              - netbox_api_token=fake-netbox-token
+              - vault_netbox_catalog_token=fake-netbox-token
               - -e
               - '{"purge_expected_service_ids": []}'
               - -e
@@ -382,7 +396,7 @@
               - -e
               - "netbox_api_url={{ _fpe2_netbox_url }}"
               - -e
-              - netbox_api_token=fake-netbox-token
+              - vault_netbox_catalog_token=fake-netbox-token
               - -e
               - workload_slug=demo-quartet
               - -e
@@ -422,7 +436,7 @@
               - -e
               - "netbox_api_url={{ _fpe2_netbox_url }}"
               - -e
-              - netbox_api_token=fake-netbox-token
+              - vault_netbox_catalog_token=fake-netbox-token
               - -e
               - workload_slug=demo-quartet
               - -e
@@ -462,7 +476,7 @@
               - -e
               - "netbox_api_url={{ _fpe2_netbox_url }}"
               - -e
-              - netbox_api_token=fake-netbox-token
+              - vault_netbox_catalog_token=fake-netbox-token
               - -e
               - workload_slug=demo-quartet
               - -e
@@ -504,7 +518,7 @@
               - -e
               - "netbox_api_url={{ _fpe2_netbox_url }}"
               - -e
-              - netbox_api_token=fake-netbox-token
+              - vault_netbox_catalog_token=fake-netbox-token
               - -e
               - workload_slug=demo-quartet
               - -e
@@ -628,7 +642,7 @@
               - -e
               - "netbox_api_url={{ _fpe3_netbox_url }}"
               - -e
-              - netbox_api_token=fake-netbox-token
+              - vault_netbox_catalog_token=fake-netbox-token
               - -e
               - workload_slug=demo-b
               - -e
@@ -770,7 +784,7 @@
               - -e
               - "netbox_api_url={{ _fpe4_netbox_url }}"
               - -e
-              - netbox_api_token=fake-netbox-token
+              - vault_netbox_catalog_token=fake-netbox-token
               - -e
               - workload_slug=demo-c
               - -e
@@ -845,7 +859,7 @@
               - -e
               - "netbox_api_url={{ _fpe4_netbox_url }}"
               - -e
-              - netbox_api_token=fake-netbox-token
+              - vault_netbox_catalog_token=fake-netbox-token
               - -e
               - workload_slug=demo-c2
               - -e
@@ -974,7 +988,7 @@
               - -e
               - "netbox_api_url={{ _fpe5_netbox_url }}"
               - -e
-              - netbox_api_token=fake-netbox-token
+              - vault_netbox_catalog_token=fake-netbox-token
               - -e
               - workload_slug=demo-d
               - -e
@@ -1107,7 +1121,7 @@
               - -e
               - "netbox_api_url={{ _fpe6_netbox_url }}"
               - -e
-              - netbox_api_token=fake-netbox-token
+              - vault_netbox_catalog_token=fake-netbox-token
               - -e
               - workload_slug=demo-e
               - -e
@@ -1281,7 +1295,7 @@
               - -e
               - "netbox_api_url={{ _fpe7_netbox_url }}"
               - -e
-              - netbox_api_token=fake-netbox-token
+              - vault_netbox_catalog_token=fake-netbox-token
               - -e
               - workload_slug=demo-f
               - -e
@@ -1372,7 +1386,7 @@
               - -e
               - "netbox_api_url={{ _fpe8_pidfile.netbox_url }}"
               - -e
-              - netbox_api_token=fake-netbox-token
+              - vault_netbox_catalog_token=fake-netbox-token
               - -e
               - workload_slug=demo-e
               - -e
@@ -1524,7 +1538,7 @@
               - -e
               - "netbox_api_url={{ _fpe9_netbox_url }}"
               - -e
-              - netbox_api_token=fake-netbox-token
+              - vault_netbox_catalog_token=fake-netbox-token
               - -e
               - workload_slug=demo-g
               - -e
@@ -1672,7 +1686,7 @@
               - -e
               - "netbox_api_url={{ _fpe10_netbox_url }}"
               - -e
-              - netbox_api_token=fake-netbox-token
+              - vault_netbox_catalog_token=fake-netbox-token
               - -e
               - workload_slug=demo-h
               - -e
@@ -1807,7 +1821,7 @@
               - -e
               - "netbox_api_url={{ _fpe11_netbox_url }}"
               - -e
-              - netbox_api_token=fake-netbox-token
+              - vault_netbox_catalog_token=fake-netbox-token
               - -e
               - workload_slug=demo-page-a
               - -e
@@ -1902,7 +1916,7 @@
               - -e
               - "netbox_api_url={{ _fpe11_netbox_url }}"
               - -e
-              - netbox_api_token=fake-netbox-token
+              - vault_netbox_catalog_token=fake-netbox-token
               - -e
               - workload_slug=demo-page-b
               - -e
@@ -2015,7 +2029,7 @@
               - -e
               - "netbox_api_url={{ _fpe12_netbox_url }}"
               - -e
-              - netbox_api_token=fake-netbox-token
+              - vault_netbox_catalog_token=fake-netbox-token
               - -e
               - workload_slug=demo-quartet-2
               - -e
@@ -2049,17 +2063,141 @@
           changed_when: false
           failed_when: false
 
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 13 (fix round FIX-A2b.3, operator review 2026-08-03): the
+    # DECLARED JT-contract invocation with the scoped catalog-writer token
+    # BLANK. Every OTHER scenario above now passes ONLY
+    # vault_netbox_catalog_token (the frozen JT contract's own static var,
+    # never netbox_api_token directly — see this playbook's own
+    # play-level `vars:` mapping, and its header comment for the full
+    # story). This scenario proves the mapping's OWN fail-closed edge: an
+    # absent/blank scoped token must refuse structurally, pre-lock, before
+    # any NetBox call — never proceed with an empty Authorization header.
+    # Discriminates a mutant that maps netbox_api_token with a fallback to
+    # some non-empty default (defeating _assert_netbox_token.yml's own
+    # ADR-0032 "no silent credential upgrade" check) or that maps it only
+    # SOMETIMES (e.g. as a role default instead of a play var, which this
+    # exact fix round proved does not reach netbox_catalog_common's own
+    # later include).
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(13) blank vault_netbox_catalog_token refuses pre-lock, before any NetBox call"
+      block:
+        - name: "(13) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-fpe-13.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(13) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-fpe-13.json]
+          register: _fpe13_start
+          changed_when: false
+
+        - name: "(13) parse stub URLs"
+          ansible.builtin.set_fact:
+            _fpe13_k8s_url: "{{ _fpe13_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _fpe13_netbox_url: "{{ _fpe13_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(13) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-fpe-13-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _fpe13_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(13) run the REAL finalise-purge playbook — the declared JT invocation, vault_netbox_catalog_token blank"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/finalise-purge.yml"
+              - -e
+              - "l3_kube_api_url={{ _fpe13_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _fpe13_netbox_url }}"
+              - -e
+              - vault_netbox_catalog_token=
+              - -e
+              - workload_slug=demo-blank-token
+              - -e
+              - '{"purge_expected_service_ids": []}'
+              - -e
+              - purge_actor=test-actor
+              - -e
+              - purge_role=test-role
+              - -e
+              - "purge_reason=blank token probe"
+              - -e
+              - l3_request_id=13131313131313131313131313131313
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            KUBECONFIG: /tmp/l3-fpe-13-kubeconfig.yaml
+          register: _fpe13_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(13) ASSERT: refused pre-lock — never reaches the frozen-contract assert (detail=preflight), let alone any NetBox call"
+          ansible.builtin.assert:
+            that:
+              - _fpe13_run.rc != 0
+              - "'DMF_L3_PURGE_OUTCOME: refused' in _fpe13_run.stdout"
+              - "'detail=pre-lock' in _fpe13_run.stdout"
+              - "'preflight-error' in _fpe13_run.stdout"
+            fail_msg: "(13) FAIL — expected a pre-lock refusal for a blank vault_netbox_catalog_token. stdout={{ _fpe13_run.stdout }}"
+
+        - name: "(13) ASSERT: the NetBox stub was never touched — no service list request landed"
+          ansible.builtin.uri:
+            url: "{{ _fpe13_netbox_url }}/api/ipam/services/"
+            method: GET
+            status_code: [200]
+          register: _fpe13_services_check
+
+        - name: "(13) ASSERT: zero services exist (nothing was ever seeded OR created)"
+          ansible.builtin.assert:
+            that:
+              - (_fpe13_services_check.json.results | default([])) | length == 0
+            fail_msg: "(13) FAIL — expected an empty NetBox stub, found {{ _fpe13_services_check.json }}"
+      always:
+        - name: "(13) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-fpe-13.json]
+          changed_when: false
+          failed_when: false
+
     - name: "ALL finalise-purge EXECUTION SCENARIOS PASSED"
       ansible.builtin.debug:
         msg: >-
-          umbrella #347 (Arc 2b) + fix round FIX-A2b.1: playbooks/
+          umbrella #347 (Arc 2b) + fix rounds FIX-A2b.1/FIX-A2b.3: playbooks/
           finalise-purge.yml's happy path, frozen-contract quartet +
           malformed-ids refusals, fail-closed unexpected-member and
           bad-lifecycle refusals, already-gone convergence, tag-delete-last
           ordering (including a genuinely dirty member), re-run
-          convergence, AND all four of codex's own GATE-A2b.1 executed
+          convergence, all four of codex's own GATE-A2b.1 executed
           probes (forged final-read facts, a cross-workload retag, a
           bad-lifecycle member on a late pagination page, a non-string
-          purge_actor) are all proven refused/caught by real
+          purge_actor), AND the declared JT-contract invocation (every
+          scenario above now supplies ONLY vault_netbox_catalog_token,
+          never netbox_api_token directly) with its own blank-token
+          pre-lock refusal probe, are all proven refused/caught by real
           ansible-playbook execution against the stub harness — not just
           static structure checks.
