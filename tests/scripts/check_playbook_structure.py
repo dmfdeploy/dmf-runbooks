@@ -1000,6 +1000,20 @@ def _check_purge_success_after_lock_release() -> list[str]:
     reorders these two includes would ship a success marker even when the
     trailing lock-release itself fails — this function is what makes that
     regression a structural failure here instead of a live incident.
+
+    umbrella #347 fix round FIX-A2b.2 (P2, codex GATE-A2b.1R) — the FIRST
+    version of this function tracked only the LAST-seen
+    `tasks_from: _emit_purge_outcome` include's own index
+    (`success_emit_index = i`, unconditionally overwritten on every match,
+    the same shape lock_release_index's own `is None` guard deliberately
+    avoids for the FIRST match). A SECOND `_emit_purge_outcome` include
+    added anywhere in the block — e.g. right after the first, still both
+    after lock_release — silently overwrote the first index with the
+    second and reported the SAME single-success-emit verdict either way,
+    so a duplicate emitter (DMF_L3_PURGE_OUTCOME: success firing TWICE)
+    passed this check clean. Every match is now collected into a list;
+    the check requires EXACTLY ONE, not merely "at least one whose index
+    happens to be highest."
     """
     errors: list[str] = []
     path = _PLAYBOOKS_DIR / _PURGE_PLAYBOOK
@@ -1017,7 +1031,7 @@ def _check_purge_success_after_lock_release() -> list[str]:
         return [f"{_PURGE_PLAYBOOK}: outer task's own `block:` is not a list"]
 
     lock_release_index = None
-    success_emit_index = None
+    success_emit_indices: list[int] = []
     for i, t in enumerate(inner_block):
         if not isinstance(t, dict):
             continue
@@ -1031,7 +1045,7 @@ def _check_purge_success_after_lock_release() -> list[str]:
         ):
             lock_release_index = i
         if spec.get("name") == _GATE_ROLE and spec.get("tasks_from") == "_emit_purge_outcome":
-            success_emit_index = i
+            success_emit_indices.append(i)
 
     if lock_release_index is None:
         errors.append(
@@ -1039,22 +1053,28 @@ def _check_purge_success_after_lock_release() -> list[str]:
             f"`include_role: name: {_GATE_ROLE} tasks_from: lock_release` "
             "(the success-path lock release)."
         )
-    if success_emit_index is None:
+    if not success_emit_indices:
         errors.append(
             f"{_PURGE_PLAYBOOK}: outer block's own `block:` never calls "
             f"`include_role: name: {_GATE_ROLE} tasks_from: _emit_purge_outcome` "
             "(the success-path outcome emit)."
         )
-    if (
-        lock_release_index is not None
-        and success_emit_index is not None
-        and success_emit_index <= lock_release_index
-    ):
+    elif len(success_emit_indices) > 1:
+        errors.append(
+            f"{_PURGE_PLAYBOOK}: outer block's own `block:` calls "
+            f"`include_role: name: {_GATE_ROLE} tasks_from: _emit_purge_outcome` "
+            f"{len(success_emit_indices)} times (block indices "
+            f"{success_emit_indices}) — umbrella #347 fix round P2 "
+            "(GATE-A2b.1R). Exactly ONE success emit is permitted; more "
+            "than one would emit DMF_L3_PURGE_OUTCOME: success more than "
+            "once for a single run."
+        )
+    elif lock_release_index is not None and success_emit_indices[0] <= lock_release_index:
         errors.append(
             f"{_PURGE_PLAYBOOK}: the success-path `_emit_purge_outcome` "
-            f"include (block index {success_emit_index}) is not AFTER the "
-            f"`lock_release` include (block index {lock_release_index}) — "
-            "umbrella #347 fix round P3-1. A success marker must never be "
+            f"include (block index {success_emit_indices[0]}) is not AFTER "
+            f"the `lock_release` include (block index {lock_release_index}) "
+            "— umbrella #347 fix round P3-1. A success marker must never be "
             "emitted before the facility lock is actually released; if "
             "anything after lock_release could still fail, the success "
             "marker must stay unreached and the failure reported honestly "
