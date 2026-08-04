@@ -159,7 +159,7 @@
     # loop) and fatal for every topology one: `helm template <group-item>
     # /tmp/ansible.XXXl3-capacity-chart/<chart>` against an
     # already-removed directory → `Error: path "..." not found`, refusing
-    # the run in the gate (live AWX job 288, env v5on-r8aw, 2026-07-28).
+    # the run in the gate (live AWX job 288, env <env>, 2026-07-28).
     # Cleanup stays in the `always` below so a FAILED scalar render still
     # removes the tempdir — that fail-safe is why the loop moved to the
     # cleanup rather than the cleanup moving past the loop.
