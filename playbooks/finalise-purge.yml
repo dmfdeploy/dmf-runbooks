@@ -27,10 +27,17 @@
 #                                the existing l3_run_guard identity seam
 #                                (identity.yml); deliberately NOT re-asserted
 #                                here as a purge_* var.
-# Static JT vars (registered later in dmf-infra, a SEPARATE change):
-# netbox_api_url, vault_netbox_catalog_token (scoped catalog token, never
-# admin — ADR-0032), exactly like every existing media-finalise-* JT entry.
-# JT name is frozen as media-finalise-purge.
+# Static JT vars (registered in dmf-infra, a SEPARATE change): netbox_api_url,
+# vault_netbox_purge_token — ADR-0032 Amendment 3 (2026-08-14): finalise-purge
+# is the one catalog launcher that does NOT use the shared
+# vault_netbox_catalog_token every other media-* JT entry uses. It gets its
+# own delete-only identity (dmf-catalog-purge-svc: view + constrained delete
+# on ipam.service/extras.tag, no add/change) instead, because the shared
+# catalog-writer token's necessary add/change on those same two models made
+# its delete grant self-manufacturable — create a workload:<x> tag, attach it
+# to an unrelated record, then delete it (lkirc caught this twice against the
+# shared-token constraint-only design). JT name is frozen as
+# media-finalise-purge.
 #
 # SHAPE: mirrors playbooks/teardown-mxl-fabrics-demo.yml's single outer
 # block/rescue/always exactly — lock_only -> this playbook's own asserts ->
@@ -85,21 +92,29 @@
     # l3_run_guard's OWN identical-looking default (defaults/main.yml:102)
     # is private to that role's own include_role scope, so it never reaches
     # this play's LATER, separate netbox_catalog_common include either. A
-    # real AWX launch (which supplies only the frozen JT contract's
-    # vault_netbox_catalog_token, never netbox_api_token directly) reached
+    # real AWX launch (which supplies only the frozen JT contract's own
+    # scoped token, never netbox_api_token directly) reached
     # netbox_catalog_common's first NetBox URI with the var entirely
     # undefined — masked in every nested test scenario by an explicit
     # -e netbox_api_token override (global, always wins regardless of any
-    # mapping). Byte-same mapping semantics + comment posture as
-    # roles/mxl/defaults/main.yml:14-17 (ADR-0032: the scoped catalog-
-    # writer token, NO fallback to vault_netbox_api_token — the admin
-    # token — so an absent scoped token stays blank and
-    # _assert_netbox_token.yml's structural check refuses it, never a
-    # silent credential upgrade). Declared at PLAY scope (not a role
-    # default) specifically because play vars outrank role defaults AND
-    # are visible to every included task in this play, not just one
-    # role's own — real extra_vars still outrank both.
-    netbox_api_token: "{{ vault_netbox_catalog_token | default('') }}"
+    # mapping). Declared at PLAY scope (not a role default) specifically
+    # because play vars outrank role defaults AND are visible to every
+    # included task in this play, not just one role's own — real extra_vars
+    # still outrank both.
+    #
+    # ADR-0032 Amendment 3 (2026-08-14, dmfdeploy/dmfdeploy#347): sources
+    # vault_netbox_purge_token, NOT vault_netbox_catalog_token like every
+    # other launcher in this repo (roles/mxl/defaults/main.yml:14-17 etc.).
+    # This is the ONE deliberate exception — finalise-purge is the only
+    # launcher that DELETEs NetBox records rather than patching a lifecycle
+    # tag, and it now runs under its own delete-only identity
+    # (dmf-catalog-purge-svc) precisely so it never also carries the
+    # add/change capability that made the shared catalog-writer token's
+    # delete grant self-manufacturable. Same fail-closed posture as before:
+    # NO fallback to any broader token — an absent scoped token stays blank
+    # and _assert_netbox_token.yml's structural check refuses it, never a
+    # silent credential upgrade.
+    netbox_api_token: "{{ vault_netbox_purge_token | default('') }}"
   tasks:
     # The ONE task that deliberately sits OUTSIDE the outer block below
     # (mirrors switch-mxl-fabrics-demo.yml's own umbrella #323 fix-round
