@@ -115,6 +115,14 @@
     # and _assert_netbox_token.yml's structural check refuses it, never a
     # silent credential upgrade.
     netbox_api_token: "{{ vault_netbox_purge_token | default('') }}"
+    # lkirc review (dmf-runbooks#41): names the var this playbook actually
+    # reads, so a blank-token refusal (_assert_netbox_token.yml, run from
+    # lock_only.yml as this play's own pre-lock guard) points an operator
+    # at vault_netbox_purge_token, not the generic vault_netbox_catalog_token
+    # wording every other launcher still correctly gets. See that file's
+    # own header for why this is message-only and safe to leave caller-
+    # settable.
+    l3_netbox_token_hint: vault_netbox_purge_token
   tasks:
     # The ONE task that deliberately sits OUTSIDE the outer block below
     # (mirrors switch-mxl-fabrics-demo.yml's own umbrella #323 fix-round

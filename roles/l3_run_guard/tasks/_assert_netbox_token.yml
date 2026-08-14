@@ -15,6 +15,44 @@
 # 'preflight-error' token, never override-able, pre-lock/pre-mutation)
 # rather than a silent credential upgrade to broader access than ADR-0032
 # intends a launcher/rollback run to ever carry.
+#
+# ADR-0032 Amendment 3 (lkirc review, dmf-runbooks#41): the message below
+# used to hard-code "vault_netbox_catalog_token" — accurate for every
+# caller EXCEPT finalise-purge.yml, which (since Amendment 3) maps
+# netbox_api_token from vault_netbox_purge_token instead, on its own
+# delete-only identity. Pointing a finalise-purge operator at the WRONG
+# var name doesn't just misinform; lkirc's own finding is that it can
+# nudge a stuck operator toward a direct `-e netbox_api_token=...`
+# workaround instead, which — being an extra_var — silently outranks
+# every play/role-level mapping and defeats the delete-only isolation
+# the identity split exists for. l3_netbox_token_hint lets a caller name
+# which var it actually reads; every OTHER caller (launch's preflight.yml,
+# rollback's rollback_identity.yml) leaves it unset and keeps this
+# message unchanged. Message-only — l3_netbox_token_hint never touches
+# the refusal decision itself (still purely netbox_api_token), so an
+# operator-supplied extra_var of this name can misword the hint but
+# cannot affect the outcome; it does not need a _assert_reserved_vars.yml
+# entry (that list is for role-internal derived facts, not this kind of
+# playbook-owned display config — same category as netbox_api_token
+# itself, l3_release, l3_chart_ref, etc.).
+#
+# codex review (dmf-runbooks#41): the "message-only" claim above holds for
+# the RENDERED text, but not, without the ignore_errors below, for whether
+# this task can COMPLETE at all — Ansible re-templates a variable's own
+# string content wherever it's interpolated, so an operator-supplied
+# `-e l3_netbox_token_hint="{{ '{{' }} 1 / 0 {{ '}}' }}"` (or any other
+# Jinja that raises rather than just rendering oddly) would fail THIS
+# debug task's own templating, short-circuiting the block before
+# _refuse_pre_mutation.yml ever runs — the one task that actually emits
+# the correct preflight-error marker and releases the lock. Without it,
+# the run instead falls through to whichever generic outer rescue catches
+# the raw templating error, which (rollback.yml's own mutation-state
+# classification, confirmed by inspection) reports rollback_incomplete
+# there instead — turning a cosmetic hint into a real outcome-token
+# regression, exactly the class of thing this role's other guards exist
+# to prevent. ignore_errors here restores the original guarantee: this
+# task's own success or failure can never gate reaching the real cleanup
+# task below (nothing downstream reads this task's result either).
 
 - name: "L3: scoped NetBox catalog-writer token check (ADR-0032, R2c)"
   when: (netbox_api_token | default('') | trim) == ''
@@ -24,9 +62,12 @@
         msg: >-
           L3 launcher refused: preflight-error. Scoped NetBox catalog
           writer token absent — rollback/snapshot never runs on the admin
-          token (ADR-0032). Ensure vault_netbox_catalog_token is supplied
-          (the AWX job template's own extra_vars, or an operator-provided
-          extra_var on a direct run-playbook.sh invocation).
+          token (ADR-0032). Ensure
+          {{ l3_netbox_token_hint | default('vault_netbox_catalog_token') }}
+          is supplied (the AWX job template's own extra_vars, or an
+          operator-provided extra_var on a direct run-playbook.sh
+          invocation).
+      ignore_errors: true
 
     - name: "L3 missing-token refusal cleanup (never override-able, structural)"
       ansible.builtin.include_tasks: _refuse_pre_mutation.yml
