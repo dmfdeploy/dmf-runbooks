@@ -2,9 +2,20 @@
 # ADR-0046 decision 4 — the bounded tag namespace that catalog launchers own.
 # Any tag NOT matching these prefixes/exact names is preserved verbatim
 # across every lifecycle-stage PATCH (provision / configure / finalise).
+#
+# umbrella #401: topology-parent:/topology-source: added — the launcher's
+# own recorded fact of which catalog entry a topology-spawned instance came
+# from and which declared source it is (roles/mxl/defaults/main.yml,
+# mxl_group_item_parent_key/mxl_group_item_source_id). Owning them here
+# means they get the SAME treatment as every other launcher-written fact:
+# replaced wholesale on each provision/configure PATCH, and restored from
+# the snapshot (not left at a drifted/missing value) by the rollback path
+# (roles/l3_run_guard/tasks/_rollback_netbox_restore_one.yml).
 _netbox_owned_namespace:
   - "dmf-catalog"
   - "app:"
   - "exposure:"
   - "lifecycle:"
   - "monitoring:"
+  - "topology-parent:"
+  - "topology-source:"

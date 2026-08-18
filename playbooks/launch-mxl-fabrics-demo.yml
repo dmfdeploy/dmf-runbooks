@@ -228,6 +228,16 @@
             # mxl_group_item_identity is the role's OWN, dedicated
             # per-call override — the only mechanism that actually works.
             mxl_group_item_identity: "{{ item.netbox_service_name }}"
+            # umbrella #401 — record this source's provenance as NetBox
+            # tags (topology-parent:<key>/topology-source:<id>) so dmf-cms
+            # can read the instance -> catalog relationship instead of
+            # re-deriving it. l3_catalog_key is this play's own scalar
+            # viewer identity (the topology-carrying entry itself);
+            # item.source_id is the declared sources[].id
+            # l3_topology_release_group already derived — never
+            # reconstructed here.
+            mxl_group_item_parent_key: "{{ l3_catalog_key }}"
+            mxl_group_item_source_id: "{{ item.source_id }}"
           loop: "{{ l3_release_group | default([]) }}"
           loop_control:
             label: "{{ item.release }}"
@@ -486,6 +496,19 @@
             # mxl_group_item_identity is the role's OWN, dedicated
             # per-call override — the only mechanism that actually works.
             mxl_group_item_identity: "{{ item.netbox_service_name }}"
+            # umbrella #401 — re-assert the same provenance tags configure
+            # writes alongside lifecycle:active (see the provision
+            # invocation above for the full rationale). Finalise/teardown
+            # deliberately does NOT thread these two: teardown-mxl-fabrics-
+            # demo.yml's own per-source loop only ever recovers the release
+            # NAME (l3_topology_service_names), not its source_id/parent —
+            # re-deriving either from that name here would be exactly the
+            # string-parsing this design forbids, and a torn-down
+            # (lifecycle:bootstrapped) instance carries no console-facing
+            # resolution claim for this fix to protect. The next real
+            # provision re-asserts both tags fresh, from declared data.
+            mxl_group_item_parent_key: "{{ l3_catalog_key }}"
+            mxl_group_item_source_id: "{{ item.source_id }}"
           loop: "{{ l3_release_group | default([]) }}"
           loop_control:
             label: "{{ item.release }}"

@@ -1,0 +1,204 @@
+---
+# umbrella #401 — topology-spawned source provenance tags.
+#
+# Three things the WO-401-v2 design requires, proved here:
+#  (a) the tags ARE computed (both provision + active tag sets) when this
+#      is a topology-spawned source's own mxl role invocation
+#      (mxl_group_item_parent_key/mxl_group_item_source_id set — the
+#      launcher's own topology release-group loop,
+#      playbooks/launch-mxl-fabrics-demo.yml);
+#  (b) an ORDINARY invocation — including the topology's own VIEWER
+#      release, which needs no new tag (its key already equals its parent
+#      catalog entry's key) — carries NEITHER tag: a non-topology launch is
+#      unaffected;
+#  (c) both tags, once recorded, are owned exactly like every other
+#      launcher-written fact (ADR-0046 decision 4) — a rollback/restore
+#      cycle restores them from the snapshot rather than leaving them at a
+#      drifted/missing current value, while a genuinely non-owned tag
+#      (workload:*) that drifted independently is preserved AS-CURRENT.
+#
+# (a)/(b) load roles/mxl/tasks/defaults_only.yml (an intentionally-empty
+# task file, mirrors roles/l3_run_guard/tasks/filters_only.yml) so the
+# role's defaults/main.yml templates evaluate with NO live NetBox/K8s call.
+# (c) loads netbox_catalog_common with `public: true` so the REAL
+# _netbox_owned_namespace (not a hand-copied duplicate) is what gets
+# exercised — proving the actual defaults/main.yml edit, not a fixture
+# that could pass regardless of it.
+#
+# MUST FAIL against the pre-#401 mxl role (no mxl_group_item_parent_key/
+# mxl_group_item_source_id at all — scenario (a) has nothing to assert on)
+# and against a _netbox_owned_namespace that was not extended (scenario (c)
+# — see that assertion block's own comment for exactly how it fails).
+
+# ── (a) topology-spawned source: both tags present, both tag sets ────────
+#
+# The driving vars are set as FACTS, not as `vars:` on the include_role
+# task below — role defaults are Jinja templates evaluated lazily, at the
+# point something ELSE references their name (our set_fact task after the
+# include returns), not at include time. `vars:` on a task are scoped to
+# that task's own execution only, so they do NOT survive into a later,
+# separate task even with `public: true` (that flag only controls whether
+# the role's DEFAULT NAMES become visible outside the role at all — it
+# does not extend a `vars:` override's own lifetime). Facts, by contrast,
+# persist for the rest of the play and outrank role defaults by
+# precedence, so netbox_service_tags's own template — read afterward —
+# resolves mxl_group_item_parent_key/mxl_group_item_source_id correctly.
+- name: "[umbrella #401] MXL role defaults — topology-spawned source: set driving facts"
+  ansible.builtin.set_fact:
+    l3_catalog_key: mxl-videotest-view
+    l3_target_namespace: mxl
+    mxl_group_item_identity: mxl-videotest-view-source-a
+    mxl_group_item_parent_key: mxl-videotest-view
+    mxl_group_item_source_id: source-a
+
+- name: "[umbrella #401] MXL role defaults — topology-spawned source: load defaults only"
+  ansible.builtin.include_role:
+    name: mxl
+    tasks_from: defaults_only
+    # public: true — include_role defaults to public:no (role
+    # defaults/vars stay PRIVATE to the include_role task itself, per
+    # roles/l3_run_guard/tasks/rollback_netbox_surface.yml's own header
+    # comment on the identical gotcha); this scenario reads
+    # netbox_service_tags/netbox_service_active_tags as ordinary facts in
+    # the NEXT task, which needs their NAMES to survive the include (their
+    # VALUES come from the facts set above, per this block's own header).
+    public: true
+
+- name: "[umbrella #401] MXL role defaults — topology-spawned source: extract tag names"
+  ansible.builtin.set_fact:
+    _topo401_spawned_prov_names: "{{ netbox_service_tags | map(attribute='name') | list }}"
+    _topo401_spawned_active_names: "{{ netbox_service_active_tags | map(attribute='name') | list }}"
+
+- name: "[umbrella #401] MXL role defaults — topology-spawned source: assertions"
+  ansible.builtin.assert:
+    that:
+      - "'topology-parent:mxl-videotest-view' in _topo401_spawned_prov_names"
+      - "'topology-source:source-a' in _topo401_spawned_prov_names"
+      - "'topology-parent:mxl-videotest-view' in _topo401_spawned_active_names"
+      - "'topology-source:source-a' in _topo401_spawned_active_names"
+      - "'app:mxl-videotest-view-source-a' in _topo401_spawned_prov_names"
+      - _topo401_spawned_prov_names | length == _topo401_spawned_prov_names | unique | length
+      - _topo401_spawned_active_names | length == _topo401_spawned_active_names | unique | length
+    fail_msg: >-
+      TOPOLOGY-SPAWNED TAG COMPUTE FAIL: expected
+      topology-parent:mxl-videotest-view + topology-source:source-a in BOTH
+      netbox_service_tags and netbox_service_active_tags when
+      mxl_group_item_parent_key/mxl_group_item_source_id are set (the
+      launcher's own topology release-group loop). Got
+      provision={{ _topo401_spawned_prov_names }}
+      active={{ _topo401_spawned_active_names }}
+
+# ── (b) ordinary / viewer launch: neither tag ─────────────────────────────
+#
+# Explicitly RESETS the three group-item facts scenario (a) set — facts
+# persist for the rest of the play, so without this reset the role
+# defaults would still see (a)'s non-empty values and this scenario would
+# prove nothing. This is the topology's own VIEWER launch shape: its own
+# netbox_service_name already equals l3_catalog_key (mxl_group_item_identity
+# empty), and it gets neither new tag (mxl_group_item_parent_key/source_id
+# empty) — the asymmetry the design calls out explicitly, not an oversight.
+- name: "[umbrella #401] MXL role defaults — ordinary/viewer launch: reset driving facts to empty"
+  ansible.builtin.set_fact:
+    l3_catalog_key: mxl-videotest-view
+    l3_target_namespace: mxl
+    mxl_group_item_identity: ""
+    mxl_group_item_parent_key: ""
+    mxl_group_item_source_id: ""
+
+- name: "[umbrella #401] MXL role defaults — ordinary/viewer launch: load defaults only (no group-item vars)"
+  ansible.builtin.include_role:
+    name: mxl
+    tasks_from: defaults_only
+    public: true
+
+- name: "[umbrella #401] MXL role defaults — ordinary/viewer launch: extract tag names"
+  ansible.builtin.set_fact:
+    _topo401_plain_prov_names: "{{ netbox_service_tags | map(attribute='name') | list }}"
+
+- name: "[umbrella #401] MXL role defaults — ordinary/viewer launch: assertions"
+  ansible.builtin.assert:
+    that:
+      - _topo401_plain_prov_names | select('match', '^topology-') | list | length == 0
+      - "'app:mxl-videotest-view' in _topo401_plain_prov_names"
+    fail_msg: >-
+      NON-TOPOLOGY TAG COMPUTE FAIL: an ordinary/viewer launch (no
+      mxl_group_item_parent_key/mxl_group_item_source_id) must carry NO
+      topology-* tag at all — a non-topology launch must be unaffected.
+      Got {{ _topo401_plain_prov_names }}
+
+# ── (c) rollback/restore survival — real _netbox_owned_namespace ─────────
+- name: "[umbrella #401] Rollback restore — load netbox_catalog_common PUBLIC (real _netbox_owned_namespace, not a fixture copy)"
+  ansible.builtin.include_role:
+    name: netbox_catalog_common
+    public: true
+
+- name: "[umbrella #401] Rollback restore — snapshot recorded this source's topology provenance + lifecycle:active"
+  ansible.builtin.set_fact:
+    _topo401_rb_snapshot_tags:
+      - workload:videotest
+      - dmf-catalog
+      - "app:mxl-videotest-view-source-a"
+      - "exposure:private"
+      - "lifecycle:active"
+      - "topology-parent:mxl-videotest-view"
+      - "topology-source:source-a"
+
+- name: "[umbrella #401] Rollback restore — current record has DRIFTED: topology provenance entirely missing (as pre-#401), workload tag independently changed, lifecycle reverted"
+  ansible.builtin.set_fact:
+    _topo401_rb_current_tags:
+      - workload:newvalue
+      - dmf-catalog
+      - "app:mxl-videotest-view-source-a"
+      - "exposure:private"
+      - "lifecycle:bootstrapped"
+
+- name: "[umbrella #401] Rollback restore — compute the owned-desired set from the snapshot (pure — l3_filter_owned_tags, REAL _netbox_owned_namespace)"
+  ansible.builtin.set_fact:
+    _topo401_rb_owned_desired: "{{ _topo401_rb_snapshot_tags | l3_filter_owned_tags(_netbox_owned_namespace) }}"
+
+- name: "[umbrella #401] Rollback restore — merge (MANDATORY merge_owned_tags)"
+  ansible.builtin.set_fact:
+    _topo401_rb_merged: "{{ _topo401_rb_current_tags | merge_owned_tags(_netbox_owned_namespace, _topo401_rb_owned_desired) }}"
+
+- name: "[umbrella #401] Rollback restore — extract result names"
+  ansible.builtin.set_fact:
+    _topo401_rb_merged_names: "{{ _topo401_rb_merged | map(attribute='name') | list }}"
+
+- name: "[umbrella #401] Rollback restore — assertions"
+  ansible.builtin.assert:
+    that:
+      # The two new tags are restored from the SNAPSHOT, even though the
+      # current record has lost them entirely — this is the assertion that
+      # fails if _netbox_owned_namespace was NOT extended: an un-owned
+      # topology-parent:/topology-source: tag present only in the snapshot
+      # (never in current) is neither preserved-from-current (it isn't
+      # there) nor merged-in-as-desired (merge_owned_tags only adds desired
+      # tags that are actually in _owned_desired — and l3_filter_owned_tags
+      # would have dropped them from _topo401_rb_owned_desired entirely
+      # had they not matched the owned-namespace prefix), so they would be
+      # silently ABSENT from the result.
+      - "'topology-parent:mxl-videotest-view' in _topo401_rb_merged_names"
+      - "'topology-source:source-a' in _topo401_rb_merged_names"
+      - "'lifecycle:active' in _topo401_rb_merged_names"
+      - "'lifecycle:bootstrapped' not in _topo401_rb_merged_names"
+      # A genuinely non-owned tag that drifted independently is preserved
+      # AS-CURRENT, never reverted to the snapshot's stale value — same
+      # contract tests/_rollback-restore-scenario.yml already pins for
+      # workload:*, re-proven here alongside the new owned prefixes.
+      - "'workload:newvalue' in _topo401_rb_merged_names"
+      - "'workload:videotest' not in _topo401_rb_merged_names"
+      - _topo401_rb_merged_names | length == _topo401_rb_merged_names | unique | length
+    fail_msg: >-
+      TOPOLOGY TAG ROLLBACK-RESTORE FAIL: expected topology-parent:/
+      topology-source: restored from the snapshot's owned subset (proving
+      _netbox_owned_namespace now covers them), lifecycle restored to the
+      snapshot's active (not the drifted bootstrapped), and the drifted
+      workload:* tag preserved AS-CURRENT (never reverted).
+      Got: {{ _topo401_rb_merged_names }}
+
+- name: "[umbrella #401] topology-tag scenario complete"
+  ansible.builtin.debug:
+    msg: >-
+      umbrella #401: topology-parent:/topology-source: are computed for a
+      topology-spawned source, absent for an ordinary/viewer launch, and
+      survive a rollback/restore cycle via the real _netbox_owned_namespace.
