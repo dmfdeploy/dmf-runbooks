@@ -100,12 +100,18 @@
     - name: "Test WP3-B rollback restore — drifted workload:* survives, owned subset restored to snapshot"
       ansible.builtin.include_tasks: _rollback-restore-scenario.yml
 
+    # ── umbrella #401 — topology-spawned source provenance tags ────────────
+    - name: "Test umbrella #401 topology-parent:/topology-source: — computed on spawn, absent on ordinary launch, survive rollback/restore"
+      ansible.builtin.include_tasks: _topology-tag-scenario.yml
+
     - name: ALL TAG-PRESERVATION TESTS PASSED
       ansible.builtin.debug:
         msg: >-
           workload:videotest survived provision→configure→finalise for both
           mxl-videotestsrc and mxl-videotest-view (ADR-0046 decision 4), the
           #239 workload-tag single-workload-wins + no-op-when-unset
-          scenarios passed, and umbrella #202 WP3-B's rollback restore
-          scenario (drift-safe workload:* + snapshot-accurate owned subset)
-          passed.
+          scenarios passed, umbrella #202 WP3-B's rollback restore scenario
+          (drift-safe workload:* + snapshot-accurate owned subset) passed,
+          and umbrella #401's topology-parent:/topology-source: provenance
+          tags (computed on spawn, absent on an ordinary launch, restored
+          through a rollback/restore cycle) passed.

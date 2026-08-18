@@ -1,0 +1,10 @@
+---
+# Intentionally empty. tasks/main.yml IS this role's real entry point (every
+# launch-mxl-fabrics-demo.yml/teardown-mxl-fabrics-demo.yml include includes
+# it bare, tasks_from mxl_stage-dispatched, and every branch does live
+# NetBox/K8s calls). tests/_topology-tag-scenario.yml instead loads THIS
+# file via `include_role: tasks_from: defaults_only` to pull in the role's
+# defaults (specifically netbox_service_tags/netbox_service_active_tags,
+# umbrella #401) without executing any live-cluster task — mirrors
+# roles/l3_run_guard/tasks/filters_only.yml's own pattern and header
+# comment.

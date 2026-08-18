@@ -74,16 +74,59 @@ netbox_service_name: >-
     if (mxl_group_item_identity | default('') | trim) != ''
     else (l3_catalog_key | default(mxl_function_key, true))
   }}
-netbox_service_tags:
-  - name: "dmf-catalog"
-  - name: "app:{{ netbox_service_name }}"
-  - name: "exposure:private"
-  - name: "lifecycle:bootstrapped"
-netbox_service_active_tags:
-  - name: "dmf-catalog"
-  - name: "app:{{ netbox_service_name }}"
-  - name: "exposure:private"
-  - name: "lifecycle:active"
+
+# umbrella #401 — topology-spawned source provenance, recorded as NetBox
+# tags so dmf-cms can READ the relationship instead of re-deriving it from
+# the instance's own name (the naming contract — "{{ l3_release }}-{{
+# source.id }}" — belongs to l3_topology_release_group,
+# roles/l3_run_guard/filter_plugins/l3_topology.py, and stays owned here;
+# the console must never reconstruct or parse it).
+#
+# mxl_group_item_parent_key: the catalog entry that produced this
+# instance — the topology-carrying viewer entry's own l3_catalog_key.
+# mxl_group_item_source_id: the declared topology sources[].id this
+# instance embodies (e.g. "source-a"), threaded verbatim from
+# l3_topology_release_group's own derived release-group item
+# (item.source_id) — never re-derived from netbox_service_name/
+# mxl_group_item_identity by stripping a suffix.
+#
+# Both empty by default (a no-op — every existing caller is unaffected):
+# launch-mxl-fabrics-demo.yml's topology release-group loop is the ONLY
+# caller that sets them, one include_role per topology source. The
+# topology's own VIEWER release gets NEITHER tag — deliberately, not an
+# oversight: the viewer's own netbox_service_name already equals its
+# parent catalog entry's key (l3_catalog_key), so dmf-cms resolves it
+# today via the existing app:<key> tag alone, with nothing left to record.
+mxl_group_item_parent_key: ""
+mxl_group_item_source_id: ""
+# The two tags above, computed once and appended to both tag sets below —
+# present only when this call is a topology-spawned source (both vars
+# non-empty); an empty list (no-op) otherwise.
+_mxl_topology_provenance_tags: >-
+  {{
+    ([{'name': 'topology-parent:' ~ mxl_group_item_parent_key}]
+     if (mxl_group_item_parent_key | default('') | trim) != '' else [])
+    + ([{'name': 'topology-source:' ~ mxl_group_item_source_id}]
+       if (mxl_group_item_source_id | default('') | trim) != '' else [])
+  }}
+netbox_service_tags: >-
+  {{
+    [
+      {'name': 'dmf-catalog'},
+      {'name': 'app:' ~ netbox_service_name},
+      {'name': 'exposure:private'},
+      {'name': 'lifecycle:bootstrapped'},
+    ] + _mxl_topology_provenance_tags
+  }}
+netbox_service_active_tags: >-
+  {{
+    [
+      {'name': 'dmf-catalog'},
+      {'name': 'app:' ~ netbox_service_name},
+      {'name': 'exposure:private'},
+      {'name': 'lifecycle:active'},
+    ] + _mxl_topology_provenance_tags
+  }}
 netbox_service_monitoring_tags: >-
   {{ [{'name': 'monitoring:probe'}] if mxl_monitoring_enabled else [] }}
 # ADR-0038 Amendment A cluster coords + Amendment B probe_path: dmf-promsd
