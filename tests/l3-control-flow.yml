@@ -11,7 +11,10 @@
 #      separately loops-then-refuses (facility-busy/lock-race) — never a
 #      raw "Recursive loop detected in template" crash (P1-1).
 #   2. a reserved-var extra_var (l3_attempt_id) is refused at entry, and
-#      separately l3_run_id is refused at entry on the LAUNCH path (P1-2).
+#      separately l3_run_id is refused at entry on the LAUNCH path (P1-2);
+#      and separately, a forged l3_milestone_token extra_var is refused at
+#      entry too (PR dmf-runbooks#46 review fix — dmfdeploy/dmfdeploy#390's
+#      milestone marker var was missed from the original reservation).
 #   3. a fault injected at the post-lock boundary (before any mutation)
 #      releases the lock, marks the snapshot superseded, and emits exactly
 #      one preflight-error marker; a fault injected at the post-first-
@@ -264,6 +267,33 @@
               LAUNCH path was NOT refused (codex round-3's exact repro:
               request_id=A, l3_run_id=B, B stayed authoritative); rc=
               {{ _cf2b_run.rc }} stdout={{ _cf2b_run.stdout }}
+
+        - name: "(2c) run the identity_check fixture with a forged l3_milestone_token extra_var — expect refusal (PR dmf-runbooks#46 review fix: l3_milestone_token used to render unreserved, letting a caller-supplied extra_var override the closed vocabulary and forge the console's displayed step text)"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ l3_harness_dir }}/fixtures/identity_check.yml"
+              - -e
+              - "l3_k8s_stub_url={{ _cf2_k8s_url }}"
+              - -e
+              - "l3_netbox_stub_url={{ _cf2_netbox_url }}"
+              - -e
+              - "l3_milestone_token=attacker-forged-step"
+            chdir: "{{ playbook_dir }}/.."
+          register: _cf2c_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(2c) ASSERT: refused for the reserved-var reason (never IDENTITY_OK) — proves l3_milestone_token is now reserved at entry, closing the gap before any milestone marker is ever emitted"
+          ansible.builtin.assert:
+            that:
+              - _cf2c_run.rc != 0
+              - "'reserved-var' in _cf2c_run.stdout"
+              - "'IDENTITY_OK' not in _cf2c_run.stdout"
+            fail_msg: >-
+              (2c) FAIL — a caller-supplied l3_milestone_token extra_var
+              was NOT refused (PR dmf-runbooks#46 review finding); rc=
+              {{ _cf2c_run.rc }} stdout={{ _cf2c_run.stdout }}
       always:
         - name: "(2) stop stubs"
           ansible.builtin.command:

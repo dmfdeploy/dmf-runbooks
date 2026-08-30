@@ -79,6 +79,22 @@
           - l3_attempt_id is not defined
           - l3_outcome_token is not defined
           - l3_outcome_kv is not defined
+          # PR dmf-runbooks#46 review fix: dmfdeploy/dmfdeploy#390's
+          # milestone marker (_emit_milestone.yml) sets l3_milestone_token
+          # via task-level `vars:` at every launch-*.yml/teardown-*.yml call
+          # site, exactly like l3_outcome_token/l3_switch_outcome_token/
+          # l3_purge_outcome_token above and below — and, like those three,
+          # it is never a register:/set_fact: target, so the R5a scanner
+          # (tests/scripts/check_reserved_vars.py) can't catch its absence
+          # here on its own; it was simply missed when the marker was
+          # added. Reserving it closes the same "emitter shadow": extra_vars
+          # outrank a task's own `vars:`, so an unreserved
+          # `-e l3_milestone_token=...` would have silently overridden the
+          # literal every call site sets and forged the console's displayed
+          # step text. _emit_milestone.yml's own vocabulary assert is
+          # belt-and-braces on top of this reservation, not a substitute for
+          # it — see that file's header.
+          - l3_milestone_token is not defined
           - l3_snapshot_created is not defined
           - l3_lock_acquired is not defined
           - l3_entry_path is not defined

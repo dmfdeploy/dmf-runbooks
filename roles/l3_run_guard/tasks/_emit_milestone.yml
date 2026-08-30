@@ -27,6 +27,36 @@
 # keeping the vocabulary flat and small is the whole point (decisions-file
 # §3: "do not invent a second marker vocabulary" applies to the TRANSPORT;
 # this IS the deliberately small addition the decision permits).
+#
+# PR dmf-runbooks#46 review fix: this task used to render l3_milestone_token
+# directly with NEITHER a reservation in _assert_reserved_vars.yml NOR a
+# value check of its own — every other marker-token var in this role
+# (l3_outcome_token, l3_switch_outcome_token, l3_purge_outcome_token) is
+# reserved there; this one was missed. Since Ansible extra_vars outrank the
+# task-level `vars:` every call site sets this from, an unreserved
+# `-e l3_milestone_token=...` would have silently forged the displayed step
+# text. Two closed layers now: l3_milestone_token is reserved in
+# _assert_reserved_vars.yml (see that file's own comment) — identity.yml
+# runs that check at entry, before the FIRST milestone of any launch/
+# teardown play is ever emitted, so a forged extra_var refuses the whole
+# run long before this file is reached — and, belt-and-braces, the assert
+# below fails closed if this file is ever reached with a token outside the
+# vocabulary regardless. Scope note (do not overstate this elsewhere): a
+# forged milestone could only ever have misled the DISPLAYED step text — a
+# best-effort, during-run side channel the console reads independently of
+# outcome classification, which is a hard property this marker has no part
+# in.
+
+- name: "L3: milestone token in the closed vocabulary (PR dmf-runbooks#46 review fix)"
+  ansible.builtin.assert:
+    that:
+      - l3_milestone_token is defined
+      - l3_milestone_token in ['preflight-passed', 'provisioning', 'configuring', 'tearing-down', 'finalising']
+    fail_msg: >-
+      dmf-l3-milestone refused: l3_milestone_token must be one of the
+      closed vocabulary (preflight-passed, provisioning, configuring,
+      tearing-down, finalising); got
+      {{ l3_milestone_token | default('<undefined>') }}.
 
 - name: dmf-l3-milestone
   ansible.builtin.debug:
