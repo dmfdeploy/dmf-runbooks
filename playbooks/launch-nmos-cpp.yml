@@ -71,6 +71,13 @@
           ansible.builtin.set_fact:
             l3_mutation_started: true
 
+        - name: "L3: milestone marker — preflight-passed (dmfdeploy/dmfdeploy#390)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: _emit_milestone
+          vars:
+            l3_milestone_token: preflight-passed
+
         - name: "L3: test-only fault injection boundary (R4a/P2-5 — no-op on every real run)"
           ansible.builtin.include_role:
             name: l3_run_guard
@@ -100,6 +107,13 @@
           ansible.builtin.include_role:
             name: l3_run_guard
             tasks_from: lock_checkpoint
+
+        - name: "L3: milestone marker — provisioning (dmfdeploy/dmfdeploy#390)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: _emit_milestone
+          vars:
+            l3_milestone_token: provisioning
 
         - name: Deploy NMOS Helm chart from Zot
           block:
@@ -189,6 +203,13 @@
           ansible.builtin.include_role:
             name: l3_run_guard
             tasks_from: lock_checkpoint
+
+        - name: "L3: milestone marker — configuring (dmfdeploy/dmfdeploy#390)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: _emit_milestone
+          vars:
+            l3_milestone_token: configuring
 
         - name: Include nmos-cpp role (configure stage - flip NetBox tag to active)
           ansible.builtin.include_role:
