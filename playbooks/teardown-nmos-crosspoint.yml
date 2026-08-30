@@ -29,6 +29,13 @@
           ansible.builtin.set_fact:
             l3_mutation_started: true
 
+        - name: "L3: milestone marker — preflight-passed (dmfdeploy/dmfdeploy#390)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: _emit_milestone
+          vars:
+            l3_milestone_token: preflight-passed
+
         - name: "L3: test-only fault injection boundary (R4a/P2-5 — no-op on every real run)"
           ansible.builtin.include_role:
             name: l3_run_guard
@@ -40,6 +47,13 @@
           ansible.builtin.include_role:
             name: l3_run_guard
             tasks_from: teardown_pre_mutation
+
+        - name: "L3: milestone marker — tearing-down (dmfdeploy/dmfdeploy#390)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: _emit_milestone
+          vars:
+            l3_milestone_token: tearing-down
 
         - name: Remove nmos-crosspoint Helm release
           kubernetes.core.helm:
@@ -60,6 +74,13 @@
           ansible.builtin.include_role:
             name: l3_run_guard
             tasks_from: lock_checkpoint
+
+        - name: "L3: milestone marker — finalising (dmfdeploy/dmfdeploy#390)"
+          ansible.builtin.include_role:
+            name: l3_run_guard
+            tasks_from: _emit_milestone
+          vars:
+            l3_milestone_token: finalising
 
         - name: Include nmos-crosspoint role (finalise stage - flip NetBox tag to bootstrapped)
           ansible.builtin.include_role:

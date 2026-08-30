@@ -1,0 +1,33 @@
+---
+# dmfdeploy/dmfdeploy#390 (Phase 1, "the throbber") — the SINGLE named
+# milestone-emission task. Every DMF_L3_MILESTONE emission across this role
+# routes through this one file so there is exactly one
+# ansible.builtin.debug task literally named 'dmf-l3-milestone' in the whole
+# play — the console reads AWX job events filtered BY THAT TASK NAME and
+# parses event_data.res.msg, not stdout scraping. Deliberately the SAME
+# transport/parse shape as _emit_outcome.yml/_emit_purge_outcome.yml (same
+# task-name-anchored job-events fetch, same debug-message marker line) but a
+# GENUINELY SEPARATE, small vocabulary — milestones are progress within a
+# run, never a run's own terminal outcome, and must never be conflated with
+# either of those markers' own token spaces.
+#
+# Unlike the outcome marker (emitted once, at most, per play), THIS task is
+# included multiple times per play, at fixed, meaningful boundaries — each
+# inclusion produces its own job_event with task name 'dmf-l3-milestone', in
+# execution order. The console's during-run reader treats the LAST such
+# event as "the current step" (see dmf-cms main.py's milestone reader for
+# the read-side contract), which is why the token vocabulary below is
+# small, ORDERED, and shared across every launch/teardown playbook that
+# calls this file — a console-side phrase table keyed on these tokens never
+# needs to change when a playbook's own task names or internals change.
+#
+# Callers set l3_milestone_token (required) — one of the small closed set
+# documented at each call site's own comment. No kv: milestones carry no
+# per-run detail (unlike the outcome marker's optional surfaces/detail kv) —
+# keeping the vocabulary flat and small is the whole point (decisions-file
+# §3: "do not invent a second marker vocabulary" applies to the TRANSPORT;
+# this IS the deliberately small addition the decision permits).
+
+- name: dmf-l3-milestone
+  ansible.builtin.debug:
+    msg: "DMF_L3_MILESTONE: {{ l3_milestone_token }}"
