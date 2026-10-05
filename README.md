@@ -1,5 +1,7 @@
 # DMF Runbooks
 
+[![CI](https://github.com/dmfdeploy/dmf-runbooks/actions/workflows/ci.yml/badge.svg)](https://github.com/dmfdeploy/dmf-runbooks/actions/workflows/ci.yml)
+
 Thin launcher playbooks for DMF Platform catalog entries.
 
 > **New to the project vocabulary?** See the [DMF Glossary](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/GLOSSARY.md) for project-coined terms (umbrella, component repo, …).
