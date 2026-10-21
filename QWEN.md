@@ -1,9 +1,6 @@
-# QWEN — dmf-runbooks
+# QWEN.md — dmf-runbooks
 
-Thin AWX launcher playbooks plus the currently-authoritative `nmos-cpp` role for the DMF Platform. See README.md and CLAUDE.md for repo specifics; cross-repo context —
-status, decisions, plans — lives in the
-[dmfdeploy umbrella repo](https://github.com/dmfdeploy/dmfdeploy), checked out
-as a sibling directory of this repo.
+Project guidance for every agent lives in [AGENTS.md](AGENTS.md). Read it first.
 
 <!-- WORKING-MODEL-BLOCK-START — generated from umbrella docs/templates/working-model-block.md; do not edit copies, edit the template and run bin/check-working-model-sync.sh -->
 ## Working model (mandatory)
@@ -26,4 +23,3 @@ in the umbrella repo. The three rules that matter mid-task:
    liveness; plan frontmatter = design state; ADRs = decisions (RFC in
    Discussions first); STATUS.md = committed notes; STATUS.local.md = live repo snapshot.
 <!-- WORKING-MODEL-BLOCK-END -->
-
