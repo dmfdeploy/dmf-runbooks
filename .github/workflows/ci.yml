@@ -92,6 +92,8 @@ jobs:
         run: ansible-galaxy collection install -r requirements.yml
       - name: l3-budget-logic
         run: ansible-playbook tests/l3-budget-logic.yml
+      - name: l3-budget-self-demand
+        run: ansible-playbook tests/l3-budget-self-demand.yml
       - name: l3-control-flow
         run: ansible-playbook tests/l3-control-flow.yml
       - name: l3-playbook-structure
