@@ -61,9 +61,17 @@
     kind: Pod
   register: _l3_all_pods
 
-- name: "L3 capacity: existing demand on the facility node (pure — l3_existing_demand)"
+# dmfdeploy/dmfdeploy#337: the releases this launch replaces (the scalar
+# release plus every l3_release_group item) are already inside run demand,
+# so their running pods are excluded from existing demand.
+- name: "L3 capacity: existing demand on the facility node, excluding this launch's own releases (pure — l3_existing_demand)"
   ansible.builtin.set_fact:
-    _l3_existing_demand: "{{ _l3_all_pods.resources | l3_existing_demand(_l3_allocatable.name) }}"
+    _l3_existing_demand: >-
+      {{ _l3_all_pods.resources
+         | l3_existing_demand(
+             _l3_allocatable.name,
+             [l3_release] + (l3_release_group | default([]) | map(attribute='release') | list),
+             l3_target_namespace) }}
 
 # ── Run demand: recomputed from the chart about to be installed, NOT read
 #    from the catalog file (the launcher never reads it) — helm template

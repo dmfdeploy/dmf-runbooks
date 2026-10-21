@@ -1,0 +1,102 @@
+# dmfdeploy/dmfdeploy#337 — the L3 capacity preflight must not count the
+# releases a launch is about to replace as "existing" demand. Offline gates:
+# exercises roles/l3_run_guard's l3_existing_demand directly with synthetic
+# pods, no live cluster.
+#
+# Run:  ansible-playbook tests/l3-budget-self-demand.yml
+
+- name: "dmfdeploy/dmfdeploy#337 — existing demand excludes the launch's own releases"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    _mi512: 536870912
+    _pod_own_a:
+      metadata:
+        namespace: media
+        labels: {app.kubernetes.io/instance: viewer-source-a}
+      spec:
+        nodeName: node-1
+        containers: [{resources: {requests: {cpu: "400m", memory: "512Mi"}}}]
+      status: {phase: Running}
+    _pod_own_b:
+      metadata:
+        namespace: media
+        labels: {app.kubernetes.io/instance: viewer-source-b}
+      spec:
+        nodeName: node-1
+        containers: [{resources: {requests: {cpu: "400m", memory: "512Mi"}}}]
+      status: {phase: Running}
+    _pod_other:
+      metadata:
+        namespace: media
+        labels: {app.kubernetes.io/instance: other-release}
+      spec:
+        nodeName: node-1
+        containers: [{resources: {requests: {cpu: "250m", memory: "512Mi"}}}]
+      status: {phase: Running}
+    _pod_same_name_other_ns:
+      metadata:
+        namespace: elsewhere
+        labels: {app.kubernetes.io/instance: viewer-source-a}
+      spec:
+        nodeName: node-1
+        containers: [{resources: {requests: {cpu: "100m", memory: "512Mi"}}}]
+      status: {phase: Running}
+    _pod_unlabelled:
+      metadata: {namespace: media}
+      spec:
+        nodeName: node-1
+        containers: [{resources: {requests: {cpu: "50m", memory: "512Mi"}}}]
+      status: {phase: Running}
+
+  tasks:
+    - name: Load l3_run_guard role (filter plugins only)
+      ansible.builtin.include_role:
+        name: l3_run_guard
+        tasks_from: filters_only
+
+    - name: "(1) own release group is not double-counted on redeploy"
+      ansible.builtin.set_fact:
+        _r1: >-
+          {{ [_pod_own_a, _pod_own_b, _pod_other]
+             | l3_existing_demand('node-1', ['viewer-source-a', 'viewer-source-b'], 'media') }}
+    - name: "(1) assert only the other release counts"
+      ansible.builtin.assert:
+        that:
+          - _r1.cpu_m == 250
+          - _r1.mem_b == _mi512
+
+    - name: "(2) a different release group on the same node still counts"
+      ansible.builtin.set_fact:
+        _r2: >-
+          {{ [_pod_own_a, _pod_other]
+             | l3_existing_demand('node-1', ['unrelated-release'], 'media') }}
+    - name: "(2) assert both count"
+      ansible.builtin.assert:
+        that:
+          - _r2.cpu_m == 650
+          - _r2.mem_b == (2 * _mi512)
+
+    - name: "(3) same release name in another namespace still counts"
+      ansible.builtin.set_fact:
+        _r3: >-
+          {{ [_pod_own_a, _pod_same_name_other_ns]
+             | l3_existing_demand('node-1', ['viewer-source-a'], 'media') }}
+    - name: "(3) assert only the other-namespace pod counts"
+      ansible.builtin.assert:
+        that:
+          - _r3.cpu_m == 100
+
+    - name: "(4) pods with no release label behave as before"
+      ansible.builtin.set_fact:
+        _r4: >-
+          {{ [_pod_unlabelled, _pod_other]
+             | l3_existing_demand('node-1', ['viewer-source-a'], 'media') }}
+        _r4_legacy: "{{ [_pod_unlabelled, _pod_other] | l3_existing_demand('node-1') }}"
+    - name: "(4) assert unlabelled pod counts and the two-arg call is unchanged"
+      ansible.builtin.assert:
+        that:
+          - _r4.cpu_m == 300
+          - _r4_legacy.cpu_m == 300

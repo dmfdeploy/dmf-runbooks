@@ -201,7 +201,7 @@ def l3_pod_demand(pod: dict) -> dict:
     return {"cpu_m": cpu_m, "mem_b": mem_b, "all_containers_budgeted": all_budgeted}
 
 
-def l3_existing_demand(pods: list, node_name: str) -> dict:
+def l3_existing_demand(pods: list, node_name: str, exclude_releases=None, exclude_namespace=None) -> dict:
     """Sum scheduler-accurate demand for every pod BOUND to ``node_name``.
 
     "Bound" = ``spec.nodeName`` set to this node, phase Running OR Pending
@@ -209,7 +209,16 @@ def l3_existing_demand(pods: list, node_name: str) -> dict:
     its scheduler reservation on the node; only phase matters, not
     readiness). Pods not yet bound to any node (unscheduled Pending) never
     count against this specific node's headroom.
+
+    ``exclude_releases`` (dmfdeploy/dmfdeploy#337): Helm release names the
+    launch is about to replace. A pod whose ``app.kubernetes.io/instance``
+    label names one of them is skipped, because ``run_demand`` already
+    counts that workload; counting it here too made a redeploy need twice
+    the footprint. When ``exclude_namespace`` is set, only pods in that
+    namespace are skipped, so a same-named release elsewhere still counts.
+    Pods with no instance label always count.
     """
+    excluded = set(exclude_releases or [])
     total_cpu = total_mem = 0
     for pod in pods or []:
         spec = (pod or {}).get("spec") or {}
@@ -217,6 +226,12 @@ def l3_existing_demand(pods: list, node_name: str) -> dict:
         if spec.get("nodeName") != node_name:
             continue
         if status.get("phase") not in ("Running", "Pending"):
+            continue
+        meta = (pod or {}).get("metadata") or {}
+        instance = (meta.get("labels") or {}).get("app.kubernetes.io/instance")
+        if instance in excluded and (
+            exclude_namespace is None or meta.get("namespace") == exclude_namespace
+        ):
             continue
         demand = l3_pod_demand(pod)
         total_cpu += demand["cpu_m"]
