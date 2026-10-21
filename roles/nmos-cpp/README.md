@@ -156,7 +156,7 @@ GHCR-digest-aware mirror (`600-zot-seed.yml` per the public registry plan
 - ADR-0014: Multi-project AWX layout (this role lives in dmf-runbooks; chart lives in dmf-media; catalog entry in dmf-media)
 - ADR-0016: Control-node SSH via cloud-init + OpenBao (Path A — retained for 693-class infrastructure plays only)
 - **ADR-0025: Ansible runs in in-cluster pods using a Zot-hosted EE image; catalog functions deploy as Helm charts (Accepted 2026-05-23)**
-- Pivot plan (parent; Lane B landed, Lane C in flight): `docs/plans/DMF Cluster-Internal Ansible Execution and Catalog Helm Pivot Plan 2026-05-19.md`
-- Pivot plan (prior, historical): `docs/plans/Move 1 Gate 2 - Pivot to Path A for Catalog Launchers 2026-05-06.md`
+- Pivot plan (parent; Lane B landed, Lane C in flight): https://github.com/dmfdeploy/dmfdeploy/blob/45eb326e973b10e0b52deef290981ceac9bcf5bd/docs/plans/DMF%20Cluster-Internal%20Ansible%20Execution%20and%20Catalog%20Helm%20Pivot%20Plan%202026-05-19.md
+- Pivot plan (prior, historical): https://github.com/dmfdeploy/dmfdeploy/blob/45eb326e973b10e0b52deef290981ceac9bcf5bd/docs/plans/Move%201%20Gate%202%20-%20Pivot%20to%20Path%20A%20for%20Catalog%20Launchers%202026-05-06.md
 - Catalog entry: `dmf-media/catalog/nmos-cpp.yaml`
 - Helm chart (target state): `dmf-media/charts/nmos-cpp/`
