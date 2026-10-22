@@ -1641,6 +1641,120 @@
           outcome_msgs: []
           purge_msgs: ["DMF_L3_PURGE_OUTCOME: refused detail=reserved-var"]
 
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 13 (dmfdeploy/dmfdeploy#474): rollback-run.yml with a run_id
+    # of 32 hex characters plus a trailing newline. `match('^...$')` lets
+    # that through, because '$' also matches before a final newline, so the
+    # run reached the post-lock fault and the rescue rendered the newline
+    # into its marker. Now rollback_identity.yml refuses the value and the
+    # rescue renders it encoded: one marker, one line.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(13) rollback-run.yml with a trailing-newline run_id — start fresh stubs, run the REAL playbook as a nested ansible-playbook"
+      block:
+        - name: "(13) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-13.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(13) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-pe-13.json]
+          register: _pe13_start
+          changed_when: false
+
+        - name: "(13) parse stub URLs"
+          ansible.builtin.set_fact:
+            _pe13_k8s_url: "{{ _pe13_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+            _pe13_netbox_url: "{{ _pe13_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+        - name: "(13) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-pe-13-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _pe13_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(13) run the REAL playbooks/rollback-run.yml with a trailing-newline run_id, fault injected at post-lock"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/rollback-run.yml"
+              - -e
+              - "l3_kube_api_url={{ _pe13_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - "netbox_api_url={{ _pe13_netbox_url }}"
+              - -e
+              - netbox_api_token=fake-netbox-token
+              - -e
+              - l3_fault_inject=post-lock
+              - -e
+              - '{"l3_run_id": "d13d13d13d13d13d13d13d13d13d13d1\n"}'
+              - -e
+              - l3_request_id=13131313131313131313131313131313
+              - -e
+              - 'l3_rollback_reason=trailing-newline run_id probe'
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            ANSIBLE_STDOUT_CALLBACK: ansible.posix.json
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-pe-13-kubeconfig.yaml
+          register: _pe13_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(13) collect the dmf-l3-outcome event messages (JSON callback: the same event_data.res.msg the console parses; a role task's name carries a '<role> : ' prefix)"
+          ansible.builtin.set_fact:
+            _pe13_markers: >-
+              {{ (_pe13_run.stdout | from_json).plays
+                 | map(attribute='tasks') | flatten
+                 | selectattr('task.name', 'match', '^(l3_run_guard : )?dmf-l3-outcome$')
+                 | map(attribute='hosts.localhost') | rejectattr('skipped', 'defined')
+                 | map(attribute='msg') | list }}
+
+        - name: "(13) ASSERT: failed, and exactly one single-line marker carrying the run_id encoded"
+          ansible.builtin.assert:
+            that:
+              - _pe13_run.rc != 0
+              - "_pe13_markers == ['DMF_L3_OUTCOME: rollback_incomplete run_id=d13d13d13d13d13d13d13d13d13d13d1%0A request_id=13131313131313131313131313131313 surfaces=helm,netbox,monitoring']"
+            fail_msg: >-
+              (13) FAIL — a trailing-newline run_id reached the marker
+              unencoded, or the marker count changed; rc={{ _pe13_run.rc }}
+              markers={{ _pe13_markers }}
+
+        - name: "(13) ASSERT (via real HTTP against the stub): the facility lock is not held afterward"
+          ansible.builtin.uri:
+            url: "{{ _pe13_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(13) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-13.json]
+          changed_when: false
+          failed_when: false
+
     - name: ALL L3 REAL-PLAYBOOK EXECUTION TESTS PASSED
       ansible.builtin.debug:
         msg: >-

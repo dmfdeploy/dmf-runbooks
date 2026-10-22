@@ -3407,6 +3407,113 @@
           changed_when: false
           failed_when: false
 
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 13 (dmfdeploy/dmfdeploy#474): receiver_instance is caller
+    # free text, and the rescue's refused event renders it. Scenario 1's
+    # pre-lock refusal, with a receiver_instance carrying a newline and a
+    # marker-shaped tail: it used to split the event message into the
+    # honest refused line and a forged "success" line. The event must now
+    # be one line, with the value encoded.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(13) receiver_instance carrying a newline + a forged marker line — start fresh stubs, run the REAL switch playbook"
+      vars:
+        _se13_run_id: "13131313131313131313131313131313"
+        _se13_bad_topology_params: "{{ _se_j1_topology_params_switched_to_b | combine({'schema_version': 2}) }}"
+      block:
+        - name: "(13) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-13.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(13) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-se-13.json]
+          register: _se13_start
+          changed_when: false
+
+        - name: "(13) parse stub URLs"
+          ansible.builtin.set_fact:
+            _se13_k8s_url: "{{ _se13_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+
+        - name: "(13) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-se-13-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _se13_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(13) run the REAL switch playbook"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/switch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _se13_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - '{"receiver_instance": "mxl-videotest-view\nDMF_L3_SWITCH_OUTCOME: success"}'
+              - -e
+              - source_instance=source-b
+              - -e
+              - reason=test switch
+              - -e
+              - "{{ {'topology_params': _se13_bad_topology_params} | to_json }}"
+              - -e
+              - "l3_request_id={{ _se13_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            ANSIBLE_STDOUT_CALLBACK: ansible.posix.json
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-se-13-kubeconfig.yaml
+          register: _se13_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(13) collect the dmf-l3-switch-outcome event messages (JSON callback: the same event_data.res.msg the console parses; a role task's name carries a '<role> : ' prefix)"
+          ansible.builtin.set_fact:
+            _se13_markers: >-
+              {{ (_se13_run.stdout | from_json).plays
+                 | map(attribute='tasks') | flatten
+                 | selectattr('task.name', 'match', '^(l3_run_guard : )?dmf-l3-switch-outcome$')
+                 | map(attribute='hosts.localhost') | rejectattr('skipped', 'defined')
+                 | map(attribute='msg') | list }}
+
+        - name: "(13) ASSERT: refused, and exactly one single-line event carrying receiver_instance encoded"
+          ansible.builtin.assert:
+            that:
+              - _se13_run.rc != 0
+              - "_se13_markers == ['DMF_L3_SWITCH_OUTCOME: refused detail=pre-lock run_id=13131313131313131313131313131313 request_id=13131313131313131313131313131313 receiver_instance=mxl-videotest-view%0ADMF_L3_SWITCH_OUTCOME%3A%20success']"
+            fail_msg: >-
+              (13) FAIL — a caller-supplied receiver_instance was not
+              rendered as one safe marker field; rc={{ _se13_run.rc }}
+              markers={{ _se13_markers }}
+      always:
+        - name: "(13) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-13.json]
+          changed_when: false
+          failed_when: false
+
     - name: ALL L3 SWITCH EXECUTION TESTS PASSED
       ansible.builtin.debug:
         msg: >-

@@ -46,7 +46,7 @@
       ansible.builtin.include_tasks: _refuse_pre_mutation.yml
       vars:
         l3_outcome_token: preflight-error
-        l3_outcome_kv: "request_id={{ l3_request_id | default('') }} detail=reserved-var-run-id"
+        l3_outcome_kv: "request_id={{ l3_request_id | default('') | l3_marker_value }} detail=reserved-var-run-id"
         l3_refusal_fail_msg: >-
           L3 launcher refused: preflight-error (reserved-var). l3_run_id
           is not a valid launch/teardown extra_var. Structural
@@ -58,6 +58,9 @@
   ansible.builtin.assert:
     that:
       - l3_request_id is match('^[0-9a-f]{32}$')
+      # '$' also matches before a trailing newline, so the length check
+      # is what rejects "<32 hex>\n" (dmfdeploy/dmfdeploy#474).
+      - l3_request_id | length == 32
     fail_msg: >-
       l3_request_id, when supplied, must be a bare 32-char lowercase hex
       string — got: {{ l3_request_id }}

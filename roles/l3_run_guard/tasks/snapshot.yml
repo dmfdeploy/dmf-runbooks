@@ -197,7 +197,7 @@
           ansible.builtin.include_tasks: _refuse_pre_mutation.yml
           vars:
             l3_outcome_token: preflight-error
-            l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }} detail=helm-values-fetch-failed"
+            l3_outcome_kv: "run_id={{ l3_run_id | l3_marker_value }} request_id={{ l3_request_id | default(l3_run_id) | l3_marker_value }} detail=helm-values-fetch-failed"
             l3_refusal_fail_msg: >-
               L3 snapshot refused: preflight-error (helm-values-fetch-failed)
               for run_id={{ l3_run_id }} — cannot establish a trustworthy
@@ -352,7 +352,7 @@
           ansible.builtin.include_tasks: _refuse_pre_mutation.yml
           vars:
             l3_outcome_token: preflight-error
-            l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }} detail=snapshot-race"
+            l3_outcome_kv: "run_id={{ l3_run_id | l3_marker_value }} request_id={{ l3_request_id | default(l3_run_id) | l3_marker_value }} detail=snapshot-race"
             l3_refusal_fail_msg: >-
               L3 launcher refused: preflight-error (snapshot-race) — the
               create/read race repeated {{ l3_snapshot_create_max_attempts }}
