@@ -22,7 +22,7 @@
     fail_msg: >-
       l3_run_id is required for a rollback and must be a bare 32-char
       lowercase hex string (the failed deploy's own request_id/run_id) —
-      got: {{ l3_run_id | default('<undefined>') }}
+      got: {{ l3_run_id | default('<undefined>') | l3_marker_value }}
 
 - name: "L3 rollback: assert l3_rollback_reason was supplied"
   ansible.builtin.assert:
@@ -50,7 +50,7 @@
       - l3_request_id | length == 32
     fail_msg: >-
       l3_request_id, when supplied, must be a bare 32-char lowercase hex
-      string — got: {{ l3_request_id }}
+      string — got: {{ l3_request_id | l3_marker_value }}
   when: l3_request_id is defined and (l3_request_id | trim) != ''
 
 - name: "L3 rollback: console-driven dispatch (l3_request_id present)"

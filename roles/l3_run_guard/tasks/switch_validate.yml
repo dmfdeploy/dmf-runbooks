@@ -39,7 +39,7 @@
     msg: >-
       DMF_L3_SWITCH_REFUSED: detail=topology-invalid
       request_id={{ l3_request_id | default('') }}
-      error={{ _switch_validation.error }}
+      error={{ _switch_validation.error | l3_marker_value }}
   when: not _switch_validation.ok
 
 - name: "L3 switch validate: source_instance must agree with topology_params.viewer.source_selection
@@ -52,8 +52,8 @@
     fail_msg: >-
       DMF_L3_SWITCH_REFUSED: detail=switch-source-instance-mismatch
       request_id={{ l3_request_id | default('') }}
-      source_instance={{ source_instance }}
-      viewer.source_selection={{ topology_params.viewer.source_selection }}
+      source_instance={{ source_instance | l3_marker_value }}
+      viewer.source_selection={{ topology_params.viewer.source_selection | l3_marker_value }}
 
 - name: "L3 switch validate: receiver_instance must be a one-line Helm
     release name (the concrete release the playbook re-points; a blank value

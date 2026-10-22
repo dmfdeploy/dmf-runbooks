@@ -240,7 +240,7 @@
       ansible.builtin.debug:
         msg: >-
           L3 launcher refused: missing-budget. The rendered chart for
-          release={{ l3_release }}{{ ' (+ topology release-group: ' ~ (l3_release_group | map(attribute='release') | join(', ')) ~ ')' if l3_release_group is defined else '' }}
+          release={{ l3_release | l3_marker_value }}{{ ' (+ topology release-group: ' ~ (l3_release_group | map(attribute='release') | map('l3_marker_value') | join(', ')) ~ ')' if l3_release_group is defined else '' }}
           has at least one app or init container across its pod template(s)
           missing a parseable cpu AND/OR memory request (R2a-6a fail-closed
           — every container in every release must be budgeted, not just the
@@ -260,7 +260,7 @@
         l3_outcome_kv: "run_id={{ l3_run_id | l3_marker_value }} request_id={{ l3_request_id | default(l3_run_id) | l3_marker_value }}"
         l3_refusal_fail_msg: >-
           L3 launcher refused: missing-budget (run_id={{ l3_run_id }},
-          release={{ l3_release }}). Set l3_override=true with a non-empty
+          release={{ l3_release | l3_marker_value }}). Set l3_override=true with a non-empty
           l3_override_reason to proceed anyway.
       when: not l3_override_active
 
@@ -294,7 +294,7 @@
         l3_outcome_kv: "run_id={{ l3_run_id | l3_marker_value }} request_id={{ l3_request_id | default(l3_run_id) | l3_marker_value }}"
         l3_refusal_fail_msg: >-
           L3 launcher refused: no-fit (run_id={{ l3_run_id }},
-          release={{ l3_release }}). See the capacity report above. Set
+          release={{ l3_release | l3_marker_value }}). See the capacity report above. Set
           l3_override=true with a non-empty l3_override_reason to proceed
           anyway.
       when: not l3_override_active
