@@ -121,7 +121,7 @@
   ansible.builtin.include_tasks: _emit_outcome.yml
   vars:
     l3_outcome_token: "{{ 'post-mutation-failed' if (l3_mutation_started | default(false)) else 'preflight-error' }}"
-    l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }}"
+    l3_outcome_kv: "run_id={{ l3_run_id | l3_marker_value }} request_id={{ l3_request_id | default(l3_run_id) | l3_marker_value }}"
   when: not (l3_pre_mutation_marker_emitted | default(false))
 
 - name: "L3 gate rescue: release the facility lock (idempotent — release.yml's own outer always: is the backstop, this is belt-and-suspenders)"

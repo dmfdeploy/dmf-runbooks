@@ -104,7 +104,7 @@
               ansible.builtin.include_tasks: _refuse_pre_mutation.yml
               vars:
                 l3_outcome_token: facility-busy
-                l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }} detail=lock-verify-failed"
+                l3_outcome_kv: "run_id={{ l3_run_id | l3_marker_value }} request_id={{ l3_request_id | default(l3_run_id) | l3_marker_value }} detail=lock-verify-failed"
                 l3_refusal_fail_msg: >-
                   L3 launcher refused: facility-busy (lock-verify-failed) —
                   cluster-truth readback after a claimed lock acquisition
@@ -234,7 +234,7 @@
                   ansible.builtin.include_tasks: _refuse_pre_mutation.yml
                   vars:
                     l3_outcome_token: facility-busy
-                    l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }} detail=lock-verify-failed"
+                    l3_outcome_kv: "run_id={{ l3_run_id | l3_marker_value }} request_id={{ l3_request_id | default(l3_run_id) | l3_marker_value }} detail=lock-verify-failed"
                     l3_refusal_fail_msg: >-
                       L3 launcher refused: facility-busy (lock-verify-failed)
                       — cluster-truth readback after a claimed lock reclaim
@@ -262,7 +262,7 @@
               ansible.builtin.include_tasks: _refuse_pre_mutation.yml
               vars:
                 l3_outcome_token: facility-busy
-                l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }}"
+                l3_outcome_kv: "run_id={{ l3_run_id | l3_marker_value }} request_id={{ l3_request_id | default(l3_run_id) | l3_marker_value }}"
                 l3_refusal_fail_msg: >-
                   L3 launcher refused: facility-busy (run_id={{ l3_run_id }},
                   held by {{ _l3_lock_decision.holder }} for run_id

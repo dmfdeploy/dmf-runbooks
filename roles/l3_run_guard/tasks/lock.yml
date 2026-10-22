@@ -100,7 +100,7 @@
       ansible.builtin.include_tasks: _refuse_pre_mutation.yml
       vars:
         l3_outcome_token: lock-unavailable
-        l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }}"
+        l3_outcome_kv: "run_id={{ l3_run_id | l3_marker_value }} request_id={{ l3_request_id | default(l3_run_id) | l3_marker_value }}"
         l3_refusal_fail_msg: >-
           L3 facility lock UNAVAILABLE on the direct/off-cluster path
           (l3_kube_api_url/l3_kube_api_token not supplied) — refusing to
@@ -185,7 +185,7 @@
       ansible.builtin.include_tasks: _refuse_pre_mutation.yml
       vars:
         l3_outcome_token: facility-busy
-        l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }} detail=lock-race"
+        l3_outcome_kv: "run_id={{ l3_run_id | l3_marker_value }} request_id={{ l3_request_id | default(l3_run_id) | l3_marker_value }} detail=lock-race"
         l3_refusal_fail_msg: >-
           L3 launcher refused: facility-busy (lock-race) — the create/read
           race repeated {{ l3_lock_acquire_max_attempts }} times without

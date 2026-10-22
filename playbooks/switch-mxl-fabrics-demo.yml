@@ -128,18 +128,15 @@
 # caller-supplied free-text value (e.g. a receiver_instance containing
 # "detail=") appearing later in the same line.
 #
-# CONSOLE-SIDE ASSUMPTION (fix round, codex round-2 gate NIT — flagged, not
-# fixed here, this repo does not own the parser): run_id/request_id/
-# receiver_instance below are rendered UNSANITIZED — a caller-supplied
-# value could contain arbitrary characters, including a newline that makes
-# the AWX job-event message look like it contains a SECOND
-# "DMF_L3_SWITCH_OUTCOME:" line. Because the honest token+detail always
-# render FIRST (same discipline as the detail= placement above), a
-# dmf-cms-side parser that takes the FIRST "DMF_L3_SWITCH_OUTCOME:" match
-# in the event message is not fooled by this; a global/last-match scan
-# would be. This is a pre-existing property of the kv fields (unchanged by
-# this fix round) — noted here as the one-line confirmation the gate asked
-# for, not a change to this playbook.
+# CALLER-SUPPLIED KV VALUES (dmfdeploy/dmfdeploy#474): run_id/request_id/
+# receiver_instance below render through l3_run_guard's l3_marker_value
+# filter (roles/l3_run_guard/filter_plugins/l3_marker.py), which
+# percent-encodes anything that could split the marker. They used to
+# render unsanitized, so a value carrying a newline made the AWX job-event
+# message look like it contained a SECOND "DMF_L3_SWITCH_OUTCOME:" line,
+# and a value carrying a space added a key=value field of the caller's
+# choosing. Well-formed values (32-char hex ids, Helm release names) render
+# unchanged.
 #
 # NON-FORGEABILITY OF ALL OF THE ABOVE (umbrella #323 fix round, codex gate
 # P1 — read roles/l3_run_guard/tasks/switch_outcome_guard.yml's own header
@@ -501,9 +498,9 @@
               vars:
                 l3_switch_outcome_token: rollback_verified_previous_source_restored
                 l3_switch_outcome_kv: >-
-                  run_id={{ l3_run_id | default('') }}
-                  request_id={{ l3_request_id | default('') }}
-                  receiver_instance={{ receiver_instance }}
+                  run_id={{ l3_run_id | default('') | l3_marker_value }}
+                  request_id={{ l3_request_id | default('') | l3_marker_value }}
+                  receiver_instance={{ receiver_instance | l3_marker_value }}
                   restored_active_source={{ _switch_baseline.active_source | default('') }}
                   baseline_revision={{ _switch_baseline.revision }}
               when: _switch_rollback_verified and (_switch_baseline.active_source | trim) != ''
@@ -528,9 +525,9 @@
               vars:
                 l3_switch_outcome_token: rollback_verified_no_previous_source
                 l3_switch_outcome_kv: >-
-                  run_id={{ l3_run_id | default('') }}
-                  request_id={{ l3_request_id | default('') }}
-                  receiver_instance={{ receiver_instance }}
+                  run_id={{ l3_run_id | default('') | l3_marker_value }}
+                  request_id={{ l3_request_id | default('') | l3_marker_value }}
+                  receiver_instance={{ receiver_instance | l3_marker_value }}
                   baseline_revision={{ _switch_baseline.revision }}
               when: _switch_rollback_verified and (_switch_baseline.active_source | trim) == ''
 
@@ -566,9 +563,9 @@
               vars:
                 l3_switch_outcome_token: rollback_verification_failed
                 l3_switch_outcome_kv: >-
-                  run_id={{ l3_run_id | default('') }}
-                  request_id={{ l3_request_id | default('') }}
-                  receiver_instance={{ receiver_instance }}
+                  run_id={{ l3_run_id | default('') | l3_marker_value }}
+                  request_id={{ l3_request_id | default('') | l3_marker_value }}
+                  receiver_instance={{ receiver_instance | l3_marker_value }}
                   baseline_revision={{ _switch_baseline.revision }}
               when: not _switch_rollback_verified
 
@@ -667,9 +664,9 @@
           vars:
             l3_switch_outcome_token: success
             l3_switch_outcome_kv: >-
-              run_id={{ l3_run_id | default('') }}
-              request_id={{ l3_request_id | default('') }}
-              receiver_instance={{ receiver_instance }}
+              run_id={{ l3_run_id | default('') | l3_marker_value }}
+              request_id={{ l3_request_id | default('') | l3_marker_value }}
+              receiver_instance={{ receiver_instance | l3_marker_value }}
               active_source={{ _switch_target_projection.active_source }}
       rescue:
         - name: "L3 switch outcome: emit refused (umbrella #323) — the
@@ -708,9 +705,9 @@
             # NOT sufficient on its own.
             l3_switch_outcome_kv: >-
               detail={{ _switch_stage | default('pre-lock') }}
-              run_id={{ l3_run_id | default('<unknown>') }}
-              request_id={{ l3_request_id | default('<unknown>') }}
-              receiver_instance={{ receiver_instance | default('<unknown>') }}
+              run_id={{ l3_run_id | default('<unknown>') | l3_marker_value }}
+              request_id={{ l3_request_id | default('<unknown>') | l3_marker_value }}
+              receiver_instance={{ receiver_instance | default('<unknown>') | l3_marker_value }}
           # Skip ONLY when the sentinel says a specific marker already fired
           # AND the trusted failure state that is the sole legitimate reason
           # for one agrees: PHASE 2 verify genuinely ran and concluded

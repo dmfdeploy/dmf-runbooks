@@ -16,6 +16,13 @@
 # job, this file only renders the final marker line verbatim). The marker
 # STRING FORMAT itself is unchanged from the original stdout-based
 # contract: "DMF_L3_OUTCOME: <token> [<kv>]".
+#
+# dmfdeploy/dmfdeploy#474: because this file renders the kv verbatim, every
+# caller pipes each caller-supplied value (run_id, request_id) through the
+# l3_marker_value filter (filter_plugins/l3_marker.py) when it builds the
+# kv. Rendered raw, a value carrying a newline split the marker into two
+# lines, and a value carrying a space added a field. The same rule applies
+# to _emit_switch_outcome.yml's callers (receiver_instance too).
 
 - name: dmf-l3-outcome
   ansible.builtin.debug:

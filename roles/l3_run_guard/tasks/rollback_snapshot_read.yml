@@ -80,7 +80,7 @@
       ansible.builtin.include_tasks: _refuse_pre_mutation.yml
       vars:
         l3_outcome_token: "{{ _l3_snapshot_refusal_token }}"
-        l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id }}"
+        l3_outcome_kv: "run_id={{ l3_run_id | l3_marker_value }} request_id={{ l3_request_id | l3_marker_value }}"
         l3_refusal_fail_msg: >-
           L3 rollback refused: {{ _l3_snapshot_refusal_token }} for
           run_id={{ l3_run_id }} (recorded status:

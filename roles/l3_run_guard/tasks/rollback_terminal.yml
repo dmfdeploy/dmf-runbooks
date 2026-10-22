@@ -54,7 +54,7 @@
   ansible.builtin.include_tasks: _emit_outcome.yml
   vars:
     l3_outcome_token: "{{ _l3_rollback_outcome.verdict }}"
-    l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id }} surfaces={{ _l3_rollback_outcome.surfaces | join(',') }}"
+    l3_outcome_kv: "run_id={{ l3_run_id | l3_marker_value }} request_id={{ l3_request_id | l3_marker_value }} surfaces={{ _l3_rollback_outcome.surfaces | join(',') }}"
 
 # ── Lock release: TERMINAL for lock purposes regardless of verdict — even
 #    a dirty/incomplete rollback (R2a-7: every WP3 rollback) reached a

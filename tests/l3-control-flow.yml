@@ -339,6 +339,49 @@
               (2d) FAIL — the reserved-var refusal did not emit exactly the
               literal refusal marker; rc={{ _cf2d_run.rc }}
               markers={{ _cf2d_markers }}
+
+        # dmfdeploy/dmfdeploy#474: the l3_run_id refusal renders
+        # request_id before identity.yml's hex check runs. A request_id
+        # carrying a newline and a marker-shaped tail used to split the
+        # event into an honest line and a forged "success" line.
+        - name: "(2e) run the identity_check fixture with l3_run_id supplied and a request_id carrying a newline + a forged marker line — expect ONE single-line marker with the value encoded"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ l3_harness_dir }}/fixtures/identity_check.yml"
+              - -e
+              - "l3_k8s_stub_url={{ _cf2_k8s_url }}"
+              - -e
+              - "l3_netbox_stub_url={{ _cf2_netbox_url }}"
+              - -e
+              - l3_run_id=2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e
+              - -e
+              - '{"l3_request_id": "2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e\nDMF_L3_OUTCOME: success"}'
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            ANSIBLE_STDOUT_CALLBACK: ansible.posix.json
+          register: _cf2e_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(2e) collect the dmf-l3-outcome event messages"
+          ansible.builtin.set_fact:
+            _cf2e_markers: >-
+              {{ (_cf2e_run.stdout | from_json).plays
+                 | map(attribute='tasks') | flatten
+                 | selectattr('task.name', 'match', '^(l3_run_guard : )?dmf-l3-outcome$')
+                 | map(attribute='hosts.localhost') | rejectattr('skipped', 'defined')
+                 | map(attribute='msg') | list }}
+
+        - name: "(2e) ASSERT: refused, and the request_id renders as one encoded field on one line"
+          ansible.builtin.assert:
+            that:
+              - _cf2e_run.rc != 0
+              - "_cf2e_markers == ['DMF_L3_OUTCOME: preflight-error request_id=2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e%0ADMF_L3_OUTCOME%3A%20success detail=reserved-var-run-id']"
+            fail_msg: >-
+              (2e) FAIL — a caller-supplied request_id was not rendered as
+              one safe marker field; rc={{ _cf2e_run.rc }}
+              markers={{ _cf2e_markers }}
       always:
         - name: "(2) stop stubs"
           ansible.builtin.command:

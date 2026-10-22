@@ -80,7 +80,7 @@
       ansible.builtin.include_tasks: _refuse_pre_mutation.yml
       vars:
         l3_outcome_token: preflight-error
-        l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }} detail=topology-wrong-entry"
+        l3_outcome_kv: "run_id={{ l3_run_id | l3_marker_value }} request_id={{ l3_request_id | default(l3_run_id) | l3_marker_value }} detail=topology-wrong-entry"
         l3_refusal_fail_msg: >-
           L3 launcher refused: preflight-error (topology-wrong-entry).
           Structural precondition — cannot be overridden.
@@ -105,7 +105,7 @@
           ansible.builtin.include_tasks: _refuse_pre_mutation.yml
           vars:
             l3_outcome_token: preflight-error
-            l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }} detail=topology-invalid"
+            l3_outcome_kv: "run_id={{ l3_run_id | l3_marker_value }} request_id={{ l3_request_id | default(l3_run_id) | l3_marker_value }} detail=topology-invalid"
             l3_refusal_fail_msg: >-
               L3 launcher refused: preflight-error (topology-invalid):
               {{ _l3_topology_validation.error }}. Structural precondition —
@@ -152,7 +152,7 @@
           ansible.builtin.include_tasks: _refuse_pre_mutation.yml
           vars:
             l3_outcome_token: preflight-error
-            l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }} detail=topology-facility-ambiguous"
+            l3_outcome_kv: "run_id={{ l3_run_id | l3_marker_value }} request_id={{ l3_request_id | default(l3_run_id) | l3_marker_value }} detail=topology-facility-ambiguous"
             l3_refusal_fail_msg: >-
               L3 launcher refused: preflight-error (topology-facility-ambiguous).
               Expected exactly 1 NetBox site, found
@@ -177,7 +177,7 @@
           ansible.builtin.include_tasks: _refuse_pre_mutation.yml
           vars:
             l3_outcome_token: preflight-error
-            l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }} detail=topology-facility-mismatch"
+            l3_outcome_kv: "run_id={{ l3_run_id | l3_marker_value }} request_id={{ l3_request_id | default(l3_run_id) | l3_marker_value }} detail=topology-facility-mismatch"
             l3_refusal_fail_msg: >-
               L3 launcher refused: preflight-error (topology-facility-mismatch).
               target_facility={{ topology_params.target_facility }} !=

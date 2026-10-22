@@ -72,7 +72,7 @@
       ansible.builtin.include_tasks: _refuse_pre_mutation.yml
       vars:
         l3_outcome_token: preflight-error
-        l3_outcome_kv: "run_id={{ l3_run_id | default('') }} request_id={{ l3_request_id | default('') }} detail=authority-constant-mismatch"
+        l3_outcome_kv: "run_id={{ l3_run_id | default('') | l3_marker_value }} request_id={{ l3_request_id | default('') | l3_marker_value }} detail=authority-constant-mismatch"
         l3_refusal_fail_msg: >-
           L3 launcher refused: preflight-error (authority-constant
           mismatch). Structural precondition — cannot be overridden.

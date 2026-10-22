@@ -257,7 +257,7 @@
       ansible.builtin.include_tasks: _refuse_pre_mutation.yml
       vars:
         l3_outcome_token: missing-budget
-        l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }}"
+        l3_outcome_kv: "run_id={{ l3_run_id | l3_marker_value }} request_id={{ l3_request_id | default(l3_run_id) | l3_marker_value }}"
         l3_refusal_fail_msg: >-
           L3 launcher refused: missing-budget (run_id={{ l3_run_id }},
           release={{ l3_release }}). Set l3_override=true with a non-empty
@@ -291,7 +291,7 @@
       ansible.builtin.include_tasks: _refuse_pre_mutation.yml
       vars:
         l3_outcome_token: no-fit
-        l3_outcome_kv: "run_id={{ l3_run_id }} request_id={{ l3_request_id | default(l3_run_id) }}"
+        l3_outcome_kv: "run_id={{ l3_run_id | l3_marker_value }} request_id={{ l3_request_id | default(l3_run_id) | l3_marker_value }}"
         l3_refusal_fail_msg: >-
           L3 launcher refused: no-fit (run_id={{ l3_run_id }},
           release={{ l3_release }}). See the capacity report above. Set
