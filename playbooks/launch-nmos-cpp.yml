@@ -43,6 +43,15 @@
     # equivalent alias needed.
     nmos_namespace: "{{ l3_target_namespace }}"
   tasks:
+    # The ONE task that deliberately sits OUTSIDE the outer block below
+    # (dmfdeploy/dmfdeploy#332, mirroring switch-mxl-fabrics-demo.yml's own
+    # umbrella #323 placement — see roles/l3_run_guard/tasks/outcome_guard.yml
+    # for why this position is load-bearing).
+    - name: "L3 outcome-control guard (dmfdeploy/dmfdeploy#332 — MUST stay the first task of this play, and outside the outer block)"
+      ansible.builtin.include_role:
+        name: l3_run_guard
+        tasks_from: outcome_guard
+
     - name: "L3 gate through terminal — ONE outer block/rescue/always (R4a
         Backbone, codex round-3 P1-3/P1-11: main.yml's own stages
         (identity->preflight->lock->snapshot->capacity) used to run

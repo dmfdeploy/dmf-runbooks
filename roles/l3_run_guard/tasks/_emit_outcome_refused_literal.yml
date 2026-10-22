@@ -1,0 +1,35 @@
+---
+# dmfdeploy/dmfdeploy#332 — the SECOND, and deliberately the ONLY other,
+# sanctioned DMF_L3_OUTCOME emission point: a marker whose ENTIRE payload
+# is a YAML string literal, carrying no Jinja at all. Mirrors
+# _emit_switch_refused_literal.yml's construction exactly; read that
+# file's header for the full non-forgeability argument.
+#
+# WHY THIS FILE HAS TO EXIST. _emit_outcome.yml renders
+# l3_outcome_token/l3_outcome_kv, which every caller supplies as
+# task-level `vars:`. Extra_vars outrank task-level vars, so on the one
+# path that has to emit while those two names may be caller-supplied (the
+# reserved-var refusal, which fires precisely BECAUSE a reserved name was
+# supplied), a rendered token is the caller's token. That path used to
+# run through _refuse_pre_mutation.yml -> _emit_outcome.yml, so
+# `-e l3_outcome_token=success` refused the run and still told the console
+# "success". A literal in the task's own module args is the only content a
+# caller cannot reach, so the whole marker is spelled out here.
+#
+# NO KV, ON PURPOSE — same reasoning as the switch and purge precedents:
+# this fires exactly when the caller has been caught supplying this role's
+# own internal state, so echoing any caller-supplied string (run_id,
+# request_id) back into the event the console parses is the wrong
+# instinct. The console correlates the event to its own dispatch by AWX
+# job id, so nothing real is lost.
+#
+# Included by _assert_reserved_vars.yml's rescue (every entry path) and by
+# outcome_guard.yml's rescue (the launch, teardown and rollback playbooks'
+# own first task). The task NAME is the same 'dmf-l3-outcome' the console
+# filters AWX job events by. tests/scripts/check_playbook_structure.py
+# sanctions exactly these two DMF_L3_OUTCOME emission files by name and
+# checks that this one stays a literal.
+
+- name: dmf-l3-outcome
+  ansible.builtin.debug:
+    msg: "DMF_L3_OUTCOME: preflight-error detail=reserved-var"

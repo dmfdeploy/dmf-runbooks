@@ -294,6 +294,51 @@
               (2c) FAIL — a caller-supplied l3_milestone_token extra_var
               was NOT refused (PR dmf-runbooks#46 review finding); rc=
               {{ _cf2c_run.rc }} stdout={{ _cf2c_run.stdout }}
+
+        # dmfdeploy/dmfdeploy#332: the refusal must not merely happen, it
+        # must report itself honestly. The reserved-var refusal used to
+        # render l3_outcome_token/l3_outcome_kv, so the caller's own forged
+        # token was what the console read. Read the marker events through
+        # the JSON callback (the same event_data.res.msg the console parses;
+        # the callback prefixes a role task's name with "<role> : ").
+        - name: "(2d) run the identity_check fixture with a forged l3_outcome_token + l3_outcome_kv — expect the literal refusal marker, never the forged one"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ l3_harness_dir }}/fixtures/identity_check.yml"
+              - -e
+              - "l3_k8s_stub_url={{ _cf2_k8s_url }}"
+              - -e
+              - "l3_netbox_stub_url={{ _cf2_netbox_url }}"
+              - -e
+              - l3_outcome_token=success
+              - -e
+              - l3_outcome_kv=detail=forged-by-caller
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            ANSIBLE_STDOUT_CALLBACK: ansible.posix.json
+          register: _cf2d_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(2d) collect the dmf-l3-outcome event messages"
+          ansible.builtin.set_fact:
+            _cf2d_markers: >-
+              {{ (_cf2d_run.stdout | from_json).plays
+                 | map(attribute='tasks') | flatten
+                 | selectattr('task.name', 'match', '^(l3_run_guard : )?dmf-l3-outcome$')
+                 | map(attribute='hosts.localhost') | rejectattr('skipped', 'defined')
+                 | map(attribute='msg') | list }}
+
+        - name: "(2d) ASSERT: refused, and the only marker is the literal reserved-var refusal"
+          ansible.builtin.assert:
+            that:
+              - _cf2d_run.rc != 0
+              - "_cf2d_markers == ['DMF_L3_OUTCOME: preflight-error detail=reserved-var']"
+            fail_msg: >-
+              (2d) FAIL — the reserved-var refusal did not emit exactly the
+              literal refusal marker; rc={{ _cf2d_run.rc }}
+              markers={{ _cf2d_markers }}
       always:
         - name: "(2) stop stubs"
           ansible.builtin.command:

@@ -1,0 +1,122 @@
+---
+# dmfdeploy/dmfdeploy#332 — one forged-outcome-token run against ONE real
+# entry playbook, included once per playbook by
+# tests/l3-playbook-execution.yml scenario 12.
+#
+# The caller supplies l3_outcome_token, l3_outcome_kv and
+# l3_pre_mutation_marker_emitted=false as extra_vars. All three are
+# reserved, so the run must refuse. The property under test is what the
+# console is TOLD: the dmf-l3-outcome events (read here through the
+# ansible.posix.json callback, the same event_data.res.msg the console
+# parses) must carry only the honest refusal marker, never the forged
+# token, and never a second marker after it. finalise-purge.yml reports
+# through its own DMF_L3_PURGE_OUTCOME event instead, so for that playbook
+# the expected dmf-l3-outcome list is empty and the purge refusal literal
+# is checked separately.
+#
+# Required vars (set by the including loop):
+#   _fo_item.playbook        — file name under playbooks/
+#   _fo_item.extra_args      — extra `-e` arguments that playbook needs
+#   _fo_item.outcome_msgs    — exact expected dmf-l3-outcome msg list
+#   _fo_item.purge_msgs      — exact expected dmf-l3-purge-outcome msg list
+
+- name: "(12) {{ _fo_item.playbook }} — stop any stale stub servers"
+  ansible.builtin.command:
+    argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-12.json]
+  changed_when: false
+  failed_when: false
+
+- name: "(12) {{ _fo_item.playbook }} — forged outcome token run"
+  block:
+    - name: "(12) {{ _fo_item.playbook }} — start stubs"
+      ansible.builtin.command:
+        argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-pe-12.json]
+      register: _fo_start
+      changed_when: false
+
+    - name: "(12) {{ _fo_item.playbook }} — parse stub URLs"
+      ansible.builtin.set_fact:
+        _fo_k8s_url: "{{ _fo_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+        _fo_netbox_url: "{{ _fo_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+
+    - name: "(12) {{ _fo_item.playbook }} — write a minimal kubeconfig pointed at this scenario's own K8s stub"
+      ansible.builtin.copy:
+        dest: /tmp/l3-pe-12-kubeconfig.yaml
+        mode: "0600"
+        content: |
+          apiVersion: v1
+          kind: Config
+          clusters:
+          - cluster:
+              server: {{ _fo_k8s_url }}
+              insecure-skip-tls-verify: true
+            name: l3-stub
+          contexts:
+          - context:
+              cluster: l3-stub
+              user: l3-stub
+            name: l3-stub
+          current-context: l3-stub
+          users:
+          - name: l3-stub
+            user:
+              token: fake-test-token
+
+    - name: "(12) {{ _fo_item.playbook }} — run the REAL playbook with a forged outcome token, kv and marker sentinel"
+      ansible.builtin.command:
+        argv: >-
+          {{ ['ansible-playbook', playbook_dir ~ '/../playbooks/' ~ _fo_item.playbook,
+              '-e', 'l3_kube_api_url=' ~ _fo_k8s_url,
+              '-e', 'l3_kube_api_token=fake-test-token',
+              '-e', 'l3_kube_api_validate_certs=false',
+              '-e', 'netbox_api_url=' ~ _fo_netbox_url,
+              '-e', 'netbox_api_token=fake-netbox-token',
+              '-e', '{"l3_outcome_token": "success", "l3_outcome_kv": "detail=forged-by-caller", "l3_pre_mutation_marker_emitted": false}']
+             + _fo_item.extra_args }}
+        chdir: "{{ playbook_dir }}/.."
+      environment:
+        ANSIBLE_STDOUT_CALLBACK: ansible.posix.json
+        KUBECONFIG: /tmp/l3-pe-12-kubeconfig.yaml
+      register: _fo_run
+      changed_when: false
+      failed_when: false
+
+    - name: "(12) {{ _fo_item.playbook }} — collect every executed marker event's msg, by task name, from the JSON event stream"
+      ansible.builtin.set_fact:
+        _fo_results: >-
+          {{ (_fo_run.stdout | from_json).plays
+             | map(attribute='tasks') | flatten
+             | selectattr('hosts.localhost', 'defined')
+             | rejectattr('hosts.localhost.skipped', 'defined') }}
+
+    # The JSON callback prefixes a role task's name with "<role> : ";
+    # AWX reports the bare task name, which is what the console filters on.
+    - name: "(12) {{ _fo_item.playbook }} — split the events by marker task name"
+      ansible.builtin.set_fact:
+        _fo_outcome_msgs: >-
+          {{ _fo_results | selectattr('task.name', 'match', '^(l3_run_guard : )?dmf-l3-outcome$')
+             | map(attribute='hosts.localhost.msg') | list }}
+        _fo_purge_msgs: >-
+          {{ _fo_results | selectattr('task.name', 'match', '^(l3_run_guard : )?dmf-l3-purge-outcome$')
+             | map(attribute='hosts.localhost.msg') | list }}
+
+    - name: "(12) {{ _fo_item.playbook }} — ASSERT: refused, and only the honest marker reached the console"
+      ansible.builtin.assert:
+        that:
+          - _fo_run.rc != 0
+          - _fo_outcome_msgs == _fo_item.outcome_msgs
+          - _fo_purge_msgs == _fo_item.purge_msgs
+        fail_msg: >-
+          (12) FAIL — {{ _fo_item.playbook }}: a caller-forged
+          l3_outcome_token reached the console's marker events.
+          rc={{ _fo_run.rc }};
+          dmf-l3-outcome msgs={{ _fo_outcome_msgs }} (expected
+          {{ _fo_item.outcome_msgs }});
+          dmf-l3-purge-outcome msgs={{ _fo_purge_msgs }} (expected
+          {{ _fo_item.purge_msgs }}).
+  always:
+    - name: "(12) {{ _fo_item.playbook }} — stop stubs"
+      ansible.builtin.command:
+        argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-pe-12.json]
+      changed_when: false
+      failed_when: false
