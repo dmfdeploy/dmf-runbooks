@@ -63,10 +63,10 @@
       ansible.builtin.debug:
         msg: >-
           L3 launcher refused: preflight-error (authority-constant
-          mismatch). l3_lock_namespace={{ l3_lock_namespace | default('<undefined>') }}
-          l3_lock_configmap_name={{ l3_lock_configmap_name | default('<undefined>') }}
-          l3_lock_ttl_seconds={{ l3_lock_ttl_seconds | default('<undefined>') }}
-          l3_ee_reserve={{ l3_ee_reserve | default('<undefined>') }}.
+          mismatch). l3_lock_namespace={{ l3_lock_namespace | default('<undefined>') | l3_marker_value }}
+          l3_lock_configmap_name={{ l3_lock_configmap_name | default('<undefined>') | l3_marker_value }}
+          l3_lock_ttl_seconds={{ l3_lock_ttl_seconds | default('<undefined>') | l3_marker_value }}
+          l3_ee_reserve={{ l3_ee_reserve | default('<undefined>') | l3_marker_value }}.
 
     - name: "L3 authority-constant refusal cleanup (never override-able, pre-lock)"
       ansible.builtin.include_tasks: _refuse_pre_mutation.yml

@@ -99,7 +99,7 @@
           ansible.builtin.debug:
             msg: >-
               L3 launcher refused: preflight-error (topology-invalid):
-              {{ _l3_topology_validation.error }}
+              {{ _l3_topology_validation.error | l3_marker_value }}
 
         - name: "L3 topology-invalid refusal cleanup (never override-able, pre-lock)"
           ansible.builtin.include_tasks: _refuse_pre_mutation.yml
@@ -108,7 +108,7 @@
             l3_outcome_kv: "run_id={{ l3_run_id | l3_marker_value }} request_id={{ l3_request_id | default(l3_run_id) | l3_marker_value }} detail=topology-invalid"
             l3_refusal_fail_msg: >-
               L3 launcher refused: preflight-error (topology-invalid):
-              {{ _l3_topology_validation.error }}. Structural precondition —
+              {{ _l3_topology_validation.error | l3_marker_value }}. Structural precondition —
               cannot be overridden.
 
 # ── Live target_facility AGREEMENT check (spec §3.4) — only reached with a
@@ -169,7 +169,7 @@
           ansible.builtin.debug:
             msg: >-
               L3 launcher refused: preflight-error (topology-facility-mismatch).
-              topology_params.target_facility={{ topology_params.target_facility }}
+              topology_params.target_facility={{ topology_params.target_facility | l3_marker_value }}
               does not match this env's own NetBox site
               ({{ _l3_topology_site_slugs[0] }}).
 
@@ -180,7 +180,7 @@
             l3_outcome_kv: "run_id={{ l3_run_id | l3_marker_value }} request_id={{ l3_request_id | default(l3_run_id) | l3_marker_value }} detail=topology-facility-mismatch"
             l3_refusal_fail_msg: >-
               L3 launcher refused: preflight-error (topology-facility-mismatch).
-              target_facility={{ topology_params.target_facility }} !=
+              target_facility={{ topology_params.target_facility | l3_marker_value }} !=
               env site={{ _l3_topology_site_slugs[0] }}. Structural
               precondition — cannot be overridden.
 

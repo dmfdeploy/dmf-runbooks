@@ -108,7 +108,7 @@
         fail_msg: >-
           L3 snapshot: NetBox returned
           {{ (item.json.results | default([])) | length }} records
-          for the exact name '{{ item.item }}' — service names must be
+          for the exact name '{{ item.item | l3_marker_value }}' — service names must be
           unique; this is a structural NetBox data-integrity problem, not a
           per-run decision.
       loop: "{{ _l3_netbox_lookup_results.results }}"

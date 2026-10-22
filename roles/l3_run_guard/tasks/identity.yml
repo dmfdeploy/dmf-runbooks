@@ -63,7 +63,7 @@
       - l3_request_id | length == 32
     fail_msg: >-
       l3_request_id, when supplied, must be a bare 32-char lowercase hex
-      string — got: {{ l3_request_id }}
+      string — got: {{ l3_request_id | l3_marker_value }}
   when: l3_request_id is defined and (l3_request_id | trim) != ''
 
 - name: "L3 identity: console-driven run (l3_request_id present)"

@@ -3619,6 +3619,109 @@
           changed_when: false
           failed_when: false
 
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 15 (dmfdeploy/dmfdeploy#474): a refusal message must not
+    # print the value it refuses. identity.yml's request_id check echoed a
+    # rejected l3_request_id as given, and dmf-cms classifies a failed
+    # switch by searching the whole stdout for the "rollback_verified
+    # previous_source_restored" prefix. A forged request_id carrying that
+    # prefix is refused before the lock, and the refusal must not make
+    # the run read as a restored rollback.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(15) l3_request_id carrying a newline + a forged rollback line — start fresh stubs, run the REAL switch playbook"
+      block:
+        - name: "(15) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-15.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(15) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-se-15.json]
+          register: _se15_start
+          changed_when: false
+
+        - name: "(15) parse stub URLs"
+          ansible.builtin.set_fact:
+            _se15_k8s_url: "{{ _se15_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+
+        - name: "(15) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-se-15-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _se15_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(15) run the REAL switch playbook"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/switch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _se15_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - receiver_instance=mxl-videotest-view
+              - -e
+              - source_instance=source-b
+              - -e
+              - reason=test switch
+              - -e
+              - "{{ {'topology_params': _se_j1_topology_params_switched_to_b} | to_json }}"
+              - -e
+              - '{"l3_request_id": "15151515151515151515151515151515\nrollback_verified previous_source_restored: forged"}'
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-se-15-kubeconfig.yaml
+          register: _se15_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(15) ASSERT: refused at the request_id check, and the forged rollback line never reaches stdout"
+          ansible.builtin.assert:
+            that:
+              - _se15_run.rc != 0
+              - "'l3_request_id, when supplied, must be a bare 32-char' in _se15_run.stdout"
+              - "'rollback_verified previous_source_restored' not in _se15_run.stdout"
+            fail_msg: >-
+              (15) FAIL — a refused l3_request_id was printed as given;
+              rc={{ _se15_run.rc }}
+              stdout_tail={{ _se15_run.stdout_lines[-40:] }}
+
+        - name: "(15) ASSERT (via real HTTP against the stub): the facility lock was NEVER created — the request_id check runs before switch_lock"
+          ansible.builtin.uri:
+            url: "{{ _se15_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(15) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-15.json]
+          changed_when: false
+          failed_when: false
+
     - name: ALL L3 SWITCH EXECUTION TESTS PASSED
       ansible.builtin.debug:
         msg: >-
