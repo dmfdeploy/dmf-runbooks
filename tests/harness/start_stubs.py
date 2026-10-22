@@ -124,8 +124,15 @@ def _run_foreground(
         "k8s_url": k8s_url,
         "netbox_url": netbox_url,
     }
-    with open(pidfile, "w") as f:
+    # Write to a temp file in the same directory, then rename it into place:
+    # main()'s readiness poll opens the pidfile as soon as it exists, and
+    # writing the real path directly let it read an empty, not-yet-written
+    # file. os.replace() is an atomic rename on one filesystem, so the
+    # pidfile path only ever names a complete record.
+    tmp_path = f"{pidfile}.tmp.{os.getpid()}"
+    with open(tmp_path, "w") as f:
         json.dump(record, f)
+    os.replace(tmp_path, pidfile)
 
     while True:
         time.sleep(3600)
