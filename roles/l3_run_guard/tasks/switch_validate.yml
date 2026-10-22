@@ -55,12 +55,20 @@
       source_instance={{ source_instance }}
       viewer.source_selection={{ topology_params.viewer.source_selection }}
 
-- name: "L3 switch validate: receiver_instance must be a non-empty string
-    (the concrete Helm release the playbook re-points; a blank value would
-    silently target an undefined release name downstream)"
+- name: "L3 switch validate: receiver_instance must be a one-line Helm
+    release name (the concrete release the playbook re-points; a blank value
+    would target an undefined release, and a newline would let the value
+    write its own lines into the job stdout that dmf-cms classifies)"
   ansible.builtin.assert:
     that:
-      - (receiver_instance | default('') | trim) != ''
+      - receiver_instance is defined
+      - receiver_instance is string
+      # `$` also matches before a final newline, so the pattern alone
+      # admits "name\n"; the newline check closes that. 53 is Helm's
+      # release-name limit.
+      - receiver_instance is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+      - receiver_instance | length <= 53
+      - "'\\n' not in receiver_instance"
     fail_msg: >-
       DMF_L3_SWITCH_REFUSED: detail=switch-receiver-instance-missing
       request_id={{ l3_request_id | default('') }}

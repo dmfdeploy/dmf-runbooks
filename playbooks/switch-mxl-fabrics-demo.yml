@@ -535,8 +535,8 @@
               ansible.builtin.fail:
                 msg: >-
                   rollback_verified previous_source_restored:
-                  receiver_instance={{ receiver_instance }}
-                  request_id={{ l3_request_id | default('') }}
+                  receiver_instance={{ receiver_instance | l3_marker_value }}
+                  request_id={{ l3_request_id | default('') | l3_marker_value }}
                   restored_active_source={{ _switch_baseline.active_source | default('') }}.
                   PHASE 2's upgrade did not verify within
                   {{ l3_switch_upgrade_verify_timeout_seconds }}s; the
@@ -573,8 +573,8 @@
               ansible.builtin.fail:
                 msg: >-
                   rollback_verification_failed:
-                  receiver_instance={{ receiver_instance }}
-                  request_id={{ l3_request_id | default('') }}.
+                  receiver_instance={{ receiver_instance | l3_marker_value }}
+                  request_id={{ l3_request_id | default('') | l3_marker_value }}.
                   PHASE 2's upgrade did not verify within
                   {{ l3_switch_upgrade_verify_timeout_seconds }}s; a helm
                   rollback to revision {{ _switch_baseline.revision }} was
@@ -753,8 +753,8 @@
           ansible.builtin.fail:
             msg: >-
               MXL fabrics-demo switch failed for
-              receiver_instance={{ receiver_instance | default('<unknown>') }}
-              request_id={{ l3_request_id | default('<unknown>') }}. See the
+              receiver_instance={{ receiver_instance | default('<unknown>') | l3_marker_value }}
+              request_id={{ l3_request_id | default('<unknown>') | l3_marker_value }}. See the
               task error above for the root cause — if an automatic rollback
               ran, its own outcome is reported in a separate error just
               above this one; the facility lock has already been released.
