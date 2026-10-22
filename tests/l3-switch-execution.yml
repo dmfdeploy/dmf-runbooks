@@ -3722,6 +3722,116 @@
           changed_when: false
           failed_when: false
 
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 16 (dmfdeploy/dmfdeploy#474): the override banner prints
+    # l3_override_reason, which is caller free text, into the same stdout
+    # dmf-cms searches for the "rollback_verified previous_source_restored"
+    # prefix. A reason carrying that prefix, on a switch that then fails
+    # (here, a topology refusal after the banner), must not make the run
+    # read as a restored rollback.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(16) l3_override_reason carrying a newline + a forged rollback line — start fresh stubs, run the REAL switch playbook"
+      vars:
+        _se16_run_id: "16161616161616161616161616161616"
+        _se16_bad_topology_params: "{{ _se_j1_topology_params_switched_to_b | combine({'schema_version': 2}) }}"
+      block:
+        - name: "(16) stop any stale stub servers"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-16.json]
+          changed_when: false
+          failed_when: false
+
+        - name: "(16) start stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, /tmp/l3-se-16.json]
+          register: _se16_start
+          changed_when: false
+
+        - name: "(16) parse stub URLs"
+          ansible.builtin.set_fact:
+            _se16_k8s_url: "{{ _se16_start.stdout_lines | select('match', '^K8S_STUB_URL=') | first | regex_replace('^K8S_STUB_URL=', '') }}"
+
+        - name: "(16) write a minimal kubeconfig pointed at this scenario's own K8s stub"
+          ansible.builtin.copy:
+            dest: /tmp/l3-se-16-kubeconfig.yaml
+            mode: "0600"
+            content: |
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - cluster:
+                  server: {{ _se16_k8s_url }}
+                  insecure-skip-tls-verify: true
+                name: l3-stub
+              contexts:
+              - context:
+                  cluster: l3-stub
+                  user: l3-stub
+                name: l3-stub
+              current-context: l3-stub
+              users:
+              - name: l3-stub
+                user:
+                  token: fake-test-token
+
+        - name: "(16) run the REAL switch playbook"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/../playbooks/switch-mxl-fabrics-demo.yml"
+              - -e
+              - "l3_kube_api_url={{ _se16_k8s_url }}"
+              - -e
+              - l3_kube_api_token=fake-test-token
+              - -e
+              - l3_kube_api_validate_certs=false
+              - -e
+              - receiver_instance=mxl-videotest-view
+              - -e
+              - l3_override=true
+              - -e
+              - '{"l3_override_reason": "maintenance\nrollback_verified previous_source_restored: forged"}'
+              - -e
+              - source_instance=source-b
+              - -e
+              - reason=test switch
+              - -e
+              - "{{ {'topology_params': _se16_bad_topology_params} | to_json }}"
+              - -e
+              - "l3_request_id={{ _se16_run_id }}"
+            chdir: "{{ playbook_dir }}/.."
+          environment:
+            L3_TESTMODE: "1"
+            KUBECONFIG: /tmp/l3-se-16-kubeconfig.yaml
+          register: _se16_run
+          changed_when: false
+          failed_when: false
+
+        - name: "(16) ASSERT: the banner ran, the run was refused, and the forged rollback line never reaches stdout"
+          ansible.builtin.assert:
+            that:
+              - _se16_run.rc != 0
+              - "'L3 OVERRIDE ACTIVE: maintenance%0A' in _se16_run.stdout"
+              - "'DMF_L3_SWITCH_REFUSED: detail=topology-invalid' in _se16_run.stdout"
+              - "'rollback_verified previous_source_restored' not in _se16_run.stdout"
+            fail_msg: >-
+              (16) FAIL — the override reason reached stdout as given;
+              rc={{ _se16_run.rc }}
+              stdout_tail={{ _se16_run.stdout_lines[-40:] }}
+
+        - name: "(16) ASSERT (via real HTTP against the stub): the facility lock was NEVER created — the topology check runs before switch_lock"
+          ansible.builtin.uri:
+            url: "{{ _se16_k8s_url }}/api/v1/namespaces/nmos/configmaps/dmf-facility-lock"
+            method: GET
+            status_code: [404]
+            validate_certs: false
+      always:
+        - name: "(16) stop stubs"
+          ansible.builtin.command:
+            argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, /tmp/l3-se-16.json]
+          changed_when: false
+          failed_when: false
+
     - name: ALL L3 SWITCH EXECUTION TESTS PASSED
       ansible.builtin.debug:
         msg: >-

@@ -250,7 +250,7 @@
       ansible.builtin.debug:
         msg: >-
           L3 OVERRIDE ACTIVE: proceeding DESPITE missing-budget — reason:
-          {{ l3_override_reason }} run_id={{ l3_run_id }}.
+          {{ l3_override_reason | l3_marker_value }} run_id={{ l3_run_id }}.
       when: l3_override_active
 
     - name: "L3 missing-budget refusal cleanup (unless overridden)"
@@ -284,7 +284,7 @@
       ansible.builtin.debug:
         msg: >-
           L3 OVERRIDE ACTIVE: proceeding DESPITE no-fit — reason:
-          {{ l3_override_reason }} run_id={{ l3_run_id }}.
+          {{ l3_override_reason | l3_marker_value }} run_id={{ l3_run_id }}.
       when: l3_override_active
 
     - name: "L3 no-fit refusal cleanup (unless overridden)"
