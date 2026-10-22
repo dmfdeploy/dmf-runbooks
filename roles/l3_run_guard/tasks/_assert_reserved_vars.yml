@@ -30,12 +30,23 @@
 # there is no condition here a caller could shadow to skip cleanup while
 # still letting the assert itself fail closed.
 #
-# R4a/P1-2 also closes the previously-documented "emitter shadow"
-# residual: l3_outcome_token/l3_outcome_kv are reserved here same as
-# always, but now that THIS guard can no longer be bypassed, no caller
-# can ever reach _emit_outcome.yml/_refuse_pre_mutation.yml with an
-# injected l3_outcome_token extra_var still in scope — the run refuses
-# right here, before any refusal/outcome path is reached at all.
+# "Emitter shadow" (dmfdeploy/dmfdeploy#332): l3_outcome_token/
+# l3_outcome_kv are reserved here, but reserving them does NOT by itself
+# keep a caller's value out of the console's marker. R4a/P1-2 claimed it
+# did, on the grounds that the run refuses here before any outcome path is
+# reached. That missed that this file's own refusal path IS an outcome
+# path: the rescue below used to include _refuse_pre_mutation.yml with
+# task-level `vars: l3_outcome_token: preflight-error`, which extra_vars
+# outrank, so `-e l3_outcome_token=success` refused the run and still
+# emitted "DMF_L3_OUTCOME: success". The rescue now emits a pure literal
+# (_emit_outcome_refused_literal.yml) and renders no variable at all. It
+# also skips _refuse_pre_mutation.yml's cleanup: this check runs before any
+# lock or snapshot exists, and that cleanup decides what to patch and
+# release from names (l3_snapshot_created, _l3_fenced_out, ...) the caller
+# may have just supplied. The outer rescue that runs after this one is an
+# emitter too; outcome_guard.yml (the launch/teardown/rollback playbooks'
+# first task) and purge_outcome_guard.yml close that half — see
+# outcome_guard.yml's header.
 #
 # R5a/P1-1 (codex round-4): the R4a list above covered SELECTED set_fact
 # names but omitted every `register:` target (e.g. _l3_lock_create,
@@ -433,11 +444,19 @@
           L3 launcher refused: preflight-error (reserved-var). One or more
           reserved internal variables were supplied as extra_vars.
 
-    - name: "L3 reserved-var refusal cleanup (R4a/P1-2, never override-able, pre-lock)"
-      ansible.builtin.include_tasks: _refuse_pre_mutation.yml
-      vars:
-        l3_outcome_token: preflight-error
-        l3_outcome_kv: "run_id={{ l3_run_id | default('') }} request_id={{ l3_request_id | default('') }} detail=reserved-var"
-        l3_refusal_fail_msg: >-
+    # Set BEFORE emitting, exactly like _refuse_pre_mutation.yml, so the
+    # outer rescue re-raises instead of emitting a second marker. A caller
+    # who forges this sentinel to false is refused earlier, by the
+    # playbook's own outcome-control guard.
+    - name: "L3 reserved-var refusal: mark this refusal as having emitted its own marker"
+      ansible.builtin.set_fact:
+        l3_pre_mutation_marker_emitted: true
+
+    - name: "L3 reserved-var refusal: emit the HARD-CODED refusal marker (dmfdeploy/dmfdeploy#332 — literal, never rendered from a name the caller may have supplied)"
+      ansible.builtin.include_tasks: _emit_outcome_refused_literal.yml
+
+    - name: "L3 reserved-var refusal: fail the play (pre-lock — nothing to release or mark superseded)"
+      ansible.builtin.fail:
+        msg: >-
           L3 launcher refused: preflight-error (reserved-var). Structural
           precondition — cannot be overridden.

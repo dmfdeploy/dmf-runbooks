@@ -80,6 +80,15 @@ gate block is NOT tasks[0]: its umbrella #347 outcome-control guard sits
 there instead (mirroring switch's own guard-before-the-block placement),
 so the outer block is checked at tasks[1] (`outer_index=1`).
 
+Also since dmfdeploy/dmfdeploy#332: _check_outcome_marker() /
+_check_outcome_guard_position() — the SAME two structural floors for the
+launch/teardown/rollback playbooks' own DMF_L3_OUTCOME event
+(roles/l3_run_guard/tasks/_emit_outcome.yml,
+_emit_outcome_refused_literal.yml, outcome_guard.yml). Every one of those
+seven playbooks now runs outcome_guard.yml as tasks[0], ahead of its outer
+block, so _check_playbook() checks their outer block at tasks[1], the same
+way it already did for finalise-purge.yml.
+
 Usage:  python3 tests/scripts/check_playbook_structure.py
 Exit 0 = every playbook checked below has the expected outer-block shape,
 and no task file re-introduces the umbrella #272 or #273 anti-pattern.
@@ -217,6 +226,35 @@ _PURGE_GUARD_NAMES = (
     "_purge_member_results",
     "_purge_tag_result",
     "_purge_tag_id",
+    # dmfdeploy/dmfdeploy#332 — finalise-purge.yml's outer rescue is
+    # gate_rescue.yml, a DMF_L3_OUTCOME emitter, so the names that decide
+    # whether and what it emits are proven caller-free here too.
+    "l3_outcome_token",
+    "l3_outcome_kv",
+    "l3_pre_mutation_marker_emitted",
+    "l3_mutation_started",
+)
+
+# dmfdeploy/dmfdeploy#332 — the SAME structural floor as the switch and
+# purge blocks above, for DMF_L3_OUTCOME itself. The reserved-var refusal
+# used to render l3_outcome_token, and the outer rescue after it could be
+# made to render it again, so a caller could choose the outcome the console
+# was told. The emission-point set is closed at exactly two files (the
+# generic emitter and the literal one), and outcome_guard.yml runs as
+# tasks[0] of every playbook listed in _OUTCOME_GUARD_PLAYBOOKS.
+_OUTCOME_EMIT_FILE = "_emit_outcome.yml"
+_OUTCOME_MARKER_NAME = "dmf-l3-outcome"
+_OUTCOME_LITERAL_FILE = "_emit_outcome_refused_literal.yml"
+_OUTCOME_LITERAL_MSG = "DMF_L3_OUTCOME: preflight-error detail=reserved-var"
+_OUTCOME_EMIT_FILES = (_OUTCOME_EMIT_FILE, _OUTCOME_LITERAL_FILE)
+_OUTCOME_GUARD_FILE = "outcome_guard.yml"
+_OUTCOME_GUARD_NAMES = (
+    "l3_outcome_token",
+    "l3_outcome_kv",
+    "l3_pre_mutation_marker_emitted",
+    "l3_mutation_started",
+    "l3_expected_refusal",
+    "l3_rollback_terminal_reached",
 )
 
 # umbrella #272 (regression guard, added same round as the fix) — scan
@@ -1084,18 +1122,177 @@ def _check_purge_success_after_lock_release() -> list[str]:
     return errors
 
 
+def _check_outcome_marker() -> list[str]:
+    """dmfdeploy/dmfdeploy#332 — the SAME structural floor as
+    _check_purge_outcome_marker(), for DMF_L3_OUTCOME: both sanctioned
+    emission files exist and hold exactly one debug task named
+    'dmf-l3-outcome', no other task in this role or any entry playbook
+    carries that name, the literal emitter is genuinely literal, and
+    outcome_guard.yml still asserts every outcome-decision name."""
+    errors: list[str] = []
+    emit_file = _ROLE_TASKS_DIR / _OUTCOME_EMIT_FILE
+    literal_file = _ROLE_TASKS_DIR / _OUTCOME_LITERAL_FILE
+
+    missing = [p for p in (emit_file, literal_file) if not p.is_file()]
+    if missing:
+        return [
+            f"{p.relative_to(_REPO_ROOT)}: a sanctioned DMF_L3_OUTCOME "
+            "marker-emission file is missing."
+            for p in missing
+        ]
+
+    for path in (emit_file, literal_file):
+        rel = path.relative_to(_REPO_ROOT)
+        try:
+            emit_tasks = yaml.safe_load(path.read_text())
+        except yaml.YAMLError as exc:
+            errors.append(f"{rel}: YAML parse error: {exc}")
+            continue
+        if not isinstance(emit_tasks, list) or len(emit_tasks) != 1:
+            errors.append(
+                f"{rel}: expected exactly ONE task in this file (a "
+                "sanctioned named marker-emission point)."
+            )
+            continue
+        only = emit_tasks[0]
+        if not isinstance(only, dict) or only.get("name") != _OUTCOME_MARKER_NAME:
+            errors.append(
+                f"{rel}: the single task's own `name:` must be literally "
+                f"'{_OUTCOME_MARKER_NAME}' — the console filters AWX job "
+                "events by this exact task name."
+            )
+            continue
+        debug_spec = only.get("ansible.builtin.debug") or only.get("debug")
+        if not isinstance(debug_spec, dict):
+            errors.append(
+                f"{rel}: the marker task must be an ansible.builtin.debug "
+                "task (event_data.res.msg is what the console parses)."
+            )
+            continue
+        if path == literal_file:
+            msg = debug_spec.get("msg")
+            if not isinstance(msg, str) or "{{" in msg or "{%" in msg:
+                errors.append(
+                    f"{rel}: this file's marker msg MUST be a plain string "
+                    "literal with no Jinja — it is the emission path that "
+                    "runs while l3_outcome_token/l3_outcome_kv may be "
+                    "caller-supplied, and extra_vars outrank every variable "
+                    f"source, so anything rendered here is forgeable. got: {msg!r}"
+                )
+            elif msg.strip() != _OUTCOME_LITERAL_MSG:
+                errors.append(
+                    f"{rel}: expected the marker msg to be exactly "
+                    f"{_OUTCOME_LITERAL_MSG!r} — got {msg.strip()!r}."
+                )
+
+    guard_file = _ROLE_TASKS_DIR / _OUTCOME_GUARD_FILE
+    if not guard_file.is_file():
+        errors.append(
+            f"roles/l3_run_guard/tasks/{_OUTCOME_GUARD_FILE}: the "
+            "DMF_L3_OUTCOME outcome-control guard is missing."
+        )
+    else:
+        guard_text = guard_file.read_text()
+        unguarded = [
+            n for n in _OUTCOME_GUARD_NAMES if f"{n} is not defined" not in guard_text
+        ]
+        if unguarded:
+            errors.append(
+                f"roles/l3_run_guard/tasks/{_OUTCOME_GUARD_FILE}: no "
+                f"'<name> is not defined' assertion for {unguarded} — every "
+                "variable the DMF_L3_OUTCOME emission decision reads must be "
+                "proven caller-free before the play does anything "
+                "(dmfdeploy/dmfdeploy#332)."
+            )
+
+    other_paths = [
+        p for p in sorted(_ROLE_TASKS_DIR.glob("*.yml"))
+        if p.name not in _OUTCOME_EMIT_FILES
+    ]
+    other_paths.extend(sorted(_PLAYBOOKS_DIR.glob("*.yml")))
+    dupes: list[str] = []
+    for path in other_paths:
+        try:
+            doc = yaml.safe_load(path.read_text())
+        except yaml.YAMLError:
+            continue  # a parse error here is already reported by the umbrella #272/#273 scan above
+        if isinstance(doc, list) and doc and isinstance(doc[0], dict) and "tasks" in doc[0]:
+            task_list = doc[0].get("tasks", [])
+        else:
+            task_list = doc
+        for t in _iter_tasks(task_list):
+            if t.get("name") == _OUTCOME_MARKER_NAME:
+                dupes.append(str(path.relative_to(_REPO_ROOT)))
+    if dupes:
+        errors.append(
+            f"a task literally named '{_OUTCOME_MARKER_NAME}' was found "
+            f"outside the two sanctioned emission files "
+            f"({', '.join(_OUTCOME_EMIT_FILES)}): {dupes} — the "
+            "emission-point set is closed and enumerated."
+        )
+
+    return errors
+
+
+def _check_outcome_guard_position(filename: str) -> list[str]:
+    """dmfdeploy/dmfdeploy#332 — the SAME two positional facts
+    _check_purge_outcome_guard_position() proves for finalise-purge.yml,
+    for one launch/teardown/rollback playbook's own outcome_guard.yml
+    include: (1) it is the play's very FIRST top-level task; (2) it is
+    reachable nowhere else, in particular not from inside the outer
+    block's own block:/rescue:/always: lists, where its own fail would be
+    caught by a rescue that emits through the very names it guards."""
+    errors: list[str] = []
+    play, load_errors = _load_single_play(_PLAYBOOKS_DIR / filename)
+    if play is None:
+        return load_errors
+
+    tasks = play.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        return [f"{filename}: play has no non-empty 'tasks:' list"]
+
+    first = tasks[0]
+    first_spec = _include_role_spec(first) if isinstance(first, dict) else None
+    if not (
+        first_spec
+        and first_spec.get("name") == _GATE_ROLE
+        and first_spec.get("tasks_from") == "outcome_guard"
+    ):
+        errors.append(
+            f"{filename}: the FIRST top-level task must be "
+            f"`include_role: name: {_GATE_ROLE} tasks_from: outcome_guard` "
+            "(dmfdeploy/dmfdeploy#332) — got "
+            f"{sorted(first.keys()) if isinstance(first, dict) else first!r}. "
+            "Outside the outer block, the guard's own refusal can never be "
+            "caught by a rescue: whose emission the caller may have already "
+            "shadowed, and nothing can run ahead of it."
+        )
+
+    occurrences = _find_include_role(tasks, name=_GATE_ROLE, tasks_from="outcome_guard")
+    if len(occurrences) != 1:
+        errors.append(
+            f"{filename}: `include_role: ... tasks_from: outcome_guard` is "
+            f"reachable {len(occurrences)} time(s) — expected exactly one, "
+            "at the top level as tasks[0]."
+        )
+
+    return errors
+
+
 def _check_playbook(filename: str, flow: str, *, outer_index: int = 0) -> list[str]:
     """flow is one of 'launch', 'teardown', 'rollback', 'purge'.
 
     outer_index: which top-level task IS the outer gate-through-terminal
-    block. 0 for every flow except 'purge' — finalise-purge.yml's own
-    umbrella #347 outcome-control guard (purge_outcome_guard.yml) runs as
-    tasks[0], ahead of the outer block, mirroring
+    block. 1 for every flow checked here: each playbook runs its own
+    outcome-control guard as tasks[0], ahead of the outer block, mirroring
     switch-mxl-fabrics-demo.yml's own switch_outcome_guard placement
-    exactly (that guard's OWN position is checked separately, by
-    _check_purge_outcome_guard_position() below — this parameter only
-    tells this function where to find the block it still fully checks the
-    rescue:/always: shape of)."""
+    exactly — purge_outcome_guard.yml for finalise-purge.yml (umbrella
+    #347), outcome_guard.yml for launch/teardown/rollback
+    (dmfdeploy/dmfdeploy#332). Each guard's OWN position is checked
+    separately, by _check_purge_outcome_guard_position() and
+    _check_outcome_guard_position() — this parameter only tells this
+    function where to find the block it still fully checks the
+    rescue:/always: shape of."""
     path = _PLAYBOOKS_DIR / filename
     if not path.is_file():
         return [f"{filename}: file not found under {_PLAYBOOKS_DIR}"]
@@ -1115,9 +1312,10 @@ def _check_playbook(filename: str, flow: str, *, outer_index: int = 0) -> list[s
     # ── Requirement 1: the outer gate-through-terminal block is the FIRST
     #    top-level task — no task may precede it (this is exactly the
     #    class of bug that let the crosspoint credential-check bug through
-    #    undetected: it used to sit before the block, R5a-3) — or, for
-    #    flow='purge', the task immediately after its own outcome-control
-    #    guard (outer_index=1; see this function's own docstring above). We
+    #    undetected: it used to sit before the block, R5a-3) — apart from
+    #    the playbook's own outcome-control guard, so the block is the task
+    #    immediately after it (outer_index=1; see this function's own
+    #    docstring above). We
     #    also check it's the ONLY top-level task from outer_index on,
     #    matching every real playbook's current shape — a future extra
     #    top-level task (sibling to the block, e.g. in a stray
@@ -1264,10 +1462,12 @@ def _check_playbook(filename: str, flow: str, *, outer_index: int = 0) -> list[s
 def main() -> int:
     all_errors: list[str] = []
     for fn in _LAUNCH_PLAYBOOKS:
-        all_errors.extend(_check_playbook(fn, "launch"))
+        all_errors.extend(_check_playbook(fn, "launch", outer_index=1))
     for fn in _TEARDOWN_PLAYBOOKS:
-        all_errors.extend(_check_playbook(fn, "teardown"))
-    all_errors.extend(_check_playbook(_ROLLBACK_PLAYBOOK, "rollback"))
+        all_errors.extend(_check_playbook(fn, "teardown", outer_index=1))
+    all_errors.extend(_check_playbook(_ROLLBACK_PLAYBOOK, "rollback", outer_index=1))
+    for fn in [*_LAUNCH_PLAYBOOKS, *_TEARDOWN_PLAYBOOKS, _ROLLBACK_PLAYBOOK]:
+        all_errors.extend(_check_outcome_guard_position(fn))
     for fn in _PURGE_PLAYBOOKS:
         all_errors.extend(_check_playbook(fn, "purge", outer_index=1))
 
@@ -1281,6 +1481,7 @@ def main() -> int:
     all_errors.extend(_check_purge_outcome_marker())
     all_errors.extend(_check_purge_outcome_guard_position())
     all_errors.extend(_check_purge_success_after_lock_release())
+    all_errors.extend(_check_outcome_marker())
 
     if all_errors:
         print(
@@ -1331,6 +1532,12 @@ def main() -> int:
         "is still positioned AFTER the lock_release include within the outer "
         "block (a position check, not just presence — see "
         "_check_purge_success_after_lock_release's own docstring)."
+        f" dmfdeploy/dmfdeploy#332: '{_OUTCOME_MARKER_NAME}' exists only in "
+        f"{', '.join(_OUTCOME_EMIT_FILES)}, the literal one is still a "
+        f"Jinja-free literal, {_OUTCOME_GUARD_FILE} proves "
+        f"{len(_OUTCOME_GUARD_NAMES)} outcome-decision names caller-free, and "
+        "its include is tasks[0] of every launch/teardown/rollback playbook, "
+        "reachable nowhere else."
     )
     return 0
 

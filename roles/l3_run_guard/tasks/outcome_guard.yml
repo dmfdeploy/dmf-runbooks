@@ -1,0 +1,79 @@
+---
+# dmfdeploy/dmfdeploy#332 — the DMF_L3_OUTCOME outcome-control guard: the
+# VERY FIRST task of every launch-*.yml, teardown-*.yml and rollback-run.yml
+# playbook, ahead of (and outside) each playbook's outer
+# block/rescue/always. Mirrors switch_outcome_guard.yml exactly; read that
+# file's header first.
+#
+# THE RULE THIS FILE ENFORCES: every variable the DMF_L3_OUTCOME emission
+# decision reads on a refusal path must be proven caller-free before the
+# play does anything, at a point where the refusal itself does not consult
+# any of those names.
+#
+# WHY THE BLOCKLIST ALONE IS NOT ENOUGH. _assert_reserved_vars.yml already
+# reserves every name below and fails closed, and its own refusal now
+# emits a literal marker (_emit_outcome_refused_literal.yml). But that
+# refusal raises into the playbook's outer rescue (gate_rescue.yml for
+# launch/teardown, rollback.yml's own rescue for rollback), and that
+# rescue is itself an emitter: it skips its own marker only when
+# l3_pre_mutation_marker_emitted says one already fired, and it renders
+# l3_outcome_token/l3_outcome_kv when it does not. A caller who supplies
+# `l3_pre_mutation_marker_emitted=false` alongside a forged token gets a
+# SECOND marker after the honest one, carrying the forged token — and the
+# console reads the LAST event. Reserving more names cannot fix that; the
+# refusal has to happen before the outer block is ever entered.
+#
+# WHY EACH NAME IS ON THE LIST:
+#   l3_outcome_token             — rendered verbatim by _emit_outcome.yml.
+#   l3_outcome_kv
+#   l3_pre_mutation_marker_emitted — the exactly-once sentinel both outer
+#                                  rescues read to skip their own marker.
+#   l3_mutation_started          — selects gate_rescue.yml's token
+#                                  (preflight-error vs post-mutation-failed).
+#   l3_expected_refusal          — rollback.yml's rescue skip conditions,
+#   l3_rollback_terminal_reached   alongside the sentinel above.
+#
+# The assert is a SINGLE DIRECT assert with every name spelled out in-line
+# (an intermediate fact or var of any kind just relocates the bypass,
+# since extra_vars outrank a task's own `vars:` too), and the block/rescue
+# (never a `when:`) is what routes a failed assert to the emitting
+# cleanup. Nothing needs cleaning up here: no facility lock has been
+# acquired and no snapshot captured.
+#
+# finalise-purge.yml reports through its own DMF_L3_PURGE_OUTCOME event,
+# so it does not run this file: purge_outcome_guard.yml asserts the same
+# names instead, ahead of its own outer block (whose rescue is also
+# gate_rescue.yml). switch-mxl-fabrics-demo.yml has no DMF_L3_OUTCOME
+# emitter in its outer rescue, so the literal reserved-var refusal is all
+# it needs.
+
+- name: "L3 outcome-control guard (dmfdeploy/dmfdeploy#332) — the DMF_L3_OUTCOME decision variables must be UNDEFINED at play entry"
+  block:
+    - name: "L3 outcome-control guard: single direct assert, no shadowable intermediate (mirrors switch_outcome_guard.yml)"
+      ansible.builtin.assert:
+        that:
+          - l3_outcome_token is not defined
+          - l3_outcome_kv is not defined
+          - l3_pre_mutation_marker_emitted is not defined
+          - l3_mutation_started is not defined
+          - l3_expected_refusal is not defined
+          - l3_rollback_terminal_reached is not defined
+        fail_msg: >-
+          L3 launcher refused: preflight-error (reserved-var). One or more
+          of this play's own outcome-decision variables
+          (l3_outcome_token, l3_outcome_kv, l3_pre_mutation_marker_emitted,
+          l3_mutation_started, l3_expected_refusal,
+          l3_rollback_terminal_reached) were supplied as extra_vars. These
+          are set exclusively by l3_run_guard's own logic and must never be
+          caller-supplied. Structural precondition — cannot be overridden.
+  rescue:
+    - name: "L3 outcome-control guard: emit the HARD-CODED refusal marker (literal token+detail — deliberately not _emit_outcome.yml, whose token is exactly what a caller may have just shadowed)"
+      ansible.builtin.include_tasks: _emit_outcome_refused_literal.yml
+
+    - name: "L3 outcome-control guard: fail the play (nothing to release — this runs before the facility lock and any snapshot)"
+      ansible.builtin.fail:
+        msg: >-
+          L3 launcher refused before entry: reserved outcome-decision
+          variables were supplied as extra_vars. No facility lock was
+          acquired and nothing was mutated. Structural precondition —
+          cannot be overridden.

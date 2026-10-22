@@ -1590,6 +1590,57 @@
           changed_when: false
           failed_when: false
 
+    # ════════════════════════════════════════════════════════════════════
+    # Scenario 12 (dmfdeploy/dmfdeploy#332): a forged DMF_L3_OUTCOME token
+    # never reaches the console, on any entry playbook that can emit one.
+    # The caller supplies l3_outcome_token, l3_outcome_kv and
+    # l3_pre_mutation_marker_emitted=false. Before the fix, the
+    # reserved-var refusal rendered the caller's own token, and the outer
+    # rescue then rendered it a second time (the sentinel that should have
+    # skipped it was forged too). The console reads the LAST event, so it
+    # was told "success". Each playbook must now emit exactly the literal
+    # refusal marker, or (finalise-purge.yml) no DMF_L3_OUTCOME at all and
+    # its own purge refusal literal. See tests/_forged-outcome-scenario.yml.
+    # ════════════════════════════════════════════════════════════════════
+    - name: "(12) forged l3_outcome_token on every DMF_L3_OUTCOME entry playbook"
+      ansible.builtin.include_tasks: _forged-outcome-scenario.yml
+      loop_control:
+        loop_var: _fo_item
+        label: "{{ _fo_item.playbook }}"
+      loop:
+        - playbook: launch-nmos-cpp.yml
+          extra_args: ["-e", "l3_request_id=c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"]
+          outcome_msgs: ["DMF_L3_OUTCOME: preflight-error detail=reserved-var"]
+          purge_msgs: []
+        - playbook: launch-nmos-crosspoint.yml
+          extra_args: ["-e", "l3_request_id=c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2", "-e", "vault_nmos_crosspoint_admin_password=fake-admin-password"]
+          outcome_msgs: ["DMF_L3_OUTCOME: preflight-error detail=reserved-var"]
+          purge_msgs: []
+        - playbook: launch-mxl-fabrics-demo.yml
+          extra_args: ["-e", "l3_request_id=c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"]
+          outcome_msgs: ["DMF_L3_OUTCOME: preflight-error detail=reserved-var"]
+          purge_msgs: []
+        - playbook: teardown-nmos-cpp.yml
+          extra_args: ["-e", "l3_request_id=c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4"]
+          outcome_msgs: ["DMF_L3_OUTCOME: preflight-error detail=reserved-var"]
+          purge_msgs: []
+        - playbook: teardown-nmos-crosspoint.yml
+          extra_args: ["-e", "l3_request_id=c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5"]
+          outcome_msgs: ["DMF_L3_OUTCOME: preflight-error detail=reserved-var"]
+          purge_msgs: []
+        - playbook: teardown-mxl-fabrics-demo.yml
+          extra_args: ["-e", "l3_request_id=c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6"]
+          outcome_msgs: ["DMF_L3_OUTCOME: preflight-error detail=reserved-var"]
+          purge_msgs: []
+        - playbook: rollback-run.yml
+          extra_args: ["-e", "l3_run_id=c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7", "-e", "l3_rollback_reason=forged-outcome probe"]
+          outcome_msgs: ["DMF_L3_OUTCOME: preflight-error detail=reserved-var"]
+          purge_msgs: []
+        - playbook: finalise-purge.yml
+          extra_args: ["-e", "l3_request_id=c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8"]
+          outcome_msgs: []
+          purge_msgs: ["DMF_L3_PURGE_OUTCOME: refused detail=reserved-var"]
+
     - name: ALL L3 REAL-PLAYBOOK EXECUTION TESTS PASSED
       ansible.builtin.debug:
         msg: >-

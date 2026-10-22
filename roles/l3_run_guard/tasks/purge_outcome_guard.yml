@@ -69,6 +69,17 @@
 #                             which Tag id was targeted; part of the success
 #                             event's own payload.
 #
+# dmfdeploy/dmfdeploy#332 — the DMF_L3_OUTCOME decision names
+# (l3_outcome_token, l3_outcome_kv, l3_pre_mutation_marker_emitted,
+# l3_mutation_started). This play's outer rescue is gate_rescue.yml, which
+# emits its own DMF_L3_OUTCOME marker unless l3_pre_mutation_marker_emitted
+# says one already fired, rendering l3_outcome_token/l3_outcome_kv when it
+# does. A caller who forged that sentinel to false alongside a token got a
+# forged DMF_L3_OUTCOME event on a purge job. Proving them caller-free here
+# is the same fix outcome_guard.yml applies to the launch, teardown and
+# rollback playbooks (see its header); this play keeps reporting the
+# refusal through its own DMF_L3_PURGE_OUTCOME literal.
+#
 # The assert is a SINGLE DIRECT assert with every name spelled out in-line,
 # for the identical reason _assert_reserved_vars.yml's own header gives: an
 # intermediate fact/var of ANY kind (even a differently-named boolean) just
@@ -92,13 +103,19 @@
           - _purge_member_results is not defined
           - _purge_tag_result is not defined
           - _purge_tag_id is not defined
+          - l3_outcome_token is not defined
+          - l3_outcome_kv is not defined
+          - l3_pre_mutation_marker_emitted is not defined
+          - l3_mutation_started is not defined
         fail_msg: >-
           DMF_L3_PURGE_OUTCOME: refused detail=reserved-var
           One or more of this purge play's own outcome-decision variables
           (l3_purge_outcome_token, l3_purge_outcome_kv, _purge_stage,
           _purge_final_remaining_member_ids, _purge_final_tag_present,
           _purge_dirty_count, _purge_member_results, _purge_tag_result,
-          _purge_tag_id) were supplied as extra_vars. These are set
+          _purge_tag_id, l3_outcome_token, l3_outcome_kv,
+          l3_pre_mutation_marker_emitted, l3_mutation_started) were
+          supplied as extra_vars. These are set
           exclusively by this play's own logic and must never be
           caller-supplied — a caller who controls them controls what the
           console is told this run's outcome was. Structural precondition —
