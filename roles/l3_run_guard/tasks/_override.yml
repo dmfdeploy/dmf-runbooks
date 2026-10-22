@@ -20,7 +20,11 @@
       non-empty l3_override_reason extra_var.
   when: l3_override_active
 
+# The reason is caller free text, and this banner lands in the same job
+# stdout the console searches for fixed outcome phrases, so it is encoded
+# like any other caller value (dmfdeploy/dmfdeploy#474). l3_run_id is set
+# or validated by identity.yml/rollback_identity.yml before this file runs.
 - name: "L3 override: log banner (regardless of eventual verdict)"
   ansible.builtin.debug:
-    msg: "L3 OVERRIDE ACTIVE: {{ l3_override_reason }} run_id={{ l3_run_id }}"
+    msg: "L3 OVERRIDE ACTIVE: {{ l3_override_reason | l3_marker_value }} run_id={{ l3_run_id }}"
   when: l3_override_active
