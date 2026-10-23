@@ -1,5 +1,5 @@
-DMF Platform — dmf-runbooks (AWX launcher playbooks + nmos-cpp role)
-Copyright 2026 DMF Platform contributors
+dmfdeploy platform — dmf-runbooks (AWX launcher playbooks + nmos-cpp role)
+Copyright 2026 dmfdeploy platform contributors
 Licensed under the Apache License, Version 2.0 (see LICENSE).
 
 This product includes:

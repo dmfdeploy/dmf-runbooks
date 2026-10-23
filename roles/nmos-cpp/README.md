@@ -12,7 +12,7 @@ source-of-truth.
 
 ## Lifecycle (ADR-0012)
 
-> **2026-05-23 — ADR-0025 Lane B landed.** Per DMF Platform ADR-0025,
+> **2026-05-23 — ADR-0025 Lane B landed.** Per dmfdeploy platform ADR-0025,
 > this role slims down to **NetBox-side tasks only**. The k8s workload
 > deployment lives in the Helm chart at `dmf-media/charts/nmos-cpp/`.
 > The launcher invokes
@@ -67,8 +67,8 @@ credential.
 ## Build (maintainer action; Docker-compatible build host)
 
 The Dockerfiles require an explicit upstream Sony nmos-cpp SHA per
-DMF Platform ADR-0025 and the public container registry publishing plan
-(both in the DMF Platform umbrella repo, §5.1 of the latter).
+dmfdeploy platform ADR-0025 and the public container registry publishing plan
+(both in the dmfdeploy platform umbrella repo, §5.1 of the latter).
 Builds from upstream `master` fail loud — `NMOS_CPP_REF` is required, no default.
 
 Pick a Sony nmos-cpp commit (release tag or specific SHA) and record it in
@@ -108,7 +108,7 @@ through an AI agent's transcript. Run these in your own terminal.
 
 ### Public publish to GHCR (`ghcr.io/dmfdeploy/*`)
 
-Per the DMF Platform public container registry publishing plan
+Per the dmfdeploy platform public container registry publishing plan
 (in the umbrella repo). The script handles isolated DOCKER_CONFIG,
 tag policy, and prints follow-up reminders:
 
