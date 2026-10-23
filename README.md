@@ -8,14 +8,14 @@ Part of [dmfdeploy](https://github.com/dmfdeploy/dmfdeploy), an independent open
 
 > **New to the project vocabulary?** See the [glossary](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/GLOSSARY.md) for project-coined terms such as umbrella and component repo.
 
-AWX runs these playbooks, and each one targets `localhost` inside the AWX execution environment pod. The launch, switch and teardown playbooks install, change or remove a function's Helm chart, through the `kubernetes.core.helm` module or the `helm` command, and record the result in NetBox through a per-function role. The finalise and rollback playbooks clean up after those runs, as described under [Structure](#structure). The Helm charts live in the sibling `dmf-media` repository.
+Each playbook targets `localhost`, and AWX runs them inside its execution environment pod. An operator can also run `rollback-run.yml` directly from a workstation with `bin/run-playbook.sh` in the `dmf-env` repository, the entry point that [ADR-0010](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/decisions/0010-run-playbook-as-sanctioned-entry.md) sanctions. The launch, switch and teardown playbooks install, change or remove a function's Helm chart, through the `kubernetes.core.helm` module or the `helm` command, and record the result in NetBox through a per-function role. The finalise and rollback playbooks clean up after those runs, as described under [Structure](#structure). The Helm charts live in the sibling `dmf-media` repository.
 
-The playbooks do more than start a chart. Before any change, the `l3_run_guard` role takes a facility-wide lock, saves a snapshot of the starting state and checks that the new workload fits the node's resource budget. If a run fails after it has changed something, the guard marks the run for rollback, and `rollback-run.yml` restores the saved state.
+The playbooks do more than start a chart. Before any change, every playbook takes a facility-wide lock through the `l3_run_guard` role. The launch playbooks also save a snapshot of the starting state and check that the new workload fits the node's resource budget. If a launch fails after it has changed something, the guard marks the run for rollback, and `rollback-run.yml` restores the saved state.
 
 ## Structure
 
 - `playbooks/` holds the catalog playbooks listed below.
-- `roles/l3_run_guard/` holds the run guard. Every launch, teardown, switch, purge and rollback playbook includes it. It checks who is asking, takes the shared facility lock, saves the pre-run snapshot, checks the resource budget, reports a structured outcome, and releases the lock when the run ends.
+- `roles/l3_run_guard/` holds the run guard. Every catalog playbook includes it to check who is asking, take the shared facility lock, report a structured outcome and release the lock when the run ends. Only the launch playbooks use its full gate, which also saves the pre-run snapshot and checks the resource budget. Teardown and purge take the lock only, and the switch playbook keeps its own baseline for a Helm rollback.
 - `roles/nmos-cpp/`, `roles/nmos-crosspoint/` and `roles/mxl/` hold the NetBox tasks for one function each: provision, configure and finalise.
 - `roles/netbox_catalog_common/` holds NetBox tasks that several functions share, such as workload tags and the permanent purge of leftover records.
 - `tests/` holds the Ansible test playbooks for the guard and the launchers.
