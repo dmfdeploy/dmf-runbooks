@@ -8,7 +8,7 @@ Part of [dmfdeploy](https://github.com/dmfdeploy/dmfdeploy), an independent open
 
 > **New to the project vocabulary?** See the [glossary](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/GLOSSARY.md) for project-coined terms such as umbrella and component repo.
 
-AWX runs these playbooks. Each one targets `localhost` inside the AWX execution environment pod, installs or removes a function's Helm chart with `kubernetes.core.helm`, and records the result in NetBox through a per-function role. The Helm charts live in the sibling `dmf-media` repository.
+AWX runs these playbooks, and each one targets `localhost` inside the AWX execution environment pod. The launch, switch and teardown playbooks install, change or remove a function's Helm chart, through the `kubernetes.core.helm` module or the `helm` command, and record the result in NetBox through a per-function role. The finalise and rollback playbooks clean up after those runs, as described under [Structure](#structure). The Helm charts live in the sibling `dmf-media` repository.
 
 The playbooks do more than start a chart. Before any change, the `l3_run_guard` role takes a facility-wide lock, saves a snapshot of the starting state and checks that the new workload fits the node's resource budget. If a run fails after it has changed something, the guard marks the run for rollback, and `rollback-run.yml` restores the saved state.
 
