@@ -15,7 +15,7 @@ The playbooks do more than start a chart. Before any change, every playbook take
 ## Structure
 
 - `playbooks/` holds the catalog playbooks listed below.
-- `roles/l3_run_guard/` holds the run guard. Every catalog playbook includes it to check who is asking, take the shared facility lock, report a structured outcome and release the lock when the run ends. Only the launch playbooks use its full gate, which also saves the pre-run snapshot and checks the resource budget. Teardown and purge take the lock only, and the switch playbook keeps its own baseline for a Helm rollback.
+- `roles/l3_run_guard/` holds the run guard. Every catalog playbook includes it to check who is asking, take the shared facility lock and release the lock when the run ends. The launch, switch, purge and rollback playbooks also report a structured outcome. A teardown reports one only when it fails, and on success the AWX job result is the signal. Only the launch playbooks use its full gate, which also saves the pre-run snapshot and checks the resource budget. Teardown and purge take the lock only, and the switch playbook keeps its own baseline for a Helm rollback.
 - `roles/nmos-cpp/`, `roles/nmos-crosspoint/` and `roles/mxl/` hold the NetBox tasks for one function each: provision, configure and finalise.
 - `roles/netbox_catalog_common/` holds NetBox tasks that several functions share, such as workload tags and the permanent purge of leftover records.
 - `tests/` holds the Ansible test playbooks for the guard and the launchers.
