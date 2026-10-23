@@ -49,12 +49,12 @@ ARG VCS_REF
 ARG NMOS_CPP_REF
 
 LABEL org.opencontainers.image.title="DMF nmos-cpp registry" \
-      org.opencontainers.image.description="Sony nmos-cpp registry packaged for DMF Platform (NMOS IS-04/05 registration & query)" \
+      org.opencontainers.image.description="Sony nmos-cpp registry packaged for dmfdeploy platform (NMOS IS-04/05 registration & query)" \
       org.opencontainers.image.source="https://github.com/dmfdeploy/dmf-runbooks" \
       org.opencontainers.image.revision="$VCS_REF" \
       org.opencontainers.image.version="$IMAGE_VERSION" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.vendor="DMF Platform contributors" \
+      org.opencontainers.image.vendor="dmfdeploy platform contributors" \
       org.dmfdeploy.upstream.nmos_cpp_ref="$NMOS_CPP_REF"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
