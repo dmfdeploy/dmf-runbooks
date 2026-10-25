@@ -3,13 +3,13 @@
 meta-test. Stdlib-only, no third-party deps (mirrors tests/harness's own
 convention).
 
-WHAT THIS PROVES: codex round-4's exact finding was that
+WHAT THIS PROVES: the original gap was that
 _assert_reserved_vars.yml's blocklist covered SELECTED set_fact names but
 omitted every `register:` target (e.g. _l3_lock_create, _l3_checkpoint_read)
 — and since Ansible extra_vars outrank BOTH set_fact and registered
 variables identically, an operator/console extra_var of the same name as any
 omitted register target could silently override a module call's own result
-(codex's executed proof: `-e '{"_l3_lock_create":{"status":201,...}}'` forged
+(executed proof: `-e '{"_l3_lock_create":{"status":201,...}}'` forged
 a fake lock acquisition). A hand-maintained blocklist is structurally
 incomplete — it silently drifts every time a new register:/set_fact: is
 added to a task file without a matching reservation. This script makes that

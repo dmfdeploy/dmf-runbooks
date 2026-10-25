@@ -37,7 +37,7 @@ def l3_validate_topology_params(topology_params) -> dict:
     flow_id is a well-formed UUID and unique across sources[] (compared by
     PARSED uuid.UUID value, not the raw string — two spellings of the same
     UUID in different case are the SAME flow identity, mirroring
-    dmf-cms's own P1 re-gate finding), pattern is distinct across
+    how dmf-cms compares them), pattern is distinct across
     sources[]; viewer.source_selection references a real sources[].id;
     target_facility is present. This is a STRUCTURAL check only — it does
     NOT resolve/validate target_facility against a live NetBox site (that
