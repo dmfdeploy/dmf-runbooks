@@ -59,7 +59,7 @@ _MEM_SUFFIXES_BY_LEN = sorted(_MEM_SUFFIXES.items(), key=lambda kv: -len(kv[0]))
 # each one's PodSpec + effective replica count.
 _WORKLOAD_KINDS = {"Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob", "Pod"}
 
-# R2a-1 (P1-1): K8s label VALUE syntax — up to 63 chars, must start/end
+# K8s label VALUE syntax — up to 63 chars, must start/end
 # alphanumeric, internal chars may additionally be [-_.] ; empty string IS
 # a legal label value. This is the VALUE grammar only (a label KEY has its
 # own, stricter [prefix/]name grammar this module doesn't need — every
@@ -568,7 +568,7 @@ def l3_lock_release_decision(current_lock_data, my_attempt_id) -> dict:
     return {"permitted": False, "reason": "owned-by-a-different-attempt"}
 
 
-# R3a-5 (codex round-2 P1-5): the FULL rollback-eligible status set — a
+# The FULL rollback-eligible status set — a
 # widened supersede rule. The WP3-A/R2a draft only superseded records
 # still ``in-progress``, leaving ``failed_rollback_required`` and
 # ``rollback_incomplete`` residue eligible for rollback FOREVER even after
@@ -661,7 +661,7 @@ def l3_set_values_dicts(set_values: list) -> list:
     ``helm --set`` semantics exactly, the same interpretation
     ``l3_set_flag_argv``'s ``--set`` argv gets from the helm CLI.
 
-    umbrella #202 WP3 R6a (codex round-5, true single-source): this is the
+    umbrella #202 WP3 R6a: this is the
     INSTALL-side twin of ``l3_set_flag_argv`` — both are one-line, direct
     transformations of the SAME flat ``l3_chart_set_values`` list, so a
     launch playbook's ``kubernetes.core.helm`` install task and
@@ -695,8 +695,7 @@ def l3_flatten_set_values(values: dict, _prefix: str = "") -> list:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# WP3-B — rollback-run pure logic (plan §4.1/§4.2/§4.4/§4.5/§4.6), revised
-# by codex round-1 (R2a-5, R2a-7)
+# WP3-B — rollback-run pure logic (plan §4.1/§4.2/§4.4/§4.5/§4.6)
 # ═══════════════════════════════════════════════════════════════════════
 
 # §4.1: a run's snapshot ConfigMap status that means the snapshot is STALE

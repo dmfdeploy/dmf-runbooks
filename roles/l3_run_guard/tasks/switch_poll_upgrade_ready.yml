@@ -1,5 +1,5 @@
 ---
-# umbrella #306 (design round #2, frozen 2026-07-30) — PHASE 2 rollout
+# umbrella #306 (frozen 2026-07-30) — PHASE 2 rollout
 # verification: helm's own --wait is GONE (job 413's false failure: the
 # rollback's own --wait window ALSO expired even though the rollback had
 # verifiably converged seconds later — helm's wait verdict is diagnostic

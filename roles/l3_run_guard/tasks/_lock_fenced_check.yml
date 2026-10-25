@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3 R5a (codex round-4 P1-4) — READ-ONLY fenced-out check,
+# READ-ONLY fenced-out check,
 # for use INSIDE a rescue/refusal path that is already about to emit its
 # OWN single outcome marker (gate_rescue.yml's branches B/C,
 # _refuse_pre_mutation.yml's own superseded patch). Deliberately NOT the

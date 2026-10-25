@@ -7,8 +7,7 @@
   connection: local
   gather_facts: false
   vars:
-    # umbrella #202 WP3 R6a (codex round-5 P1-1/P1-2, replacing R5a-2's
-    # broken post-hoc consistency assert): TRUE single source. ONE play-
+    # TRUE single source. ONE play-
     # scope definition per identity/render value below — the gate
     # (l3_run_guard's capacity.yml render + snapshot.yml, included
     # dynamically below with no vars: forwarding) sees these exact names
@@ -179,12 +178,12 @@
                   - --plain-http
               changed_when: false
 
-            # R6a-1 (codex round-5): set_values built from l3_chart_set_values
+            # set_values built from l3_chart_set_values
             # via l3_set_values_dicts — the SAME flat list capacity.yml's
             # render already flattened l3_release_values into, and turned
             # into --set argv via l3_set_flag_argv. Retiring release_values:
-            # (the nested-dict shape) here closes the exact gap codex named:
-            # before R6a, l3_chart_set_values was consumed ONLY by the
+            # (the nested-dict shape) here closes a gap:
+            # l3_chart_set_values used to be consumed ONLY by the
             # gate's render, while this install task read
             # crosspoint_release_values directly — two different
             # names/shapes that happened to agree by construction, not by

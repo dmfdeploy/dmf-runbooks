@@ -1,5 +1,5 @@
 ---
-# umbrella #201 WP4b (qwen1 gate fix round) — read + assert-exists the
+# Read + assert-exists the
 # mxl-coordinator ConfigMap. Role-owned (a proper task file, not a
 # playbook-level set_fact) for the SAME reason switch_validate.yml moved
 # in-role — the calling playbook should not own raw role-internal state —

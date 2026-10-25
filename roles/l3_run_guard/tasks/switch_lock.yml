@@ -24,7 +24,7 @@
 # need the whole span held; a switch's own actuator timeout is ~120s, and
 # there is nothing else in this flow worth holding the lock through).
 #
-# qwen1 gate fix round: switch_validate.yml (topology_params structural
+# switch_validate.yml (topology_params structural
 # check + source_instance/receiver_instance checks + the viewer
 # projection) is included HERE, after identity.yml's own reserved-var
 # assert but before lock.yml — not left as playbook-level set_fact tasks

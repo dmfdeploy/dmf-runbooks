@@ -6,8 +6,7 @@
   connection: local
   gather_facts: false
   vars:
-    # umbrella #202 WP3 R6a (codex round-5 P1-1/P1-2, replacing R5a-2's
-    # broken post-hoc consistency assert): TRUE single source. ONE play-
+    # TRUE single source. ONE play-
     # scope definition per identity/render value below — the gate
     # (l3_run_guard's capacity.yml render + snapshot.yml, included
     # dynamically below with no vars: forwarding) sees these exact names
@@ -41,18 +40,16 @@
     # (awx-integration) pre-creates the equivalent, so the AWX lane launches
     # with false. Set true only for standalone out-of-cluster helm use.
     mxl_node_access_create: false
-    # umbrella #202 WP3 R6b (codex round-6, umbrella #267): as of R6b,
     # roles/mxl/defaults/main.yml's own netbox_service_name / app:<> tag /
     # monitoring cluster_service+cluster_namespace read l3_catalog_key/
     # l3_release/l3_target_namespace DIRECTLY (falling back to
     # mxl_function_key/mxl_release/mxl_namespace only for a standalone,
-    # non-L3-gated use of the role) — so these three aliases no longer
-    # affect NetBox identity at all while the L3 gate is in play (R6a's
-    # "R6a scope boundary" caveat that used to live in this comment is
-    # CLOSED: forging mxl_function_key/mxl_release/mxl_namespace directly
-    # via extra_vars now has NO effect on what gets mutated, since the role
-    # doesn't read them for identity purposes anymore when l3_* is
-    # defined). Kept here only because roles/mxl/tasks/*.yml still
+    # non-L3-gated use of the role) — so these three aliases do not
+    # affect NetBox identity while the L3 gate is in play (umbrella #267).
+    # Forging mxl_function_key/mxl_release/mxl_namespace directly
+    # via extra_vars has NO effect on what gets mutated, since the role
+    # doesn't read them for identity purposes when l3_* is
+    # defined. Kept here only because roles/mxl/tasks/*.yml still
     # reference mxl_function_key/mxl_release/mxl_namespace in task NAMES
     # and mxl_service_description (cosmetic labels, not identity) — these
     # aliases keep those labels accurate and in sync with the single
@@ -73,7 +70,7 @@
       - "nodeAccess.create={{ mxl_node_access_create | bool | lower }}"
     # umbrella #201 WP3 — topology mode. l3_run_guard's topology_validate.yml
     # stage activates PURELY on whether a topology_params extra_var was
-    # supplied (fix-round D1 — no separate required-flag; see that file's
+    # supplied (no separate required-flag; see that file's
     # own header for the forgery a computed mxl_role-based flag was
     # vulnerable to). By ratified design (umbrella #201) the VIEW-role
     # invocation is the one that carries topology_params end-to-end (spec
@@ -97,7 +94,7 @@
       - "image.tag={{ mxl_image_tag }}"
       - "placementMode={{ mxl_placement_mode }}"
       - "nodeAccess.create={{ mxl_node_access_create | bool | lower }}"
-    # umbrella #201 WP3 fix-round D3 — scalar-source semantics: chart 0.4.0's
+    # Scalar-source semantics: chart 0.4.0's
     # source-handshake.yaml gates the initiator on
     # `active-source == own sourceId` (WP2's new supervisor entry gate), so a
     # SCALAR (non-topology) source launch — the pre-topology demo's own
@@ -113,14 +110,13 @@
     # invocation, topology or scalar — sourceId is meaningless for role=view
     # (chart values.yaml's own comment).
     l3_chart_extra_set_values: "{{ ['sourceId=' ~ l3_release] if mxl_role == 'source' else [] }}"
-    # umbrella #201 WP3 fix-round D4: opts this launcher into
+    # Opts this launcher into
     # snapshot.yml's coordinator-state capture + rollback's own restore/
     # remove — l3_run_guard's role default is empty (a no-op); only mxl
     # sets this, to the SAME coordinator ConfigMap the launch tasks below
     # read/patch.
     l3_coordinator_configmap_name: mxl-coordinator
-    # umbrella #201 WP3 fix-round addendum (codex cross-WP FAIL, superseding
-    # the earlier WP3 pass): with topology_ref still attached to the SOURCE
+    # With topology_ref still attached to the SOURCE
     # catalog entry too (dmf-media#22, pending cleanup — the ratified design
     # is viewer-only), a source-role console deploy would ALSO carry
     # topology_params today, and D1's own presence-keyed gate would then
@@ -234,13 +230,12 @@
             name: mxl
           vars:
             mxl_stage: provision
-            # umbrella #201 WP3 fix-round: NOT l3_catalog_key/l3_release —
+            # NOT l3_catalog_key/l3_release —
             # those are extra-var-pinned to the SCALAR viewer identity for
             # this whole play's duration, and extra_vars outrank an
             # include_role's own `vars:` identically to task vars, so
-            # overriding them per loop iteration is silently a no-op (this
-            # exact bug shipped once — an execution-harness scenario caught
-            # it live, see roles/mxl/defaults/main.yml's own header).
+            # overriding them per loop iteration is silently a no-op (see
+            # roles/mxl/defaults/main.yml's own header).
             # mxl_group_item_identity is the role's OWN, dedicated
             # per-call override — the only mechanism that actually works.
             mxl_group_item_identity: "{{ item.netbox_service_name }}"
@@ -401,7 +396,7 @@
               changed_when: false
               when: l3_chart_local | trim == ""
 
-            # R6a-1 (codex round-5): --set argv built via l3_set_flag_argv over
+            # --set argv built via l3_set_flag_argv over
             # l3_chart_set_values — the EXACT SAME filter+source pair
             # capacity.yml's own render uses for its `helm template` call.
             # Previously this task hand-duplicated the --set list inline
@@ -409,8 +404,8 @@
             # nodeAccess.create=), a SEPARATE, independently-maintained copy
             # of what mxl_chart_set_values already assembled for the gate —
             # a latent divergence risk if the two lists were ever edited
-            # out of step, beyond the l3_chart_set_values-not-checked gap
-            # codex round-5 named explicitly.
+            # out of step, and the l3_chart_set_values gap would have gone
+            # unchecked.
             - name: "Install or upgrade MXL Helm release (umbrella #201 WP3 —
                 _l3_effective_chart_set_values, not l3_chart_set_values
                 directly: identical for every non-topology launch; on the
@@ -516,13 +511,12 @@
             name: mxl
           vars:
             mxl_stage: configure
-            # umbrella #201 WP3 fix-round: NOT l3_catalog_key/l3_release —
+            # NOT l3_catalog_key/l3_release —
             # those are extra-var-pinned to the SCALAR viewer identity for
             # this whole play's duration, and extra_vars outrank an
             # include_role's own `vars:` identically to task vars, so
-            # overriding them per loop iteration is silently a no-op (this
-            # exact bug shipped once — an execution-harness scenario caught
-            # it live, see roles/mxl/defaults/main.yml's own header).
+            # overriding them per loop iteration is silently a no-op (see
+            # roles/mxl/defaults/main.yml's own header).
             # mxl_group_item_identity is the role's OWN, dedicated
             # per-call override — the only mechanism that actually works.
             mxl_group_item_identity: "{{ item.netbox_service_name }}"

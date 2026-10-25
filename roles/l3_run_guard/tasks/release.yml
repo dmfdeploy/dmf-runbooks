@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3 R4a Backbone (codex round-3 P1-3/P1-4/P1-11) — the
+# The
 # UNIVERSAL always: handler every launch-*.yml / teardown-*.yml /
 # rollback-run.yml playbook's outer block now installs, on top of
 # (never instead of) each flow's own existing on-path lock_release.yml
@@ -20,7 +20,7 @@
 # tolerated, R2a-3c uid-preconditioned) — calling it again here after an
 # on-path release already ran is a safe no-op, not a double-release bug.
 #
-# R4a/P1-3: this file itself MUST NOT fail the play, even if ITS OWN
+# This file itself MUST NOT fail the play, even if ITS OWN
 # cleanup task errors — an always: block that itself throws would abort
 # the play from INSIDE always:, which defeats the entire point of using
 # always: as the guaranteed backstop. Failures here are logged loudly and

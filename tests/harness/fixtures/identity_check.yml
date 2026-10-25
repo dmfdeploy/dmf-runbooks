@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3 R4a/P2-5 — control-flow execution fixture: a single,
+# control-flow execution fixture: a single,
 # isolated invocation of `l3_run_guard`'s `identity` tasks_from, against
 # the test harness stubs. Run as a nested `ansible-playbook` subprocess
 # (see fixtures/lock_retry.yml's own header for why — fact isolation

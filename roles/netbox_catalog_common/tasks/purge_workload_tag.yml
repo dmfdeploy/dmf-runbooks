@@ -7,7 +7,7 @@
 # own output) — frozen behavior #6, "Tag object LAST". A Tag-object DELETE
 # is genuinely new in this repo (every prior launcher only ever created
 # tags, never deleted one) — same ansible.builtin.uri/no_log style as every
-# other raw NetBox call in this role, per the WO's own instruction.
+# other raw NetBox call in this role.
 #
 # Idempotent (204 or 404 both accepted on the delete, exactly like the
 # member-delete idiom) — a re-run after a prior attempt already removed the

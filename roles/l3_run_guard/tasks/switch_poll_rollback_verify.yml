@@ -1,5 +1,5 @@
 ---
-# umbrella #306 (design round #2, frozen 2026-07-30) — post-rollback
+# umbrella #306 (frozen 2026-07-30) — post-rollback
 # verification. `helm rollback` is issued WITHOUT --wait (job 413: helm's
 # own rollback-wait verdict was WRONG — the rollback had verifiably
 # converged seconds after helm's 90s window expired) — helm's rc is

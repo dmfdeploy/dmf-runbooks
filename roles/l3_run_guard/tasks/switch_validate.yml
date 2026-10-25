@@ -1,5 +1,5 @@
 ---
-# umbrella #201 WP4b (qwen1 gate fix round) — switch-specific validation as
+# Switch-specific validation as
 # a proper role-internal stage, included from switch_lock.yml AFTER
 # identity.yml's own reserved-var assert but BEFORE lock.yml.
 #
@@ -12,10 +12,8 @@
 # including switch_lock — which meant they were ALREADY "defined" by the
 # time identity.yml's assert ran, and the assert (correctly, by its own
 # rules) refused every switch run that reached it as a forged reserved-var,
-# even though nothing was forged. qwen1's clean-room gate run caught this
-# live (scenarios 3-6 all died with detail=reserved-var, EXIT_CODE=2) —
-# the fix-round report explains the evidence gap that let a stale "86 ok
-# dual-core" claim through.
+# even though nothing was forged. A clean-room run caught this
+# live (scenarios 3-6 all died with detail=reserved-var, EXIT_CODE=2).
 #
 # THE FIX: move the set_fact tasks IN HERE — a role file included only
 # AFTER the reserved-var assert has already run and found them undefined.

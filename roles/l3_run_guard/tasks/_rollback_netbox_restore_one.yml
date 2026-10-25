@@ -13,7 +13,7 @@
 # subset-only) — it needs _netbox_owned_namespace itself to filter the
 # readback's own tags down to the owned subset before comparing.
 #
-# R4a (codex round-3 P1-10): custom_fields gets the SAME owned/non-owned
+# custom_fields gets the SAME owned/non-owned
 # split tags already get. The R2a/R3a draft PATCHed the snapshot's ENTIRE
 # custom_fields map — L3 only owns the monitoring keys named in
 # l3_netbox_monitoring_custom_fields_clear (probe_module, probe_path,

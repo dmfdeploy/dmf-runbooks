@@ -7,8 +7,7 @@
   connection: local
   gather_facts: false
   vars:
-    # umbrella #202 WP3 R6a (codex round-5 P1-1/P1-2, replacing R5a-2's
-    # broken post-hoc consistency assert): TRUE single source. ONE play-
+    # TRUE single source. ONE play-
     # scope definition per identity/render value below — no separate
     # nmos_cpp_* alias exists anywhere in this playbook anymore. The gate
     # (l3_run_guard's capacity.yml render + snapshot.yml, included
@@ -17,11 +16,11 @@
     # further down reads the SAME names directly — there is no second,
     # independently-forgeable name either side could diverge onto, so a
     # forged extra_var overriding any one of these affects both consumers
-    # identically, by construction. (R5a-2's assert tried to DETECT
-    # divergence after the fact by comparing two names post-include — but
-    # the include_role's own vars: went out of scope the moment that task
-    # finished, so the assert read undefined variables on every real run;
-    # this replaces detection with structural impossibility instead.)
+    # identically, by construction. (An assert that tried to DETECT
+    # divergence after the fact by comparing two names post-include would
+    # not work: the include_role's own vars: go out of scope the moment
+    # that task finishes, so it would read undefined variables on every
+    # real run; this replaces detection with structural impossibility.)
     l3_release: nmos-cpp
     l3_target_namespace: nmos
     l3_catalog_key: nmos-cpp
@@ -147,12 +146,12 @@
                   - --plain-http
               changed_when: false
 
-            # R6a-1 (codex round-5): set_values is built from l3_chart_set_values
+            # set_values is built from l3_chart_set_values
             # via l3_set_values_dicts — the SAME flat list capacity.yml's
             # render already flattened l3_release_values into, and turned
             # into --set argv via l3_set_flag_argv. Retiring release_values:
-            # (the nested-dict shape) here closes the exact gap codex named:
-            # before R6a, l3_chart_set_values was consumed ONLY by the
+            # (the nested-dict shape) here closes a gap:
+            # l3_chart_set_values used to be consumed ONLY by the
             # gate's render, while this install task read
             # nmos_cpp_release_values directly — two different names/shapes
             # that happened to agree by construction, not by single source.

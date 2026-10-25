@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""umbrella #202 WP3 R5a-6 (codex round-4 P2-3) — static structural check that
+"""Static structural check that
 every REAL entry playbook under playbooks/ actually wraps its whole
 post-identity lifecycle in ONE outer block/rescue/always ("the Backbone",
 landed R4a), with nothing able to sneak in front of it.
 
-WHY THIS EXISTS: codex's round-4 review (P2-3) found that the existing
+WHY THIS EXISTS: the existing
 execution-test suite (tests/l3-control-flow.yml +
 tests/harness/fixtures/fault_boundary.yml) only ever runs a FIXTURE that
 REPLICATES the real playbooks' block/rescue/always shape with a trivial
@@ -12,15 +12,14 @@ stand-in mutation — it never runs, or even looks at, the actual 7 playbooks
 under playbooks/. Because of that gap, two real bugs shipped undetected by
 any test:
 
-  1. launch-nmos-crosspoint.yml used to have its crosspoint-admin-password
-     `assert` sitting BEFORE the outer block even started (fixed in this
-     same round, R5a-3) — a missing secret produced a raw task-zero
+  1. launch-nmos-crosspoint.yml once had its crosspoint-admin-password
+     `assert` sitting BEFORE the outer block even started — a missing secret produced a raw task-zero
      failure with no gate cleanup and no DMF_L3_OUTCOME marker at all. A
      fixture that already has the assert in the right place, by
      construction, can never catch a regression of THIS exact bug class —
      only looking at the real file's own task order can.
   2. several lock-lifecycle checkpoints were missing before terminal
-     ConfigMap patches (fixed this round, R5a-4) — again invisible to a
+     ConfigMap patches — again invisible to a
      fixture that never had the defect shape to begin with.
 
 This script re-derives the actual shape from the REAL playbook YAML (via a
@@ -28,8 +27,8 @@ proper parse tree — see the "why PyYAML, not regex" note below), so a
 regression of either bug class — or a new one shaped like it (something
 sneaking in front of the gate, or the gate's own include ending up outside
 the block it's supposed to share fate with) — fails loudly here, fast,
-with no cluster/stubs/EE needed. tests/l3-playbook-execution.yml (R5a-6's
-other half) complements this with an actual stubbed EXECUTION proof of the
+with no cluster/stubs/EE needed. tests/l3-playbook-execution.yml
+complements this with an actual stubbed EXECUTION proof of the
 failure-path behavior these playbooks were shaped this way to guarantee.
 
 WHY A REAL YAML PARSE TREE, NOT REGEX (unlike this directory's own
@@ -133,7 +132,7 @@ except ImportError:
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _PLAYBOOKS_DIR = _REPO_ROOT / "playbooks"
 
-# The 7 real entry playbooks this round's Backbone (R4a) + R5a-3/R5a-4
+# The 7 real entry playbooks this round's Backbone + R5a-3/R5a-4
 # fixes apply to. "flow" selects which shape-expectations below apply —
 # rollback-run.yml is deliberately SIMPLER than launch/teardown (see the
 # "rollback" branch of _check_playbook below for exactly why).
@@ -166,7 +165,7 @@ _SWITCH_PLAYBOOK = "switch-mxl-fabrics-demo.yml"
 _SWITCH_OUTCOME_EMIT_FILE = "_emit_switch_outcome.yml"
 _SWITCH_OUTCOME_MARKER_NAME = "dmf-l3-switch-outcome"
 
-# umbrella #323 fix round (codex adversarial gate, P1) — the SECOND
+# The SECOND
 # sanctioned emission file. It exists because the generic emitter above
 # renders its token from l3_switch_outcome_token, and extra_vars outrank
 # the include's own task-level vars: on the ONE path that has to emit while
@@ -216,7 +215,7 @@ _PURGE_GUARD_NAMES = (
     "l3_purge_outcome_token",
     "l3_purge_outcome_kv",
     "_purge_stage",
-    # umbrella #347 fix round FIX-A2b.1 (P1-1, codex GATE-A2b.1) — the six
+    # The six
     # success-decision facts belt-and-braced on top of the reserved-var
     # blocklist (see purge_outcome_guard.yml's own header for the per-name
     # rationale and the forge probe this closes).
@@ -549,7 +548,7 @@ def _check_one_switch_emit_file(path: Path) -> list[str]:
 
 
 def _check_switch_outcome_marker() -> list[str]:
-    """umbrella #323 (+ its fix round) — structural floor for the switch
+    """Structural floor for the switch
     playbook's own structured outcome event (DMF_L3_SWITCH_OUTCOME, a
     vocabulary SEPARATE from DMF_L3_OUTCOME — see
     playbooks/switch-mxl-fabrics-demo.yml's own header and
@@ -710,9 +709,8 @@ def _check_switch_outcome_marker() -> list[str]:
 
 
 def _check_switch_outcome_guard_position() -> list[str]:
-    """umbrella #323 fix round (codex round-2 adversarial gate, MINOR finding
-    — a static gate was missing entirely for this). The whole P1 fix is
-    load-bearing on TWO positional facts, neither of which
+    """A static gate for the guard's position (umbrella #323). The whole
+    guard fix is load-bearing on TWO positional facts, neither of which
     _check_switch_outcome_marker() above checks (it only proves the
     guard's CONTENT — the six asserted names — is intact):
 
@@ -726,8 +724,8 @@ def _check_switch_outcome_guard_position() -> list[str]:
     here): if the guard were moved inside the outer block, its own
     `ansible.builtin.fail` would be caught by that block's `rescue:` —
     whose own emission the caller may have already shadowed via
-    `-e _switch_outcome_emitted=true` (P1(a)'s exact shape) — reopening
-    the hole this whole fix round exists to close. If a new task were
+    `-e _switch_outcome_emitted=true` (the exact shape of exit (a)) — reopening
+    the hole this guard exists to close. If a new task were
     inserted ahead of the guard, that task would run before any caller
     variable had been proven caller-free.
 
@@ -1020,8 +1018,7 @@ def _check_purge_outcome_guard_position() -> list[str]:
 
 
 def _check_purge_success_after_lock_release() -> list[str]:
-    """umbrella #347 fix round FIX-A2b.1 (P3-1, codex GATE-A2b.1 NOTED DEBT)
-    — a POSITION check, not just a presence check: within finalise-purge.yml's
+    """A POSITION check (umbrella #347), not just a presence check: within finalise-purge.yml's
     own outer block's `block:` list, the success-path
     `include_role: ... tasks_from: _emit_purge_outcome` (token: success) must
     come AFTER `include_role: ... tasks_from: lock_release` — never before
@@ -1031,16 +1028,15 @@ def _check_purge_success_after_lock_release() -> list[str]:
     failure is reported honestly through rescue: instead — never a success
     marker followed by a FAILED AWX job." _check_purge_outcome_marker()
     above only proves the generic emitter is wired in AT LEAST ONCE
-    somewhere in the play — it does not check WHERE. Codex's own executed
-    probe (GATE-A2b.1 P3-1) synthetically moved the success emitter ahead of
-    lock_release and re-ran tests/l3-playbook-structure.yml: it still
+    somewhere in the play — it does not check WHERE. An executed
+    probe that synthetically moved the success emitter ahead of
+    lock_release and re-ran tests/l3-playbook-structure.yml still
     passed, because nothing encoded this ordering. A refactor that silently
     reorders these two includes would ship a success marker even when the
     trailing lock-release itself fails — this function is what makes that
     regression a structural failure here instead of a live incident.
 
-    umbrella #347 fix round FIX-A2b.2 (P2, codex GATE-A2b.1R) — the FIRST
-    version of this function tracked only the LAST-seen
+    A version of this function that tracked only the LAST-seen
     `tasks_from: _emit_purge_outcome` include's own index
     (`success_emit_index = i`, unconditionally overwritten on every match,
     the same shape lock_release_index's own `is None` guard deliberately

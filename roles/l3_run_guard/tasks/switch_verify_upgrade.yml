@@ -1,5 +1,5 @@
 ---
-# umbrella #306 (design round #2, frozen 2026-07-30) — entry point for
+# umbrella #306 (frozen 2026-07-30) — entry point for
 # PHASE 2's post-upgrade verification. Converts the play's own budget/delay
 # vars (l3_switch_upgrade_verify_timeout_seconds,
 # l3_switch_verify_poll_delay_seconds — the console watch budget formula's

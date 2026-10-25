@@ -46,7 +46,7 @@ own live target_facility agreement check, the first caller of this route):
     request body's own `slug` back with a fresh id — same shape as
     _create_tag)
 
-umbrella #202 WP3 R6b (codex round-6, umbrella #267): optional request
+Optional request
 logging for the `ipam.services` collection surface only — set
 `L3_STUB_NETBOX_LOG=<path>` (as an env var on the process that starts
 this server, e.g. via start_stubs.py's own `environment:` block in a test
@@ -73,11 +73,11 @@ WITHOUT actually removing the record — simulating a real "delete didn't
 take" backend inconsistency so a test can drive a genuine `dirty`
 per-record classification (see _delete_service's own comment).
 
-umbrella #347 fix round FIX-A2b.1 (P2-1): `/api/ipam/services/` GET now
-genuinely honors `limit`/`offset` and returns a real, absolute `next` URL
+`/api/ipam/services/` GET genuinely honors `limit`/`offset` and returns a
+real, absolute `next` URL
 (built from the request's own Host header) whenever more results remain —
 default behavior is unchanged when no `limit` is supplied (degrades to
-"return everything in one page", this stub's own pre-P2-1 shape).
+"return everything in one page").
 `L3_STUB_NETBOX_PAGE_SIZE` (a detached-process env var, same mechanism as
 the above) FORCES a smaller page size than whatever `limit` the caller
 actually requested — the pagination-scenario's own fixture knob, since
@@ -99,7 +99,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 
 def _log_services_request(line: str) -> None:
-    """R6b: append one line to $L3_STUB_NETBOX_LOG if set — see this
+    """Append one line to $L3_STUB_NETBOX_LOG if set — see this
     module's own docstring for the exact format/scope (ipam.services
     GET/POST only)."""
     log_path = os.environ.get("L3_STUB_NETBOX_LOG")
@@ -249,10 +249,9 @@ class StubNetBoxHandler(BaseHTTPRequestHandler):
     # -- handlers --------------------------------------------------------
 
     def _list_services(self, query: dict):
-        # umbrella #347 fix round FIX-A2b.1 (P2-1) — this used to ignore
-        # limit/offset entirely and return every matching result in one
-        # response, which meant no test on this harness could ever exercise
-        # a caller's own pagination logic. Now genuinely paginates: `limit`
+        # Ignoring limit/offset and returning every matching result in one
+        # response would mean no test on this harness could ever exercise
+        # a caller's own pagination logic. So this genuinely paginates: `limit`
         # (from the query string, or $L3_STUB_NETBOX_PAGE_SIZE forcing a
         # SMALLER page regardless of what the caller requested — the
         # pagination-scenario's own fixture knob, since production code
@@ -262,7 +261,7 @@ class StubNetBoxHandler(BaseHTTPRequestHandler):
         # override) is UNCHANGED — every existing fixture in this harness
         # seeds at most a handful of services, so `limit` degrades to
         # `total` and the whole result set still comes back as one page,
-        # exactly as before this fix round.
+        # exactly as with no pagination support.
         name_filter = query.get("name", [None])[0]
         tag_filter = query.get("tag", [None])[0]
 

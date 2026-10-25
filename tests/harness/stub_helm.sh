@@ -34,7 +34,7 @@
 #                                       simulate a fetch failure. Unset
 #                                       defaults to {flow: {id:
 #                                       5fbec3b1-1b0f-417d-9059-8b94a47197ed}}
-#                                       (umbrella #306 design round #2 —
+#                                       (umbrella #306 —
 #                                       switch_capture_baseline.yml's own
 #                                       `helm get values` is now an
 #                                       UNCONDITIONAL pre-switch read on
@@ -46,8 +46,7 @@
 #                                       values read for free without
 #                                       needing to seed one explicitly)
 #   L3_STUB_HELM_VALUES_FAIL_AFTER_N /
-#   L3_STUB_HELM_VALUES_COUNT_FILE      (umbrella #306 design round #2 fix
-#                                       round) both must be set together —
+#   L3_STUB_HELM_VALUES_COUNT_FILE      (umbrella #306) both must be set together —
 #                                       the Nth-and-later 'get values' call
 #                                       for ANY release fails; earlier ones
 #                                       succeed normally. File-backed
@@ -189,7 +188,7 @@ for item in items:
     done
     case "$resource" in
       values)
-        # umbrella #306 design round #2: the previous default expansion
+        # umbrella #306: the previous default expansion
         # ("${!envvar:-{\}}") did not actually produce "{}" — bash does not
         # unescape "\}" inside a parameter-expansion default the way that
         # looked intended, so an unseeded release got the literal 3-byte
@@ -204,7 +203,7 @@ for item in items:
           echo "stub_helm.sh: simulated 'helm get values' failure for release '$release'" >&2
           exit 1
         fi
-        # umbrella #306 design round #2 fix round — L3_STUB_HELM_VALUES_FAIL_AFTER_N
+        # L3_STUB_HELM_VALUES_FAIL_AFTER_N
         # (paired with L3_STUB_HELM_VALUES_COUNT_FILE, a file-backed counter,
         # since each `helm` invocation is a fresh process with no shared
         # memory — same "an env var supplies a filesystem location" idiom

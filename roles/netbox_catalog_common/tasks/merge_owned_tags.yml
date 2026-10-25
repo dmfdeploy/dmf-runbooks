@@ -26,7 +26,7 @@
 #                           silently apply to configure's merge call too,
 #                           stripping a tag provision just stamped even
 #                           though configure never asked for it to be owned
-#                           (fix-round P1, codex GATE-239RB, live-reproduced —
+#                           (live-reproduced —
 #                           see tests/_workload-tag-scenario.yml's sequencing
 #                           scenario, which pins this exact failure mode). ***
 #

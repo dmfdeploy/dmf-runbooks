@@ -7,11 +7,11 @@
 # check that doesn't need it, same rationale as preflight.yml's own
 # before-lock placement).
 #
-# umbrella #201 WP3 fix round (codex GATE:FAIL D1): this stage is gated
+# This stage is gated
 # PURELY on `topology_params is defined` — there is no separate
 # "l3_topology_params_required" flag. The original draft computed that flag
-# as a play var (`mxl_role == 'view'`) in launch-mxl-fabrics-demo.yml; codex
-# proved TWO forgery vectors against it: (a) a direct
+# as a play var (`mxl_role == 'view'`) in launch-mxl-fabrics-demo.yml would
+# have TWO forgery vectors: (a) a direct
 # `-e '{"l3_topology_params_required": false}'` extra_var trivially
 # overrides ANY play var under normal Ansible precedence — the exact
 # "named intermediate" bug class _assert_reserved_vars.yml's own R4a/P1-2
@@ -24,7 +24,7 @@
 # this stage no longer reads mxl_role at all, so forging it has zero
 # effect on whether validation runs (closes (b)) — topology_params, once
 # supplied, is ALWAYS fully validated, unconditionally. This also matches
-# umbrella #201 WP3 fix-round D3: a genuinely topology-free scalar launch
+# A genuinely topology-free scalar launch
 # (either role, chart 0.4.0's own scalar-source semantics) is a fully
 # legitimate path now, not an error — there is no more "required but
 # absent" refusal, only "present, so validate" vs "absent, so scalar mode".
@@ -48,11 +48,11 @@
 # stale/forged extra_var or an env with the wrong NetBox site shape, not a
 # legitimate multi-facility choice (deferred to #231).
 #
-# umbrella #201 WP3 fix-round addendum (codex cross-WP FAIL): with
+# With
 # topology_ref still attached to the SOURCE catalog entry too
 # (dmf-media#22, pending cleanup — the ratified design is viewer-only),
 # WP3a's launch seam attaches topology_params to a SOURCE-entry console
-# deploy as well, and D1's own presence-keyed gate above would then
+# deploy as well, and the presence-keyed gate above would then
 # validate + derive a release group + patch active-source for that run —
 # a HALF-topology mutation with no paired viewer install. l3_topology_
 # forbidden_for_this_entry (role default false — a no-op for every

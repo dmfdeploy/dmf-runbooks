@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3 R2a-3c — release the facility lock THIS ATTEMPT
+# Release the facility lock THIS ATTEMPT
 # acquired (§4.5), via a PRECONDITIONED delete (uid from a fresh read) —
 # never a blind delete. A blind delete could destroy a DIFFERENT attempt's
 # legitimately-reclaimed lock if our own hold somehow outlived its TTL and

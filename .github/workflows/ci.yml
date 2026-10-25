@@ -44,7 +44,7 @@ jobs:
     # ansible-core 2.20 and the EE's ansible-core 2.15/py3.9) shipped through
     # 130 green tests (umbrella #274). This matrix runs the suites on both.
     #
-    # umbrella #347 fix round FIX-A2b.1: bumped 30 -> 45. The new
+    # The job timeout is 45 minutes, raised from 30. The
     # tests/l3-finalise-purge-execution.yml suite (12 scenarios, ~19 nested
     # ansible-playbook subprocess invocations across its own stub-server
     # lifecycles) pushed this job right to the old 30-minute ceiling — the
@@ -85,8 +85,7 @@ jobs:
         # ansible-galaxy does not install collections' python dependencies;
         # kubernetes.core's k8s/k8s_info modules need this at runtime, or
         # every task using them fails ("Failed to import the required
-        # Python library (kubernetes)") on a clean runner (umbrella #274
-        # codex gate round).
+        # Python library (kubernetes)") on a clean runner (umbrella #274).
         run: pip install "${{ matrix.k8s_client }}"
       - name: Install collections
         run: ansible-galaxy collection install -r requirements.yml
@@ -110,6 +109,18 @@ jobs:
         run: ansible-playbook tests/l3-switch-execution.yml
       - name: l3-finalise-purge-execution
         run: ansible-playbook tests/l3-finalise-purge-execution.yml
+
+  review-comments:
+    # Comments state why, not which review prompted them
+    # (dmfdeploy/dmfdeploy#768). Allowlist: .review-comment-allow.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+      - name: No review history in comments
+        run: bin/check-review-comments.sh
 
   working-model:
     # Working-model block sync (umbrella issue dmfdeploy/dmfdeploy#32): the

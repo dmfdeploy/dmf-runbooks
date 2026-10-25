@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""umbrella #202 WP3 R5a (codex round-4 P1-1) — self-maintaining reserved-var
+"""Self-maintaining reserved-var
 meta-test. Stdlib-only, no third-party deps (mirrors tests/harness's own
 convention).
 
@@ -17,21 +17,21 @@ drift IMPOSSIBLE to land unnoticed: it re-derives the full register:/
 set_fact: name set from the ACTUAL task files (not from memory) every time
 it runs, and fails loudly if anything in that set is not reserved.
 
-umbrella #201 WP3 fix round (codex D2): this script used to scan ONLY
-roles/l3_run_guard/tasks/*.yml — that scoping gap was itself a finding.
+This script scans playbooks/ as well as
+roles/l3_run_guard/tasks/*.yml, because scanning only the role leaves a gap.
 _l3_effective_chart_set_values was originally a set_fact: TASK inside
 playbooks/launch-mxl-fabrics-demo.yml (an install-only alias never covered
 by the reserved-var blocklist at all, since nothing scanned playbooks/),
-and codex proved forging it directly made the real `helm upgrade --install`
+and forging it directly made the real `helm upgrade --install`
 consume different --set values than capacity.yml's gate ever validated —
 a capacity/install divergence, the exact class of bug this whole mechanism
 exists to close. Every launch-*.yml/teardown-*.yml/rollback-run.yml
 playbook's own register:/set_fact: targets are now in scope too.
 
-umbrella #347 fix round FIX-A2b.1 (P1-1, codex GATE-A2b.1): the identical
-scoping gap D2 closed for playbooks/ reopened for
+umbrella #347: the identical
+scoping gap reopens for
 roles/netbox_catalog_common/tasks/*.yml — the finalise-purge launcher's own
-shared tasks live there, and codex's executed forge probe
+shared tasks live there, and an executed forge probe
 (`-e '{"_purge_final_remaining_member_ids": [], "_purge_final_tag_present":
 false}'`) made the launcher emit DMF_L3_PURGE_OUTCOME: success against a
 genuinely dirty NetBox precisely because this script never saw those
@@ -55,18 +55,17 @@ _TASKS_DIR = _REPO_ROOT / "roles" / "l3_run_guard" / "tasks"
 _PLAYBOOKS_DIR = _REPO_ROOT / "playbooks"
 _RESERVED_FILE = _TASKS_DIR / "_assert_reserved_vars.yml"
 
-# umbrella #347 fix round FIX-A2b.1 (P1-1, codex GATE-A2b.1) — this script
-# used to scan ONLY roles/l3_run_guard/tasks/*.yml + playbooks/*.yml, so
-# every register:/set_fact: target the finalise-purge launcher's own shared
+# Scanning only roles/l3_run_guard/tasks/*.yml + playbooks/*.yml would
+# leave a gap: every register:/set_fact: target the finalise-purge
+# launcher's own shared
 # tasks produce in roles/netbox_catalog_common/tasks/*.yml (the final
 # source-read verdict, the dirty count, per-record delete results, the tag
-# id/result) was invisible to this scanner and therefore never reserved —
-# codex's executed forge probe (`-e '{"_purge_final_remaining_member_ids":
-# [], "_purge_final_tag_present": false}'`) exploited exactly that gap to
+# id/result) would be invisible to this scanner and therefore never
+# reserved — an executed forge probe (`-e '{"_purge_final_remaining_member_ids":
+# [], "_purge_final_tag_present": false}'`) exploits exactly that gap to
 # make the launcher emit DMF_L3_PURGE_OUTCOME: success against a genuinely
-# dirty NetBox. Scanning this directory too closes that hole the same way
-# umbrella #201 WP3's own fix-round D2 closed the identical gap for
-# playbooks/*.yml (see this file's own module docstring above).
+# dirty NetBox. Scanning this directory too closes that hole, the same way
+# scanning playbooks/*.yml does (see this file's own module docstring above).
 _PURGE_TASKS_DIR = _REPO_ROOT / "roles" / "netbox_catalog_common" / "tasks"
 
 _REGISTER_RE = re.compile(r"^\s*register:\s*([A-Za-z_][A-Za-z0-9_]*)\s*$")

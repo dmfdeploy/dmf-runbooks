@@ -43,19 +43,19 @@
 #                             shadowed value and let a caller choose which
 #                             stage the console is told the run died in.
 #
-# umbrella #347 fix round FIX-A2b.1 (P1-1, codex GATE-A2b.1) — the six
+# The six
 # success-decision facts below, belt-and-braces on top of
-# _assert_reserved_vars.yml now ALSO reserving every netbox_catalog_common
-# register:/set_fact: target (see that file's own new comment block, and
-# tests/scripts/check_reserved_vars.py's own module docstring, for codex's
+# _assert_reserved_vars.yml ALSO reserving every netbox_catalog_common
+# register:/set_fact: target (see that file's own comment block, and
+# tests/scripts/check_reserved_vars.py's own module docstring, for the
 # executed forge probe this closes). These are the facts
 # playbooks/finalise-purge.yml's own success claim is BUILT FROM — a caller
 # who controls them controls whether the run claims success regardless of
 # what NetBox actually looks like:
 #   _purge_final_remaining_member_ids / _purge_final_tag_present — the final
 #     source read itself (frozen behavior #7 — "this read, not the DELETE
-#     statuses, is the ONLY basis for the playbook's success claim"; codex's
-#     own probe forged exactly this pair to claim a clean read against a
+#     statuses, is the ONLY basis for the playbook's success claim"; a
+#     forge probe set exactly this pair to claim a clean read against a
 #     genuinely dirty NetBox).
 #   _purge_dirty_count       — gates whether the Tag-purge stage runs at all
 #                             (frozen behavior #6, Tag object LAST); a forged

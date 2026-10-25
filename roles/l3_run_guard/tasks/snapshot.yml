@@ -16,8 +16,8 @@
 #      MISS a pre-existing record that hadn't yet been tagged
 #      app:<key> at snapshot time, silently excluding it from the
 #      baseline — rollback would then misclassify it as run-created and
-#      destroy it (codex round-1's exact counterexample). Captured WITH
-#      id (l3_netbox_surface_with_id) — R2a-5's rollback classification
+#      destroy it. Captured WITH
+#      id (l3_netbox_surface_with_id) — rollback classification
 #      compares by id, never by name alone (a delete-then-recreate under
 #      the same name must not be mistaken for "unchanged").
 #   2. Helm — every release currently installed in the two catalog
@@ -32,30 +32,30 @@
 #      VERIFICATION (did the probe actually go away) is WP4's console-side
 #      job; this snapshot only needs the pre-run attribution set to exist.
 #
-# R2a-1: dmf.io/topology's combined "<key>/<release>" was an ILLEGAL K8s
+# dmf.io/topology's combined "<key>/<release>" was an ILLEGAL K8s
 # label VALUE (a slash) — split into dmf.io/catalog-key + dmf.io/release,
 # each independently a legal value.
 #
 # R2a-8/R3a-6/R4a-P1-6: CREATE-ONLY via the SAME raw-REST-POST-with-409
 # pattern as the facility lock (lock.yml), now via a bounded native loop
-# over _snapshot_create_one_attempt.yml (P1-1/P2-4 pattern). On a 409
-# collision, EVERY case now FAILS CLOSED as a snapshot-collision — R3a-6's
-# narrowly-defined "resumable retry" classification is REMOVED (R4a
-# P1-6): it could never reach an honest terminal (a successful resumed
+# over _snapshot_create_one_attempt.yml. On a 409
+# collision, EVERY case FAILS CLOSED as a snapshot-collision — there is
+# no narrowly-defined "resumable retry" classification: it could never
+# reach an honest terminal (a successful resumed
 # retry left the snapshot in-progress forever; a failed one could never
-# be marked failed_rollback_required — codex round-3's exact finding). If
+# be marked failed_rollback_required). If
 # a run_id is genuinely intended to be retried, roll it back first, then
 # relaunch. l3_snapshot_created is set ONLY on the fresh-201 path — see
 # _snapshot_create_one_attempt.yml for why.
 #
-# R3a-2: every manifest data/label value is coerced |string — AWX injects
+# Every manifest data/label value is coerced |string — AWX injects
 # awx_job_id/tower_job_id as a native INTEGER, and Ansible's whole-template
 # native-type substitution preserves that through l3_awx_job_id's own
 # default; an unstringified int here becomes a JSON number in the POST
 # body, which the K8s API server rejects for both a ConfigMap's
 # map[string]string data field and a label value.
 #
-# R4a (codex round-3 P1-9): the lockless direct-path override is REMOVED
+# The lockless direct-path override is REMOVED
 # entirely (see lock.yml's own header) — lock.yml now refuses
 # lock-unavailable, never override-able, before this file could ever be
 # reached with _l3_api_available false. The `when: _l3_api_available`
@@ -64,12 +64,12 @@
 # skip-with-warning path — see the backstop assert at the bottom of this
 # file.
 #
-# R4a (codex round-3 P1-6 + P2-4): snapshot CREATE-ONLY now uses the same
-# bounded-native-loop, non-recursive pattern as the facility lock's own
-# P1-1 fix — see _snapshot_create_one_attempt.yml for the full rationale.
-# Every 409 collision is now an UNCONDITIONAL fail-closed refusal (P1-6:
-# resume is removed entirely); a 409-then-empty-read race is retried up
-# to l3_snapshot_create_max_attempts before refusing (P2-4: no unsafe
+# Snapshot CREATE-ONLY uses the same
+# bounded-native-loop, non-recursive pattern as the facility lock —
+# see _snapshot_create_one_attempt.yml for the full rationale.
+# Every 409 collision is an UNCONDITIONAL fail-closed refusal
+# (resume does not exist); a 409-then-empty-read race is retried up
+# to l3_snapshot_create_max_attempts before refusing (no unsafe
 # resources[0] index is ever taken on an empty read).
 
 - name: "L3 snapshot: capture + write"
@@ -208,7 +208,7 @@
       ansible.builtin.set_fact:
         _l3_monitoring_surface: "{{ _l3_netbox_surface | l3_monitoring_surface }}"
 
-    # ── umbrella #201 WP3 fix-round D4 — OPT-IN coordinator-state capture.
+    # ── umbrella #201 WP3 — OPT-IN coordinator-state capture.
     #    l3_coordinator_configmap_name is empty by default (role default,
     #    see defaults/main.yml) — a no-op for every launcher that doesn't
     #    set it; only launch-mxl-fabrics-demo.yml does (mxl-coordinator).
@@ -280,9 +280,9 @@
           # l3_release_group is a runtime-only fact, never available there)
           # can recover the same name set for its own current-state NetBox
           # lookup — see rollback_snapshot_read.yml's own recovery task.
-          # coordinator_state (fix-round D4, folded in via combine — a
+          # coordinator_state (folded in via combine — a
           # genuinely ABSENT key for every launch that never opts in via
-          # l3_coordinator_configmap_name, byte-identical to before D4):
+          # l3_coordinator_configmap_name):
           # same rationale, one level deeper — rollback_coordinator_surface.yml
           # restores the coordinator's pre-run active-source exactly, or
           # removes it entirely if it was absent before this run.

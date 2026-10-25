@@ -8,7 +8,7 @@
 # a nested `ansible-playbook` subprocess, and asserts on its real stdout +
 # real HTTP readbacks against the stub.
 #
-# Coverage (WO's own five discriminating requirements, mapped to scenarios):
+# Coverage (five discriminating requirements, mapped to scenarios):
 #   (e) each quartet assert fires on a missing/blank value  -> scenario (2)
 #   (a) refuses + deletes nothing on an unexpected member   -> scenario (3)
 #   (b) refuses on a non-bootstrapped/extra lifecycle tag   -> scenario (4)
@@ -19,10 +19,10 @@
 # extra happened" assertions are read against. Scenario (8) proves the
 # convergence claim (frozen behavior #9) directly: a re-run after scenario
 # (6)'s own partial failure reaches success against the SAME stub state.
-# Scenarios (9)-(12) are the fix round's own permanent probe pins — see
-# the DISCRIMINATING-MUTATION TABLE's own fix-round addendum below.
+# Scenarios (9)-(12) are permanent probe pins — see
+# the DISCRIMINATING-MUTATION TABLE's addendum below.
 #
-# DISCRIMINATING-MUTATION TABLE (WO's own required disclosure — which
+# DISCRIMINATING-MUTATION TABLE (which
 # plausibly-mutated implementation each scenario catches):
 #   scenario (2) — a mutant that drops/weakens any one of the frozen-contract
 #     asserts (e.g. accepts an empty purge_reason, or skips validating
@@ -56,40 +56,40 @@
 #   scenario (8) — a mutant that hard-fails (rather than tolerating
 #     already-gone/already-deleted state) on any record a prior partial run
 #     already touched.
-# Verified by literal mutation (pasted in this WO's own DONE report, not
+# Verified by literal mutation (not
 # reproduced here): scenario (3) against a `l3_purge_fail_closed_violations`
 # mutant that always returns an empty "unexpected" list, and scenario (7)
 # against a `_purge_delete_one_member.yml` mutant that classifies purely
 # from the DELETE call's own status (never the readback GET).
 #
-# umbrella #347 fix round FIX-A2b.1 (codex GATE-A2b.1) — four PERMANENT
-# scenarios pinning each of codex's own executed probes forever, so none of
-# these regressions can ship silently again:
-#   scenario (9)  — P1-1: codex's exact forged-final-read-facts probe
+# Four PERMANENT
+# scenarios pin executed probes forever, so none of
+# these regressions can ship silently:
+#   scenario (9)  — the forged-final-read-facts probe
 #     (`-e {"_purge_final_remaining_member_ids": [], "_purge_final_tag_present":
 #     false}`) against an otherwise-legitimate purge. Catches a mutant that
 #     drops/weakens the reserved-var coverage of roles/netbox_catalog_common/
 #     tasks/*.yml or purge_outcome_guard.yml's own extended assert.
-#   scenario (10) — P1-2: codex's exact retag probe (a live service, its id
+#   scenario (10) — the retag probe (a live service, its id
 #     still in purge_expected_service_ids, retagged to a DIFFERENT workload).
 #     Catches a mutant that treats "not in this workload's fresh grouping"
 #     as "already-gone" again, instead of GET-by-id-then-refuse-on-200.
-#   scenario (11) — P2-1: pagination, both directions — (11a) a bad-lifecycle
+#   scenario (11) — pagination, both directions — (11a) a bad-lifecycle
 #     member on the LAST of 3 pages must still refuse (catches a mutant that
 #     only reads the first page); (11b) a clean multi-page purge succeeds
 #     AND the final read's own multi-page walk never mistakes unrelated
 #     dmf-catalog residue for this workload's own leftovers.
-#   scenario (12) — P2-2: codex's exact int-typed-actor probe
+#   scenario (12) — the int-typed-actor probe
 #     (`{"purge_actor": 123}`). Catches a mutant that drops the `is string`
 #     checks (Jinja's `trim` filter silently coerces non-strings, so the
 #     bare `(x | trim) != ''` check alone never discriminates this).
 #
-# umbrella #347 fix round FIX-A2b.3 (operator review 2026-08-03) — every
-# scenario above now invokes the DECLARED JT-contract shape: only
+# Every
+# scenario above invokes the DECLARED JT-contract shape: only
 # vault_netbox_purge_token (never netbox_api_token directly — the
 # playbook's own play-level `vars:` mapping resolves it, see
-# playbooks/finalise-purge.yml's header). Scenario (13) is this round's own
-# new probe:
+# playbooks/finalise-purge.yml's header). Scenario (13) is a separate
+# probe:
 #   scenario (13) — a blank vault_netbox_purge_token must refuse
 #     pre-lock (detail=pre-lock, the legacy preflight-error marker),
 #     before any NetBox call. Catches a mutant that maps netbox_api_token
@@ -302,7 +302,7 @@
           failed_when: false
 
     # ════════════════════════════════════════════════════════════════════
-    # Scenario 2: the frozen-contract quartet asserts (WO item e) — each
+    # Scenario 2: the frozen-contract quartet asserts (requirement e) — each
     # missing/blank required extra_var refuses BEFORE any NetBox read, with
     # detail=preflight. Shares ONE stub lifecycle across all five sub-cases
     # (none of them ever reach a NetBox call, so no fixture/reset is needed
@@ -564,7 +564,7 @@
     # ════════════════════════════════════════════════════════════════════
     # Scenario 3: fail-closed — a found workload member is NOT in
     # purge_expected_service_ids (stale preflight, Console Constitution
-    # Art. 1). Deletes NOTHING (WO item a).
+    # Art. 1). Deletes NOTHING (requirement a).
     # ════════════════════════════════════════════════════════════════════
     - name: "(3) fail-closed — unexpected found member"
       vars:
@@ -707,7 +707,7 @@
 
     # ════════════════════════════════════════════════════════════════════
     # Scenario 4: fail-closed — a member carries a lifecycle tag other than
-    # exactly lifecycle:bootstrapped (WO item b). Two sub-cases sharing one
+    # exactly lifecycle:bootstrapped (requirement b). Two sub-cases sharing one
     # stub lifecycle: (4a) a single non-bootstrapped lifecycle tag, (4b) two
     # lifecycle:* tags on the same member. Both must delete NOTHING.
     # ════════════════════════════════════════════════════════════════════
@@ -911,7 +911,7 @@
     # ════════════════════════════════════════════════════════════════════
     # Scenario 5: convergence — an expected id that the fresh read does NOT
     # find (already deleted by a prior partial run) is tolerated, not a
-    # violation, and still gets its own DELETE+readback (WO item d).
+    # violation, and still gets its own DELETE+readback (requirement d).
     # ════════════════════════════════════════════════════════════════════
     - name: "(5) convergence — an already-gone expected member"
       vars:
@@ -1041,7 +1041,7 @@
     # Scenario 6: ordering — a fault injected immediately AFTER the member
     # purge completes (fault boundary post-purge-members) proves the Tag
     # object is still untouched: the tag delete genuinely happens LATER,
-    # never concurrently with or before the member purge (WO item c). This
+    # never concurrently with or before the member purge (requirement c). This
     # stub instance is left running (pidfile /tmp/l3-fpe-6.json) for
     # scenario (8) to reuse.
     # ════════════════════════════════════════════════════════════════════
@@ -1191,7 +1191,7 @@
     # the record does NOT actually go away — L3_STUB_NETBOX_STICKY_SERVICE_IDS)
     # — the Tag delete must be skipped (frozen behavior #6) and the run must
     # never claim success (frozen behavior #7's "call-success never equals
-    # clean"). This is the WO's own explicitly-named "readback skipped"
+    # clean"). This is the "readback skipped"
     # mutation target.
     # ════════════════════════════════════════════════════════════════════
     - name: "(7) a genuinely dirty member — Tag stays intact, success never claimed"
@@ -1449,8 +1449,8 @@
           failed_when: false
 
     # ════════════════════════════════════════════════════════════════════
-    # Scenario 9 (umbrella #347 fix round FIX-A2b.1, P1-1) — PERMANENT PIN
-    # of codex's own executed GATE-A2b.1 forge probe: an otherwise-legitimate
+    # Scenario 9 (umbrella #347) — PERMANENT PIN
+    # of an executed forge probe: an otherwise-legitimate
     # sticky-dirty-member run (scenario 7's own fixture shape) with
     # `-e {"_purge_final_remaining_member_ids": [], "_purge_final_tag_present":
     # false}` — the exact forged pair that used to make the launcher emit
@@ -1611,8 +1611,8 @@
           failed_when: false
 
     # ════════════════════════════════════════════════════════════════════
-    # Scenario 10 (umbrella #347 fix round FIX-A2b.1, P1-2) — PERMANENT PIN
-    # of codex's own executed GATE-A2b.1 retag probe: a service that WAS a
+    # Scenario 10 (umbrella #347) — PERMANENT PIN
+    # of an executed retag probe: a service that WAS a
     # member of the requested workload at the console's own preflight time
     # (its id is in purge_expected_service_ids) has since been retagged to
     # `workload:other-workload` — a live, still-real record, just no longer
@@ -1743,7 +1743,7 @@
           failed_when: false
 
     # ════════════════════════════════════════════════════════════════════
-    # Scenario 11 (umbrella #347 fix round FIX-A2b.1, P2-1) — pagination.
+    # Scenario 11 (umbrella #347) — pagination.
     # $L3_STUB_NETBOX_PAGE_SIZE forces a 2-record page size regardless of
     # this launcher's own ?limit=500 request, so a handful of seeded
     # fixture records genuinely spans multiple pages.
@@ -1977,8 +1977,8 @@
           failed_when: false
 
     # ════════════════════════════════════════════════════════════════════
-    # Scenario 12 (umbrella #347 fix round FIX-A2b.1, P2-2) — PERMANENT PIN
-    # of codex's own executed GATE-A2b.1 int-typed-actor probe: native JSON
+    # Scenario 12 (umbrella #347) — PERMANENT PIN
+    # of an executed int-typed-actor probe: native JSON
     # `{"purge_actor": 123}` — Jinja's `trim` filter silently coerced the
     # int without the (now-added) `is string` check.
     # ════════════════════════════════════════════════════════════════════
@@ -2073,8 +2073,7 @@
           failed_when: false
 
     # ════════════════════════════════════════════════════════════════════
-    # Scenario 13 (fix round FIX-A2b.3, operator review 2026-08-03; var
-    # updated for ADR-0032 Amendment 3, 2026-08-14): the DECLARED
+    # Scenario 13 (ADR-0032 Amendment 3, 2026-08-14): the DECLARED
     # JT-contract invocation with the scoped delete-only purge token BLANK.
     # Every OTHER scenario above now passes ONLY vault_netbox_purge_token
     # (the frozen JT contract's own static var, never netbox_api_token
@@ -2086,7 +2085,7 @@
     # netbox_api_token with a fallback to some non-empty default (defeating
     # _assert_netbox_token.yml's own ADR-0032 "no silent credential
     # upgrade" check) or that maps it only SOMETIMES (e.g. as a role
-    # default instead of a play var, which this exact fix round proved does
+    # default instead of a play var, which does
     # not reach netbox_catalog_common's own later include).
     # ════════════════════════════════════════════════════════════════════
     - name: "(13) blank vault_netbox_purge_token refuses pre-lock, before any NetBox call"

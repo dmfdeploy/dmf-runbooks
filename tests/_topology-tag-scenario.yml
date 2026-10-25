@@ -1,7 +1,7 @@
 ---
 # umbrella #401 — topology-spawned source provenance tags.
 #
-# Three things the WO-401-v2 design requires, proved here:
+# Three things the umbrella #401 design requires, proved here:
 #  (a) the tags ARE computed (both provision + active tag sets) when this
 #      is a topology-spawned source's own mxl role invocation
 #      (mxl_group_item_parent_key/mxl_group_item_source_id set — the

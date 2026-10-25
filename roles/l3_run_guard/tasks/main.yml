@@ -1,6 +1,5 @@
 ---
-# umbrella #202 WP3 — L3 launcher authoritative gate (revised by codex
-# round-1 R2a).
+# umbrella #202 WP3 — L3 launcher authoritative gate.
 #
 # Included as the FIRST play-level actions of every launch-*.yml playbook,
 # before that playbook's own provision-stage role include. Stage order
@@ -15,9 +14,9 @@
 #                   override-able.
 #   2.5. topology  — umbrella #201 WP3: topology_params validation +
 #                   l3_release_group derivation, gated PURELY on
-#                   `topology_params is defined` (fix-round D1 — no
+#                   `topology_params is defined` (no
 #                   separate required-flag: any such flag is itself a
-#                   forgeable named intermediate, R4a/P1-2's own lesson). A
+#                   forgeable named intermediate). A
 #                   no-op for every launcher that never receives
 #                   topology_params. See topology_validate.yml's own header.
 #   3. lock       — facility lock (§4.5)
@@ -30,7 +29,7 @@
 #                   left dangling) — _refuse_pre_mutation.yml handles this
 #                   uniformly for every refusal path in this role.
 #
-# R2a-3e: everything AFTER lock acquisition that can mutate anything (this
+# Everything AFTER lock acquisition that can mutate anything (this
 # role's OWN snapshot write, AND — more importantly — the CALLING
 # playbook's own provision/install/configure stage) must be wrapped in
 # block/rescue/always so the lock is NEVER left held on any path except a

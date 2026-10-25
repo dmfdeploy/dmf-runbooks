@@ -1,8 +1,7 @@
 ---
-# umbrella #202 WP3 stage — facility lock (§4.5, atomic), revised by codex
-# round-1 R2a-3.
+# umbrella #202 WP3 stage — facility lock (§4.5, atomic).
 #
-# R2a-3a: every lock ACQUISITION ATTEMPT mints its own attempt_id (uuid4,
+# Every lock ACQUISITION ATTEMPT mints its own attempt_id (uuid4,
 # distinct from run_id/request_id) — two attempts of the SAME run are
 # still two DIFFERENT attempts (a retry after a crash is a NEW attempt,
 # not a continuation of the old one). R2a-3b: this means there is NO
@@ -13,7 +12,7 @@
 # object's own metadata.uid from a fresh read) — a mismatched-uid 409
 # means a concurrent actor already deleted/recreated the lock between our
 # read and our delete, and that race aborts loudly rather than silently
-# deleting a lock we may no longer own. R2a-3d/R4a (codex round-3 P1-9):
+# deleting a lock we may no longer own. R2a-3d/R4a:
 # facility-busy AND lock-unavailable are BOTH now NEVER override-able —
 # the R2a/R3a draft's "proceed lockless" escape hatch for the direct/
 # off-cluster path is REMOVED entirely. It was never actually coherent: a
@@ -21,13 +20,12 @@
 # (the held plan note claimed "either way a snapshot is captured", but no
 # task ever emitted the advertised `snapshot=skipped` marker, and
 # snapshot.yml's own skip branch made every such run un-rollbackable with
-# no observable signal of that fact to dmf-cms at all — codex's exact P1-9
-# finding). A run this role CANNOT lock+snapshot is now simply not
+# no observable signal of that fact to dmf-cms at all). A run this role CANNOT lock+snapshot is now simply not
 # permitted, full stop; ADR-0010's direct/off-cluster escape hatch still
 # works, it just now REQUIRES l3_kube_api_url/l3_kube_api_token like any
 # other credential this role needs.
 #
-# codex A2-1 (carried forward unchanged): no kubectl in the catalog EE —
+# No kubectl in the catalog EE —
 # every lock mutation is either a raw ansible.builtin.uri REST call
 # against the K8s API server directly (create, and now delete-with-
 # preconditions) or kubernetes.core.k8s_info (read-only, always safe).
@@ -42,7 +40,7 @@
 #     run-playbook.sh against a kubeconfig, ADR-0010): there is no in-pod
 #     SA token. The API server URL + a bearer token MUST be supplied via
 #     l3_kube_api_url/l3_kube_api_token extra_vars — absent either, this
-#     run REFUSES (lock-unavailable), never override-able (R4a/P1-9).
+#     run REFUSES (lock-unavailable), never override-able.
 
 - name: "L3 lock: mint this attempt's own attempt_id (R2a-3a — distinct from run_id)"
   ansible.builtin.set_fact:

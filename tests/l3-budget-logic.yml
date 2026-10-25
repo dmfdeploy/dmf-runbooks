@@ -138,13 +138,12 @@
           new pod appeared since the console's own (now-stale) FIT verdict —
           got {{ _gate_b_fit.verdict }}. Report: {{ _gate_b_fit.report }}
 
-    # ── Gate (c): REAL cumulative-prefix algorithm (R2a-6b, codex round-1
-    #    P1-6b — replaces the WP3-A draft's "sequential-max vs
-    #    concurrent-sum" approximation, which silently UNDER-counted
+    # ── Gate (c): REAL cumulative-prefix algorithm (replaces a
+    #    "sequential-max vs concurrent-sum" approximation, which silently UNDER-counted
     #    whenever a sequential init container followed a restartable
     #    sidecar). ORDER-SENSITIVE by construction: only restartable inits
     #    BEFORE a given index contribute to that index's running prefix —
-    #    codex's exact repro, fixtured in BOTH declaration orders. ────────
+    #    Fixtured in BOTH declaration orders. ────────
     #
     # Order A: sidecar (200m) THEN sequential (900m), app 100m.
     #   InitContainerUse(0, sidecar)     = 0          + 200 = 200
@@ -178,8 +177,8 @@
           - _gate_c_order_a_demand.cpu_m == 1100
           - _gate_c_order_a_demand.mem_b == (1100 * 1024 * 1024)
           - _gate_c_order_a_demand.all_containers_budgeted
-          # Discriminate against the WP3-A draft's approximation, which
-          # returned 900m for this EXACT fixture (codex's own repro).
+          # Discriminate against the sequential-max approximation, which
+          # returns 900m for this EXACT fixture.
           - _gate_c_order_a_demand.cpu_m != 900
         fail_msg: >-
           (c) cumulative-prefix Order A FAIL: expected cpu_m=1100
@@ -289,10 +288,10 @@
           (d) missing-budget FAIL (positive case): expected 2 replicas ×
           100m/128Mi = 200m/256Mi, got {{ _gate_d_ok_manifests | l3_render_demand }}
 
-    # ── R2a-6a: FAIL-CLOSED per-container — codex's exact repro: one fully
+    # ── FAIL-CLOSED per-container: one fully
     #    budgeted container next to one bare container in the SAME pod
-    #    template must still refuse missing-budget. The WP3-A draft's rule
-    #    ("has_requests = any nonzero total across the whole manifest") was
+    #    template must still refuse missing-budget. A rule like
+    #    ("has_requests = any nonzero total across the whole manifest") is
     #    blind to this — the budgeted container's nonzero sum masked the
     #    bare one entirely. ──────────────────────────────────────────────
     - name: "(d) R2a-6a fail-closed — one budgeted + one bare container (codex's exact repro)"
@@ -788,9 +787,8 @@
           - (('x' * 63) | l3_valid_label_value)
         fail_msg: "(k) label validation FAIL — an illegal shape was accepted, or a legal boundary case was rejected"
 
-    # ── Gate (l): R2a-5 — by-ID classification, and the upstream
-    #    name-vs-tag snapshot-query regression (codex's own counterexample:
-    #    a pre-existing record missing app:<key> at snapshot time must
+    # ── Gate (l): by-ID classification, and the upstream
+    #    name-vs-tag snapshot-query regression (a pre-existing record missing app:<key> at snapshot time must
     #    NEVER be classified run-created). ──────────────────────────────
     - name: "(l) by-id classification — delete-then-recreate under the SAME name must be classified run-created, not restore"
       ansible.builtin.set_fact:
@@ -907,7 +905,7 @@
           - (_gate_o_owned_by_other | l3_lock_release_decision('attempt-1')).reason == 'owned-by-a-different-attempt'
         fail_msg: "(o) lock-release decision FAIL (owned-by-a-different-attempt) — must never permit deleting a lock this attempt doesn't own"
 
-    # ── Gate (p): R3a-2 type coercion — codex's exact repro: an AWX-
+    # ── Gate (p): type coercion — an AWX-
     #    injected INTEGER job id must render as a STRING in the manifest.
     #    Simulated with a genuine Jinja-native int (not a string literal
     #    that merely LOOKS like a number) to reproduce the whole-template
@@ -962,12 +960,12 @@
           - "'42' | l3_valid_label_value"
         fail_msg: "(p) type gate FAIL — a coerced numeric string must still be a legal label value"
 
-    # ── Gate (q): REMOVED (R4a/P1-6) — l3_snapshot_collision_resumable and
+    # ── Gate (q): REMOVED — l3_snapshot_collision_resumable and
     #    its "resumable retry" classification are gone entirely. Every
     #    snapshot-CREATE 409 is now a fail-closed collision, full stop; see
     #    snapshot.yml's own header comment and _snapshot_create_one_attempt.yml
     #    for the control-flow-level replacement (a task-file execution test,
-    #    not a pure-filter one — codex round-3's own point that a pure-filter
+    #    not a pure-filter one — a pure-filter
     #    gate proves nothing about task-file behavior).
 
     # ── Gate (q2): R4a/P1-10 — l3_filter_owned_custom_fields keeps only
@@ -1059,7 +1057,7 @@
           (never in the snapshot) gets finalised+deleted — both from the
           same by-id comparison, never conflated by name.
 
-    # ── Gate (s): R3a-7 EXACT owned-tag-set equality — codex's exact repro:
+    # ── Gate (s): EXACT owned-tag-set equality:
     #    desired={lifecycle:bootstrapped}, readback carries a STALE extra
     #    owned tag (monitoring:probe) -> dirty (the old subset-only check
     #    said clean). ─────────────────────────────────────────────────────
@@ -1259,7 +1257,7 @@
           - (_gate_u_reserved_names | intersect(_gate_u_one_supplied_keys)) | length > 0
         fail_msg: "(u) reserved-var pattern FAIL — the 11-name violation-detection pattern itself is broken"
 
-    # ── Gate (v): R6a-1 (codex round-5) — l3_set_flag_argv/l3_flatten_set_values/
+    # ── Gate (v): R6a-1 — l3_set_flag_argv/l3_flatten_set_values/
     #    l3_set_values_dicts are the three pure transforms the launch
     #    playbooks' single-source l3_chart_set_values now feeds BOTH
     #    capacity.yml's helm-template render (via l3_set_flag_argv) AND the

@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3 R5a (codex round-4 P1-2) — authority-bearing constants
+# Authority-bearing constants
 # must equal their FROZEN, hardcoded-literal expected values at entry, on
 # every path that acquires the facility lock (launch, teardown, rollback).
 #
@@ -10,8 +10,8 @@
 # "is not defined" blocklist mechanism does not apply to them at all; a
 # caller can legitimately set them via extra_vars, and Ansible has no
 # built-in notion of "this variable, once given its role default, may never
-# be overridden again." Codex round-4 demonstrated the consequences
-# directly: `l3_lock_configmap_name=<new>` silently partitions the single
+# be overridden again." The consequences are direct:
+# `l3_lock_configmap_name=<new>` silently partitions the single
 # shared facility into a PRIVATE lock (every OTHER run's lock checks become
 # meaningless — they're all checking a different object); `l3_lock_ttl_seconds=0`
 # makes ANY positive-age live holder immediately TTL-expired and reclaimable

@@ -1,5 +1,5 @@
 ---
-# umbrella #306 (design round #2, frozen 2026-07-30) — called ONLY when
+# umbrella #306 (frozen 2026-07-30) — called ONLY when
 # switch_verify_upgrade.yml's PHASE 2 poll never reached
 # _switch_upgrade_verify_ready within its budget. Issues `helm rollback`
 # WITHOUT --wait (helm's own wait verdict is never trusted again after job

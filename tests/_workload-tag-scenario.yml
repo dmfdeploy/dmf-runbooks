@@ -7,7 +7,7 @@
 # _extra_owned_prefixes is passed as an include-scoped `vars:` on the merge
 # include_role call (mirroring the real provision.yml wiring), NEVER as a
 # set_fact — see merge_owned_tags.yml's header and the sequencing scenario
-# below for why (fix-round P1, codex GATE-239RB).
+# below for why.
 
 # ── A run WITH workload_slug set: single-workload-wins ─────────────────────
 - name: "[workload-tag] provision — merge with workload_slug set (single-workload-wins)"
@@ -90,7 +90,7 @@
       workload:old-slug must be preserved untouched (bit-identical to
       pre-#239 behaviour). Got: {{ _wl_noop_names }}
 
-# ── Sequencing regression (fix-round P1, codex GATE-239RB, live-reproduced):
+# ── Sequencing regression (live-reproduced):
 #    every launch-*.yml chains provision -> configure in the SAME localhost
 #    play. Calls the REAL ensure_workload_tag.yml (network calls skipped via
 #    the test-only flag — see that file's header) for the provision step, so
@@ -98,7 +98,7 @@
 #    _extra_owned_prefixes were ever reintroduced as a set_fact anywhere in
 #    that chain, it would persist as a host fact and silently contaminate
 #    the configure-merge call below, which never asks for "workload:" to be
-#    owned — exactly the bug codex reproduced (workload:* stripped right
+#    owned — the bug reproduced live (workload:* stripped right
 #    after provision stamped it). ──
 - name: "[workload-tag] sequencing — provision step: real ensure_workload_tag (network calls skipped)"
   ansible.builtin.include_role:
@@ -170,7 +170,7 @@
       leaking as a persistent fact across include_role calls instead of
       being include-scoped via vars:. Got: {{ _seq_conf_names }}
 
-# ── fix-round P2 (contract parity): the slug-guard regex must use \A...\Z,
+# ── Contract parity: the slug-guard regex must use \A...\Z,
 #    not ^...$ — Python's $ matches just before a trailing newline, so a
 #    naive ^...$ pattern lets "studio-a\n" through (the identical flaw the
 #    dmf-cms side fixed). Pins the exact pattern ensure_workload_tag.yml's

@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3 R2a-9 — structural preconditions, BEFORE lock
+# Structural preconditions, BEFORE lock
 # acquisition. Multi-node facility shape, target-namespace reachability,
 # and the cluster-wide pod-list RBAC probe are ENVIRONMENT preconditions,
 # not per-run capacity/lock decisions — there's no reason to hold the
@@ -43,7 +43,7 @@
     api_version: v1
     kind: Pod
   register: _l3_all_pods
-  # R3a-1 (codex round-2 P1-1): the WP3-A draft used `failed_when` here —
+  # The WP3-A draft used `failed_when` here —
   # a documented Ansible gotcha: `failed_when` OVERWRITES the registered
   # result's own `.failed` field with the failed_when expression's outcome,
   # it does not merely gate whether the TASK aborts. So a genuine Forbidden

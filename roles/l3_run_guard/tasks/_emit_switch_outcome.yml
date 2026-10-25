@@ -9,8 +9,8 @@
 # what made a stdout-tail contract unreliable for dmf-l3-outcome in the
 # first place; the same reasoning applies here unchanged).
 #
-# WHY A SEPARATE MARKER, NOT DMF_L3_OUTCOME (umbrella #306 design round
-# #2/#323, frozen 2026-07-30 -> 2026-07-31): DMF_L3_OUTCOME's vocabulary
+# WHY A SEPARATE MARKER, NOT DMF_L3_OUTCOME (umbrella #306/#323,
+# frozen 2026-07-30 -> 2026-07-31): DMF_L3_OUTCOME's vocabulary
 # (preflight-error, post-mutation-failed, facility-busy, ...) is launch/
 # teardown/rollback's own snapshot-based OperationState model —
 # l3_snapshot_created, l3_mutation_started, the dmf-run-<id> ConfigMap
@@ -46,8 +46,8 @@
 # this include's own task-level vars: and let an attacker choose an
 # arbitrary marker/detail regardless of the real outcome.
 #
-# umbrella #323 fix round (codex adversarial gate, P1): that reservation
-# alone was NOT sufficient, because the reserved-var refusal raises into
+# Umbrella #323: that reservation
+# alone is NOT sufficient, because the reserved-var refusal raises into
 # switch-mxl-fabrics-demo.yml's own outer rescue — and that rescue's
 # catch-all is itself a caller of THIS file, rendering the very
 # token/kv the caller had just shadowed. The switch play now runs

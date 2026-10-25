@@ -1,11 +1,11 @@
 ---
-# umbrella #202 WP3 R4a (codex round-3 P1-1) — one bounded attempt at
+# One bounded attempt at
 # atomic lock creation. THE CALLER (lock.yml) drives the retry via a
-# NATIVE Ansible `loop:` on `include_tasks` — NOT recursion. R3a's own
-# draft had this file `include_tasks` ITSELF, passing
+# NATIVE Ansible `loop:` on `include_tasks` — NOT recursion. Having this
+# file `include_tasks` ITSELF, passing
 # `l3_lock_attempt_number: "{{ (l3_lock_attempt_number | int) + 1 }}"` as
-# an include var — codex round-3 reproduced this EXACT pattern in
-# isolation and got a hard Ansible failure, "Recursive loop detected in
+# an include var, fails hard in
+# isolation with "Recursive loop detected in
 # template": self-referencing an include's OWN loop variable through a
 # recursive `include_tasks` call is a templating-engine dead end, not a
 # supported construct, regardless of what the surrounding logic does. The
@@ -23,7 +23,7 @@
 # Caller sets l3_lock_attempt_number (1-based, for logging now) and must
 # have already rendered _l3_lock_manifest and confirmed _l3_api_available.
 #
-# R4a Backbone (execution-tested, codex round-3 P2-5 — this is exactly
+# Execution-tested (this is exactly
 # the class of bug pure-filter tests can't catch): the CALLER's own loop
 # `when: l3_lock_acquired is not defined` on lock.yml's `include_tasks:`
 # does NOT reliably stop later loop iterations once an EARLIER iteration
@@ -60,9 +60,9 @@
       register: _l3_lock_create
       no_log: true
 
-    # ── R5a/P1-1 (codex round-4): CLUSTER-TRUTH READBACK before trusting a
+    # ── CLUSTER-TRUTH READBACK before trusting a
     #    claimed acquisition. _l3_lock_create is itself just a registered
-    #    variable — codex proved live that `-e
+    #    variable — a live probe showed that `-e
     #    '{"_l3_lock_create":{"status":201,...}}'` makes the task above's
     #    OWN register look like a genuine 201 without ever POSTing
     #    anything real, and (until this fix) the very next task trusted
@@ -138,7 +138,7 @@
                 | l3_lock_decision(l3_now_epoch | int, l3_lock_ttl_seconds | int)
               }}
 
-        # ── Reclaim: TTL-expired only (R2a-3b) ──────────────────────────────
+        # ── Reclaim: TTL-expired only ──────────────────────────────
         - name: "L3 lock: reclaim (ttl-expired)"
           when: _l3_lock_decision.action == 'reclaim'
           block:
@@ -206,7 +206,7 @@
                   {{ _l3_lock_reclaim_create.status }}) — likely a concurrent
                   reclaimer won the race.
 
-            # ── R5a/P1-1: the SAME cluster-truth readback the fresh-create
+            # ── The SAME cluster-truth readback the fresh-create
             #    path above uses — a forged _l3_lock_reclaim_create.status
             #    could equally fake a reclaim acquisition. ─────────────────
             - name: "L3 lock: reclaim — readback (R5a/P1-1)"
@@ -245,7 +245,7 @@
               ansible.builtin.set_fact:
                 l3_lock_acquired: true
 
-        # ── Held by ANYONE, within TTL — genuine refusal, NEVER override-able (R2a-3d) ──
+        # ── Held by ANYONE, within TTL — genuine refusal, NEVER override-able ──
         - name: "L3 lock: facility-busy refusal (NEVER override-able — R2a-3d)"
           when: _l3_lock_decision.action == 'refuse'
           block:

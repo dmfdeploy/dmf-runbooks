@@ -8,8 +8,8 @@
 #                    into a service create/PATCH tags list. Harmless to leave
 #                    as a persistent fact — no downstream stage reads it.
 #
-# _extra_owned_prefixes is DELIBERATELY NOT exposed here (fix-round P1,
-# codex GATE-239RB, live-reproduced): it must be passed as an include-scoped
+# _extra_owned_prefixes is DELIBERATELY NOT exposed here (live-reproduced):
+# it must be passed as an include-scoped
 # `vars:` on the merge_owned_tags include_role call in provision.yml,
 # computed fresh from workload_slug right there — NEVER as a set_fact.
 # Ansible facts persist for the rest of the play, and every launch-*.yml
@@ -38,8 +38,8 @@
   ansible.builtin.assert:
     that:
       # \A...\Z (not ^...$): Python's $ matches just before a trailing
-      # newline, so "studio-a\n" would otherwise pass (fix-round P2, matches
-      # the identical fix on the dmf-cms side). \A/\Z anchor the whole
+      # newline, so "studio-a\n" would otherwise pass (matches
+      # the identical check on the dmf-cms side). \A/\Z anchor the whole
       # string with no such exception.
       - workload_slug is match('\A[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?\Z')
     fail_msg: >-
@@ -65,9 +65,9 @@
     - workload_slug is defined and workload_slug | length > 0
     - not (_workload_tag_test_skip_netbox_calls | default(false))
 
-# fix-round P2 (real race): GET-empty -> POST is not concurrency-safe across
+# Real race: GET-empty -> POST is not concurrency-safe across
 # two simultaneous catalog-launcher runs racing to create the same brand-new
-# workload:<slug> tag — the loser's POST used to hard-fail on status_code
+# workload:<slug> tag — the loser's POST would hard-fail on status_code
 # [201]. Accept [201, 400] here; the next two tasks disambiguate a genuine
 # duplicate-create race (fine, continue) from a real failure (fail loud).
 - name: "Create NetBox tag if absent: workload:{{ workload_slug | default('') }}"
