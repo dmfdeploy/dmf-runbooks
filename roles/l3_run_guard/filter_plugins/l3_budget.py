@@ -1,5 +1,5 @@
 """umbrella #202 WP3 — launcher-tier authoritative capacity/lock/snapshot/
-rollback logic (WP3-A/WP3-B, revised by codex round-1 R2a).
+rollback logic (WP3-A/WP3-B, revised as R2a).
 
 Pure functions only (mirrors roles/netbox_catalog_common/filter_plugins/netbox_tags.py):
 offline-unit-testable via tests/l3-budget-logic.yml, no live cluster required.
@@ -73,8 +73,8 @@ def l3_valid_label_value(value) -> bool:
 
     A slash ('/') is illegal in a label value (it's reserved for the
     KEY's optional prefix/name separator) — this is exactly the bug a
-    combined "<catalog_key>/<release>" single-label value hit (codex
-    round-1 P1-1): split into two separate labels instead, each of which
+    combined "<catalog_key>/<release>" single-label value hit:
+    split into two separate labels instead, each of which
     must independently pass this check. Used both as an offline proof
     (tests/l3-budget-logic.yml gate (k) — every label value this role
     writes, fixtured against this validator) and as the shared source of
@@ -135,7 +135,7 @@ def l3_pod_demand(pod: dict) -> dict:
     (upstream ``k8s.io/kubernetes/pkg/api/v1/resource.PodRequests``), not
     the WP3-A draft's "sequential-max vs concurrent-sum" approximation
     (which silently UNDER-counted whenever a sequential init container
-    followed a restartable sidecar — codex's exact repro: sidecar 200m
+    followed a restartable sidecar — exact repro: sidecar 200m
     THEN sequential 900m, app 100m must total 1100m; the WP3-A draft
     returned 900m, dropping the sidecar's concurrent cost entirely).
 
@@ -152,7 +152,7 @@ def l3_pod_demand(pod: dict) -> dict:
                           max_i InitContainerUse(i)) + overhead
 
     This is ORDER-SENSITIVE by construction — the exact discriminating
-    property codex's fixture proves (sidecar-before-sequential yields a
+    property the fixture proves (sidecar-before-sequential yields a
     different total than sequential-before-sidecar for the identical
     request values, since only inits BEFORE a given index contribute to
     that index's running prefix).
@@ -278,10 +278,10 @@ def _replica_count(obj: dict, kind: str):
     treats ``None`` the SAME as a missing per-container request: fail
     closed (``all_budgeted=False``), never silently defaulting to 1.
 
-    R4a (codex round-3 P2-1): the R2a/R3a draft's ``max(1, replicas)``
+    R4a: the R2a/R3a draft's ``max(1, replicas)``
     (PLUS an ``or 1`` that ALSO turned a genuine ``replicas: 0`` into 1)
     floored every Deployment/StatefulSet demand at "at least one pod's
-    worth", even for a deliberately zero-scaled workload — codex's exact
+    worth", even for a deliberately zero-scaled workload — exact
     repro: a direct probe charged 100m/64Mi to a Deployment with
     ``replicas: 0``. Job/CronJob were hardcoded to 1 pod regardless of
     ``spec.parallelism`` (Job) / ``spec.jobTemplate.spec.parallelism``
@@ -330,12 +330,12 @@ def l3_render_demand(manifests: list) -> dict:
     pod-template-bearing object AND EVERY container (app + init) in EVERY
     rendered pod template has BOTH cpu and memory requests present — one
     fully-budgeted container next to one bare container still refuses
-    missing-budget (codex's exact repro fixture: two containers, one
+    missing-budget (exact repro fixture: two containers, one
     budgeted, one bare — the WP3-A draft's "any nonzero total" rule missed
     this entirely since the budgeted container's nonzero sum masked the
     bare one).
 
-    R4a (codex round-3 P2-1): the SAME fail-closed posture now also
+    R4a: the SAME fail-closed posture now also
     covers replica/parallelism accounting — a workload whose
     ``_replica_count`` returns ``None`` (an unparseable or negative
     replicas/parallelism value; see that function's own docstring) marks
@@ -492,7 +492,7 @@ def l3_lock_decision(existing_lock, now_epoch, ttl_seconds) -> dict:
     """Facility-lock decision given an existing lock's ConfigMap ``data``
     (or ``None``/``{}`` if absent — those are equivalent to "no lock").
 
-    R2a-3b (codex round-1 P1-3, final disposition): NO within-TTL reclaim
+    R2a-3b (final disposition): NO within-TTL reclaim
     EVER, not even by the SAME run_id. This DROPS the WP3-A/A2
     same-run-residue reclaim carve-out entirely — two attempts of the same
     run are still two DIFFERENT attempt_ids (R2a-3a: attempt_id is now a
@@ -784,7 +784,7 @@ def l3_flatten_releases_to_remove(releases_to_remove: dict) -> list:
 
 
 def l3_helm_content_identity(helm_surface: dict, values_results: list) -> dict:
-    """R3a-8 (codex round-2 P1-8): attach a CONTENT-IDENTITY fingerprint —
+    """R3a-8: attach a CONTENT-IDENTITY fingerprint —
     ``values_hash`` — to each release in a helm surface (``{"mxl":[...],
     "nmos":[...]}``, the shape both snapshot.yml and
     rollback_helm_surface.yml build). Combined with the ``chart`` (already
@@ -803,7 +803,7 @@ def l3_helm_content_identity(helm_surface: dict, values_results: list) -> dict:
     back onto the surface by ``(namespace, name)``. A missing/failed
     result yields ``values_hash: None`` for that release.
 
-    R4a (codex round-3 P1-8): also attaches ``values_fetch_failed``
+    R4a: also attaches ``values_fetch_failed``
     (``True``/``False``) per release, DISTINCT from ``values_hash`` being
     ``None``. The R3a-8 draft only ever set ``values_hash: None`` on a
     failed fetch and relied on every DOWNSTREAM comparison to treat
@@ -811,7 +811,7 @@ def l3_helm_content_identity(helm_surface: dict, values_results: list) -> dict:
     Python, so TWO INDEPENDENTLY-failed values fetches (e.g. the snapshot
     capture's own fetch failed for a release, AND the later readback's
     fetch also failed for the same release) compared equal and reported
-    clean, a false-negative codex reproduced directly. Every caller must
+    clean, a false-negative reproduced directly. Every caller must
     now check ``values_fetch_failed`` explicitly wherever it treats
     ``values_hash`` as authoritative — a fetch failure is never "no
     change", it's "unknown", and unknown must never read as clean.
@@ -865,7 +865,7 @@ def l3_helm_content_restores(pre_run_helm_surface: dict, current_helm_surface: d
     content-identity fields the READBACK step (``l3_helm_readback_dirty``)
     verifies against.
 
-    R4a (codex round-3 P1-8): a ``values_fetch_failed`` flag on EITHER
+    R4a: a ``values_fetch_failed`` flag on EITHER
     side unconditionally forces this release into the restore-target
     list — a failed fetch means content identity is UNKNOWN, not
     "unchanged", so it must never be silently skipped. ``pre`` carrying
@@ -925,7 +925,7 @@ def l3_helm_readback_dirty(
         recorded for it — compared DIRECTLY against the snapshot's own
         fields, not scoped to a separately-computed restore-target list.
 
-    R4a (codex round-3 P1-8, second finding): the R3a-8 draft only
+    R4a (second case): the R3a-8 draft only
     content-compared releases already in a caller-supplied
     ``content_restores`` list (``l3_helm_content_restores``'s output —
     releases whose content had ALREADY diverged at CLASSIFICATION time,
@@ -976,7 +976,7 @@ def l3_helm_readback_dirty(
 
 def l3_netbox_records_to_restore_or_delete(pre_run_netbox_surface: list, current_netbox_records: list) -> dict:
     """Classify NOW-current NetBox records against the pre-run snapshot
-    (§4.2), by RECORD ID (R2a-5 — codex round-1 P1-5), never by name alone.
+    (§4.2), by RECORD ID (R2a-5), never by name alone.
 
     A current record whose ``id`` was ALREADY in the pre-run snapshot
     pre-existed this run — restore it to exactly what the snapshot
@@ -1013,7 +1013,7 @@ def l3_netbox_records_to_restore_or_delete(pre_run_netbox_surface: list, current
     custom_fields) — the snapshot flow now captures WITH id (R2a-5), so
     both sides of this comparison carry it.
 
-    R3a-7 (codex round-2 P1-7): iterates the SNAPSHOT's OWN ids, not just
+    R3a-7: iterates the SNAPSHOT's OWN ids, not just
     CURRENT records — the R2a-5 draft only ever walked
     ``current_netbox_records``, so a snapshotted id that's ABSENT from
     current entirely (deleted by something else during the run, with
@@ -1092,7 +1092,7 @@ def l3_filter_owned_tags(tag_names: list, owned_namespace: list) -> list:
 
 
 def l3_filter_owned_custom_fields(custom_fields: dict, owned_field_names: list) -> dict:
-    """R4a (codex round-3 P1-10): filter a custom_fields dict down to just
+    """R4a: filter a custom_fields dict down to just
     the L3-OWNED monitoring key subset (the same key set
     ``l3_netbox_monitoring_custom_fields_clear`` names — probe_module,
     probe_path, cluster_service, cluster_namespace, cluster_port). Used
@@ -1149,10 +1149,10 @@ def l3_netbox_restore_dirty(
     snapshot's custom_fields actually landed, via a fresh GET taken after
     the restore PATCH.
 
-    R3a-7 (codex round-2 P1-7): EXACT owned-tag-set equality, not
+    R3a-7: EXACT owned-tag-set equality, not
     subset-only. The R2a-7 draft only checked that every DESIRED owned tag
     was PRESENT in the readback — it never checked for a STALE owned tag
-    that shouldn't be there anymore (codex's exact repro: desired=
+    that shouldn't be there anymore (exact repro: desired=
     {lifecycle:bootstrapped}, readback carries
     {lifecycle:bootstrapped, monitoring:probe} — the old subset check said
     clean despite the stale monitoring:probe tag still lingering). This
@@ -1201,7 +1201,7 @@ def l3_netbox_delete_dirty(readback_status_code, read_failed: bool) -> bool:
 def l3_rollback_outcome(helm_dirty: bool, netbox_dirty: bool) -> dict:
     """Aggregate per-surface rollback outcomes into the terminal verdict.
 
-    R2a-7 (§4.6-honest amendment, codex round-1 P1-7 final disposition):
+    R2a-7 (§4.6-honest amendment, final disposition):
     monitoring drain is STRUCTURALLY UNVERIFIABLE from the launcher EE — no
     live PromSD read exists anywhere in this tier (see snapshot.yml's own
     monitoring-surface header comment; this was already true in WP3-A/B,

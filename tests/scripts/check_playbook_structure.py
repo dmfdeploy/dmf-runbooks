@@ -558,7 +558,7 @@ def _check_switch_outcome_marker() -> list[str]:
 
       1. BOTH sanctioned emission files exist under roles/l3_run_guard/
          tasks/ — _emit_switch_outcome.yml (the generic, caller-parameterised
-         one) and _emit_switch_refused_literal.yml (the fix round's
+         one) and _emit_switch_refused_literal.yml (the
          hard-coded one) — and each contains EXACTLY ONE task, an
          ansible.builtin.debug task whose `name:` is LITERALLY
          'dmf-l3-switch-outcome': the console reads AWX job events filtered
@@ -574,7 +574,7 @@ def _check_switch_outcome_marker() -> list[str]:
          somewhere in its play) — a structural floor only; it does NOT prove
          every terminal branch fires it with the correct enum, that is
          tests/l3-switch-execution.yml's own execution-test job.
-      4. (fix round, codex gate P1) the LITERAL emitter is genuinely
+      4. the LITERAL emitter is genuinely
          literal: its msg contains no '{{' at all and is exactly the
          expected refused/detail=reserved-var string. This is the whole
          reason that file is trustworthy — extra_vars outrank task vars,
@@ -582,7 +582,7 @@ def _check_switch_outcome_marker() -> list[str]:
          that must emit while those names may be shadowed is forgeable.
          The moment someone "tidies" a variable back into it, the P1 hole
          reopens silently; this check is what makes that impossible to land.
-      5. (fix round, codex gate P1) switch_outcome_guard.yml still asserts
+      5. switch_outcome_guard.yml still asserts
          EVERY outcome-decision variable is undefined. Dropping a name from
          that list is the other silent way to reopen the hole.
 
