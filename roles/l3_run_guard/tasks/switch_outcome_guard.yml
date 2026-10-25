@@ -1,5 +1,5 @@
 ---
-# umbrella #323 fix round (codex adversarial gate, P1) — the switch play's
+# The switch play's
 # VERY FIRST task, ahead of switch_lock and ahead of the outer
 # block/rescue/always entirely.
 #
@@ -15,8 +15,8 @@
 # -> identity.yml, so its refusal raises, lands in the switch play's own
 # outer rescue, and that rescue's catch-all is the thing that reads the
 # shadowed names — the violation path runs THROUGH the shadowed variables.
-# Codex's gate found the two concrete exits (both reproduced empirically
-# for this fix round, see _emit_switch_refused_literal.yml's own header for
+# There are two concrete exits (both reproduced empirically,
+# see _emit_switch_refused_literal.yml's own header for
 # the reproduction):
 #   (a) -e _switch_outcome_emitted=true  -> the catch-all is SKIPPED; the
 #       run exits terminally with NO structured event at all.

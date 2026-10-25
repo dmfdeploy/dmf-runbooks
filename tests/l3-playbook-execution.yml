@@ -1,10 +1,10 @@
 ---
-# umbrella #202 WP3 R5a-6 (codex round-4 P2-3) — REAL-playbook stubbed
-# execution tests. tests/l3-control-flow.yml (R4a-R5a) proves the
+# REAL-playbook stubbed
+# execution tests. tests/l3-control-flow.yml proves the
 # task-file/control-flow layer against a FIXTURE that REPLICATES the real
 # playbooks' block/rescue/always shape — it never runs, or even looks at,
 # the actual 7 playbooks under playbooks/. This suite closes exactly that
-# gap (codex round-4's P2-3 finding): it runs each REAL, unmodified
+# gap: it runs each REAL, unmodified
 # playbooks/*.yml file, as a real `ansible-playbook` subprocess, against
 # the test harness stubs, with a fault injected at the shared `post-lock`
 # boundary (roles/l3_run_guard/tasks/lock.yml's own fault_inject.yml
@@ -865,7 +865,7 @@
           failed_when: false
 
     # ════════════════════════════════════════════════════════════════════
-    # Scenario 8 (R6a-2a, codex round-5): launch-nmos-cpp.yml SUCCESS-PATH
+    # Scenario 8: launch-nmos-cpp.yml SUCCESS-PATH
     # gate-return probe. Every scenario above injects its fault at
     # post-lock — INSIDE the gate role's own main.yml, before the role's
     # `include_role` task in the CALLING PLAYBOOK ever completes and
@@ -889,7 +889,7 @@
     # mutation as STARTED" task has already run.
     #
     # Discriminator: gate_rescue.yml classifies purely on whether
-    # l3_mutation_started was ever set (R4a Backbone) — marker token
+    # l3_mutation_started was ever set — marker token
     # preflight-error (pre-mutation) vs post-mutation-failed (post-
     # mutation; gate_rescue.yml:123). Against the OLD broken assert, the
     # "mark mutation as STARTED" set_fact task is UNREACHABLE (the assert
@@ -1047,14 +1047,13 @@
           failed_when: false
 
     # ════════════════════════════════════════════════════════════════════
-    # Scenario 9 (R6a-2b, codex round-5 P2-1): launch-nmos-crosspoint.yml
+    # Scenario 9: launch-nmos-crosspoint.yml
     # with the admin secret ACTUALLY ABSENT — no
     # vault_nmos_crosspoint_admin_password extra_var supplied at all (the
     # EXISTING crosspoint scenario, #2 above, always supplies a real fake
-    # password and injects its fault at post-lock, before the R5a-3
-    # in-block credential assert is ever reached — codex's exact P2-1
-    # finding: the "missing secret" scenario the round claimed to have was
-    # never actually exercising a missing secret). This one supplies
+    # password and injects its fault at post-lock, before the
+    # in-block credential assert is ever reached, so it never
+    # exercises a missing secret). This one supplies
     # l3_override (same reason as scenario 8 — reach the gate's own
     # return) and NO password at all, so crosspoint_admin_password
     # resolves to '' via its own `| default('', true)`, and the R5a-3
@@ -1400,7 +1399,7 @@
           failed_when: false
 
     # ════════════════════════════════════════════════════════════════════
-    # Scenario 11 (R6b, codex round-6, umbrella #267): mxl NetBox-identity
+    # Scenario 11: mxl NetBox-identity
     # no-divergence probe — the NetBox-axis twin of scenario 10's helm-
     # axis probe. R6b's single-source fix (roles/mxl/defaults/main.yml)
     # made netbox_service_name/the app:<> tag/the monitoring

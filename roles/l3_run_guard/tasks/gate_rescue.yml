@@ -1,21 +1,21 @@
 ---
-# umbrella #202 WP3 R4a Backbone (codex round-3 P1-3/P1-11) — the SHARED
+# The SHARED
 # rescue: entry for BOTH launch AND teardown playbooks (rollback keeps
 # its own bespoke rescue inline in rollback.yml — see that file's header
 # for why: rollback's failure model is genuinely different, always
 # rollback_incomplete rather than this two-token pre/post-mutation
-# model, and it already carries its own P1-7 fix).
+# model, and it already guards against a duplicate marker).
 #
 # Generalizes the former launch_rescue.yml (now folded into this file;
-# teardown never had an equivalent rescue at all — finding 11's "the
-# gate-wide rescue must emit an honest pre-mutation outcome for all
+# teardown never had an equivalent rescue at all — the gate-wide rescue
+# must emit an honest pre-mutation outcome for all
 # failures before l3_mutation_started, not only hand-written refusal
-# branches" applies to BOTH flows identically, so one shared file).
+# branches, for BOTH flows identically, so one shared file).
 #
-# R4a Backbone (P1-3): finding 3 established that main.yml's own stages
-# (identity through capacity/supersede) used to run OUTSIDE any block of
+# main.yml's own stages
+# (identity through capacity/supersede) would run OUTSIDE any block of
 # the CALLING playbook — an exception there (a raw K8s API hiccup, not a
-# deliberate refusal) had nothing to catch it and leaked the lock to TTL.
+# deliberate refusal) would have nothing to catch it and leak the lock to TTL.
 # Every launch-*.yml / teardown-*.yml playbook now wraps its ENTIRE
 # post-identity lifecycle (gate include through the caller's own
 # provision/install/finalise through the success include) in ONE outer
@@ -29,10 +29,10 @@
 #      snapshot-collision/-race, helm-values-fetch-failed, reserved-var;
 #      or lock_checkpoint.yml's own fenced-out post-mutation-failed) has
 #      ALREADY emitted its own honest marker. Just re-raise — emitting a
-#      SECOND marker here would be exactly finding 7's class of bug
+#      SECOND marker here would be a bug
 #      (dmf-cms selects the LAST event; a second marker hides the real
-#      one) generalized beyond just rollback's no-snapshot/stale-snapshot
-#      case.
+#      one), the same one rollback's no-snapshot/stale-snapshot
+#      case would hit.
 #
 #   B) l3_mutation_started is true (and no hand-written marker fired) —
 #      a REAL post-mutation failure: the caller's own provision/install/
@@ -42,7 +42,7 @@
 #
 #   C) neither sentinel set — an UNEXPECTED failure BEFORE l3_mutation_
 #      started was ever set and before any hand-written refusal branch
-#      ran (finding 11's exact gap: e.g. a raw K8s/NetBox API exception
+#      ran (e.g. a raw K8s/NetBox API exception
 #      inside preflight.yml/snapshot.yml/capacity.yml that ISN'T one of
 #      their own deliberate asserts). Snapshot -> superseded (moot,
 #      nothing was mutated — only when this attempt owns it), marker

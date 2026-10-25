@@ -7,7 +7,7 @@
 # Constitution Art. 1: absence is established only by refreshed source
 # reads, "call-success never equals clean").
 #
-# umbrella #347 fix round FIX-A2b.1 (P2-1, codex GATE-A2b.1) — the services
+# The services
 # re-fetch is now PAGINATED (paginate_services.yml, bounded at 100 pages)
 # instead of trusting a single ?limit=500 page — a global dmf-catalog query,
 # not scoped to this workload, so residue for THIS workload could otherwise

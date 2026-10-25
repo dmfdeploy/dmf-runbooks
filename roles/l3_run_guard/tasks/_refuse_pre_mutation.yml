@@ -19,7 +19,7 @@
 #   l3_refusal_fail_msg  — required, the message this file's own
 #                          ansible.builtin.fail raises after cleanup
 #
-# R4a Backbone (codex round-3 P1-3/P1-11): sets l3_pre_mutation_marker_
+# Sets l3_pre_mutation_marker_
 # emitted BEFORE emitting, so the caller's outer gate_rescue.yml (now
 # that every hand-written refusal in this role bubbles into a REAL outer
 # rescue: for the first time) can tell "this refusal already emitted its
@@ -27,7 +27,7 @@
 # never went through here at all" — and just re-raise in the former case,
 # instead of emitting a SECOND, redundant (or wrong) marker on top.
 #
-# R5a (codex round-4 P1-4): the superseded patch below can itself be a
+# The superseded patch below can itself be a
 # TERMINAL mutation of the snapshot's own lifecycle state — this file can
 # be reached well after a slow capacity/read-only stage (e.g. a chart pull
 # + template render can take real wall-clock time), long enough for THIS

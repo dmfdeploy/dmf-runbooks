@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3 R5a-6 (codex round-4 P2-3) — static structural
+# Static structural
 # meta-test. Thin ansible-playbook wrapper around
 # tests/scripts/check_playbook_structure.py (kept as a standalone Python
 # script, not embedded Ansible/Jinja, for the same reason

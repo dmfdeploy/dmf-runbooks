@@ -1,6 +1,5 @@
 ---
-# umbrella #202 WP3 R2c-runbooks (codex round-1 P1-10, other half of the
-# dmf-infra fix) — shared structural precondition: the scoped NetBox
+# Shared structural precondition: the scoped NetBox
 # catalog-writer token (ADR-0032) must be present before ANY flow that
 # will touch NetBox proceeds. Launch's own snapshot.yml always queries
 # NetBox (every launch); rollback's own rollback_netbox_surface.yml always
@@ -16,12 +15,12 @@
 # rather than a silent credential upgrade to broader access than ADR-0032
 # intends a launcher/rollback run to ever carry.
 #
-# ADR-0032 Amendment 3 (lkirc review, dmf-runbooks#41): the message below
+# ADR-0032 Amendment 3: the message below
 # used to hard-code "vault_netbox_catalog_token" — accurate for every
 # caller EXCEPT finalise-purge.yml, which (since Amendment 3) maps
 # netbox_api_token from vault_netbox_purge_token instead, on its own
 # delete-only identity. Pointing a finalise-purge operator at the WRONG
-# var name doesn't just misinform; lkirc's own finding is that it can
+# var name doesn't just misinform; it can
 # nudge a stuck operator toward a direct `-e netbox_api_token=...`
 # workaround instead, which — being an extra_var — silently outranks
 # every play/role-level mapping and defeats the delete-only isolation
@@ -36,7 +35,7 @@
 # playbook-owned display config — same category as netbox_api_token
 # itself, l3_release, l3_chart_ref, etc.).
 #
-# codex review (dmf-runbooks#41): the "message-only" claim above holds for
+# The "message-only" claim above holds for
 # the RENDERED text, but not, without the ignore_errors below, for whether
 # this task can COMPLETE at all — Ansible re-templates a variable's own
 # string content wherever it's interpolated, so an operator-supplied

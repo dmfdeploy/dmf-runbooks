@@ -1,16 +1,15 @@
 ---
-# umbrella #202 WP3 R4a Backbone (codex round-3 P2-5), hardened R5a (codex
-# round-4 P2-1) — TEST-ONLY fault injection point. Included at each stage
+# umbrella #202 WP3 — TEST-ONLY fault injection point. Included at each stage
 # boundary listed below with `vars: l3_fault_inject_boundary: <name>`.
 #
-# R5a/P2-1: codex round-4 found that `l3_fault_inject` (a plain extra_var,
-# deliberately NOT reserved — see below) shipped LIVE on every production
+# `l3_fault_inject` (a plain extra_var,
+# deliberately NOT reserved — see below) would otherwise be LIVE on every production
 # launch/teardown path: every catalog job template accepts launch
 # extra_vars, so `-e l3_fault_inject=post-first-mutation` on a REAL AWX
 # dispatch could deliberately leave a live run dirty and trigger an
 # unwanted rollback — a test hook must never be a production wire
-# contract, even inside the trusted-AWX-caller boundary. Fixed: BOTH
-# actions below (raise, swap_holder) now ALSO require
+# contract, even inside the trusted-AWX-caller boundary. So BOTH
+# actions below (raise, swap_holder) ALSO require
 # `lookup('env', 'L3_TESTMODE')` to be truthy. `L3_TESTMODE` is a
 # CONTROLLER-PROCESS ENVIRONMENT VARIABLE, not an Ansible variable —
 # extra_vars, role vars, and set_fact all operate purely within Ansible's
@@ -43,7 +42,7 @@
 #   post-first-mutation     — immediately after the caller's first real mutation
 #                           completes (launch: provision; teardown: helm removal;
 #                           rollback: first surface mutation)
-#   post-topology-mutation  — umbrella #201 WP3 fix-round finding 7 — ONLY
+#   post-topology-mutation  — umbrella #201 WP3 — ONLY
 #                           wired by launch-mxl-fabrics-demo.yml, immediately
 #                           after its topology release-group NetBox provision
 #                           + mxl-coordinator active-source patch, before any

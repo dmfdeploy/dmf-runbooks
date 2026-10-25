@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3 R4a/P2-5 — control-flow execution fixture: a real
+# control-flow execution fixture: a real
 # `rollback-run.yml`-shaped invocation (l3_run_guard's own `rollback`
 # tasks_from) for a run_id that has NO snapshot ConfigMap at all, against
 # the test harness stubs. Run as a nested `ansible-playbook` subprocess

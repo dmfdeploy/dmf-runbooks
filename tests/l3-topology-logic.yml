@@ -230,7 +230,7 @@
 
     # ── Gate (k): l3_topology_release_group — EXACT projection for the
     #    real J1 instance ON THE RATIFIED VIEWER JT's own l3_release
-    #    (umbrella #201 WP3 fix-round D5 — this MUST be the real shipping
+    #    (umbrella #201 WP3 — this MUST be the real shipping
     #    identity, mxl-videotest-view, not an alternate contract: the
     #    view-role invocation is the only one that ever calls this
     #    function live, see topology_validate.yml's own header + this

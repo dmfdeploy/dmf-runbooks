@@ -146,7 +146,7 @@
     name: netbox_catalog_common
     tasks_from: merge_owned_tags
   vars:
-    # #239 fix-round P1: include-scoped, NOT a set_fact — see
+    # Include-scoped, NOT a set_fact — see
     # merge_owned_tags.yml's header for why a fact would leak into
     # configure's merge call later in the same play.
     _extra_owned_prefixes: "{{ ['workload:'] if (workload_slug is defined and workload_slug | length > 0) else [] }}"

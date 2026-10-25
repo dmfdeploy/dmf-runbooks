@@ -9,7 +9,7 @@ Implements just the REST surface roles/l3_run_guard's tasks actually call:
   * Namespace get-one under /api/v1/namespaces/{name}
   * Pod list under /api/v1/pods (cluster-wide, empty by default; a
     "forbidden" mode simulates a missing RBAC ClusterRole)
-  * Deployment create / get (umbrella #306 design round #2) under
+  * Deployment create / get (umbrella #306) under
     /apis/apps/v1/namespaces/{ns}/deployments — added for
     switch_poll_upgrade_ready.yml / switch_poll_rollback_verify.yml's own
     kubernetes.core.k8s_info rollout-status polling (helm --wait is gone;
@@ -110,7 +110,7 @@ def _default_state() -> dict:
         # Never touched by any real role task — only a control-flow test's
         # own seeding.
         "phantom_conflicts": {},
-        # TEST-ONLY (umbrella #306 design round #2): (kind, namespace, name)
+        # TEST-ONLY (umbrella #306): (kind, namespace, name)
         # -> list[dict]. Simulates state that changes OUT OF BAND while an
         # ansible task polls (a Deployment's rollout converging over
         # several GETs; a coordinator ConfigMap a restored pod republishes
@@ -170,7 +170,7 @@ def _get_data_path(obj: dict, dotted_path: str):
 
 
 def _apply_get_patch_queue(kind: str, ns: str, name: str, store: dict, key: tuple) -> dict:
-    """TEST-ONLY (umbrella #306 design round #2): apply the FRONT queued
+    """TEST-ONLY (umbrella #306): apply the FRONT queued
     GET-time patch for (kind, ns, name), if any is queued and its
     condition (if any) currently holds, deep-merging it into the STORED
     object (mutates `store[key]` in place, so the merge persists across
@@ -270,7 +270,7 @@ def _namespace_body(name: str) -> dict:
 
 def _default_deployment(ns: str, name: str) -> dict:
     """A steady-state, fully-ready, single-replica Deployment (umbrella
-    #306 design round #2) — the shape switch_poll_upgrade_ready.yml /
+    #306) — the shape switch_poll_upgrade_ready.yml /
     switch_poll_rollback_verify.yml actually read: rollout-status fields
     (observedGeneration/generation, updated/ready/available/unavailable
     Replicas) plus a pod template carrying a `status` container with an
@@ -355,7 +355,7 @@ _CM_ITEM_RE = re.compile(r"^/api/v1/namespaces/(?P<ns>[^/]+)/configmaps/(?P<name
 _NODES_RE = re.compile(r"^/api/v1/nodes/?$")
 _PODS_RE = re.compile(r"^/api/v1/pods/?$")
 _NAMESPACE_ITEM_RE = re.compile(r"^/api/v1/namespaces/(?P<name>[^/]+)/?$")
-# umbrella #306 design round #2 — apps/v1 Deployment (get/create only, no list).
+# umbrella #306 — apps/v1 Deployment (get/create only, no list).
 _DEPLOY_COLLECTION_RE = re.compile(
     r"^/apis/apps/v1/namespaces/(?P<ns>[^/]+)/deployments/?$"
 )
@@ -548,7 +548,7 @@ class StubK8sHandler(BaseHTTPRequestHandler):
 
     def _get_api_groups(self):
         # Core/v1 kinds (Node, Namespace, Pod, ConfigMap) need no named API
-        # group. umbrella #306 design round #2 adds the FIRST named-group
+        # group. umbrella #306 adds the FIRST named-group
         # resource this stub serves (apps/v1 Deployment) — the DynamicClient
         # resolves apiVersion: apps/v1 via THIS list before it will ever GET
         # /apis/apps/v1 itself.
@@ -686,8 +686,7 @@ class StubK8sHandler(BaseHTTPRequestHandler):
         # and `metadata.labels`, good enough for _supersede_sweep.yml's
         # `state: present` status-field patch via kubernetes.core.k8s.
         #
-        # umbrella #201 WP3 fix-round (finding 7's own coverage caught
-        # this): a `null` value for a `data` key is the standard K8s
+        # A `null` value for a `data` key is the standard K8s
         # merge-patch idiom for DELETING that single key (honored by a
         # real API server for map-typed fields) — this stub used to just
         # `dict.update()` the raw patch body, which sets the key to a
@@ -743,7 +742,7 @@ class StubK8sHandler(BaseHTTPRequestHandler):
             del STATE["configmaps"][key]
         self._write_json(200, _status_body(200, "", "configmap deleted", status="Success"))
 
-    # -- Deployment handlers (umbrella #306 design round #2) ------------
+    # -- Deployment handlers (umbrella #306) ------------
 
     def _create_deployment(self, ns: str):
         # Mirrors _create_configmap's own shape: a scenario POSTs a full
@@ -783,7 +782,7 @@ class StubK8sHandler(BaseHTTPRequestHandler):
         current = _apply_get_patch_queue("Deployment", ns, name, STATE["deployments"], key)
         self._write_json(200, current)
 
-    # -- TEST-ONLY seeding endpoint (umbrella #306 design round #2) -----
+    # -- TEST-ONLY seeding endpoint (umbrella #306) -----
 
     def _queue_get_patch(self):
         # TEST-ONLY: {"kind": "ConfigMap"|"Deployment", "namespace": ns,

@@ -1,5 +1,5 @@
 ---
-# umbrella #306 (design round #2, frozen 2026-07-30) — capture the
+# umbrella #306 (frozen 2026-07-30) — capture the
 # receiver's PRE-switch baseline: the exact reference state PHASE 2's own
 # post-rollback verification (switch_poll_rollback_verify.yml) compares
 # against, and the source of the "previous active-source" a verified

@@ -10,7 +10,7 @@ mxl_namespace: mxl
 # service DNS (the launcher runs in an in-cluster AWX EE pod, ADR-0025 Lane B),
 # single scoped catalog-writer token (ADR-0032) for reads and writes.
 netbox_api_url: "http://netbox.netbox.svc.cluster.local"
-# umbrella #202 WP3 R3a-9 (codex round-2 P1-9): NO fallback to
+# NO fallback to
 # vault_netbox_api_token (the admin token) — a missing scoped
 # catalog-writer token must FAIL (via the ensuing NetBox 401/403 on any
 # call using it), never silently upgrade to the admin token (ADR-0032).
@@ -32,25 +32,25 @@ mxl_monitoring_enabled: true
 # dmf-born-inventory / nmos-cpp convention for catalog app services.
 netbox_service_parent_device: dmf-traefik
 
-# umbrella #202 WP3 R6b (codex round-6, umbrella #267): true single-source
-# for mxl's NetBox identity, mirroring R6a's helm-axis fix. roles/l3_run_guard/
+# True single-source
+# for mxl's NetBox identity, mirroring the helm axis. roles/l3_run_guard/
 # tasks/snapshot.yml's own pre-run NetBox lookup (and capacity.yml's gate)
 # use l3_catalog_key/l3_release/l3_target_namespace — the SAME play-scope
 # vars launch-mxl-fabrics-demo.yml defines once and the l3_run_guard gate
-# consumes via ambient scope (R6a). Below, netbox_service_name/the app:<>
-# tag/the monitoring cluster_service+cluster_namespace now read those SAME
+# consumes via ambient scope. Below, netbox_service_name/the app:<>
+# tag/the monitoring cluster_service+cluster_namespace read those SAME
 # l3_* names FIRST (when the L3 gate is in play, they're always defined —
-# R6a's own play vars), falling back to mxl_function_key/mxl_release/
+# the launcher's own play vars), falling back to mxl_function_key/mxl_release/
 # mxl_namespace only for a standalone, non-L3-gated use of this role (no
 # l3_catalog_key/l3_release/l3_target_namespace defined at all). This closes
-# the exact divergence codex round-6 found: a caller-supplied
-# mxl_function_key extra_var used to retarget THIS role's own NetBox
-# mutation independently of what the gate's snapshot looked up by — now
+# a divergence: a caller-supplied
+# mxl_function_key extra_var could otherwise retarget THIS role's own NetBox
+# mutation independently of what the gate's snapshot looked up by — so
 # mxl_function_key has no effect at all on the NetBox identity while the L3
 # gate is in play, since these read l3_catalog_key directly, not the
 # playbook's own mxl_function_key alias.
 #
-# umbrella #201 WP3 fix-round (finding 7's own coverage caught this LIVE):
+# Caught LIVE by execution coverage:
 # mxl_group_item_identity is the ONLY way a caller can retarget this role's
 # NetBox identity to something OTHER than l3_catalog_key/l3_release for a
 # single include_role call — setting l3_catalog_key/l3_release themselves
@@ -132,7 +132,7 @@ netbox_service_monitoring_tags: >-
 # ADR-0038 Amendment A cluster coords + Amendment B probe_path: dmf-promsd
 # probes http://<cluster_service>.<cluster_namespace>:<cluster_port><probe_path>
 # — the chart's per-release status Service serving /status (JSON 200).
-# R6b: cluster_service reads netbox_service_name (itself
+# cluster_service reads netbox_service_name (itself
 # mxl_group_item_identity-first, l3_release-second — same override as
 # above; a group item's own release name IS its cluster_service, since the
 # chart's per-release status Service is named after the Helm release).

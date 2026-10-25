@@ -1,8 +1,7 @@
 ---
 # umbrella #202 WP3-B stage — terminal: aggregate outcome, update the
 # snapshot CM's status, emit the marker, release the lock (§4.5/§4.6
-# partial-failure posture — never false-green), revised by codex round-1
-# R2a-7.
+# partial-failure posture — never false-green).
 #
 # R2a-7 (§4.6-honest, final disposition): monitoring drain is
 # STRUCTURALLY UNVERIFIABLE from this launcher EE (no live PromSD read

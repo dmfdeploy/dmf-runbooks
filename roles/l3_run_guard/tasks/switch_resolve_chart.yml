@@ -32,7 +32,7 @@
 # caller extra_var can never forge which registry/chart this pull targets
 # or fake the version this switch actually uses.
 #
-# umbrella #306 design round #2 (frozen 2026-07-30): this file no longer
+# umbrella #306 (frozen 2026-07-30): this file no longer
 # feature-detects --rollback-on-failure vs --atomic — PHASE 2's own
 # `helm upgrade` carries NO wait/rollback flags at all now (helm-as-oracle
 # is gone; see the playbook's own PHASE 2 comments and

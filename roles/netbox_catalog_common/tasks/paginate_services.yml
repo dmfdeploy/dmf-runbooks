@@ -1,5 +1,5 @@
 ---
-# umbrella #347 fix round FIX-A2b.1 (P2-1, codex GATE-A2b.1) — bounded
+# Bounded
 # pagination for every NetBox ipam.services list read the finalise-purge
 # launcher makes. Follows NetBox's own `next` links to exhaustion, hard-
 # capped at 100 pages; the CALLER (purge_workload_records.yml,
@@ -10,9 +10,8 @@
 # of concerns as the fail-closed violation computation elsewhere in this
 # role: compute here, assert at the call site).
 #
-# Codex's own finding (P2-1): both reads previously sent a single
-# `?tag=dmf-catalog&limit=500` GET and trusted the first page as the whole
-# world — a global dmf-catalog query (not scoped to one workload), so an
+# A single `?tag=dmf-catalog&limit=500` GET that trusts the first page as
+# the whole world would be wrong — a global dmf-catalog query (not scoped to one workload), so an
 # unexpected/bad-lifecycle member for THIS workload sitting past the 500th
 # dmf-catalog record anywhere in the facility was invisible to both the
 # fail-closed validation and the final source read. "Matching the console's

@@ -117,7 +117,7 @@ def l3_topology_release_group(topology_params: dict, l3_release: str, base_set_v
     gated on ``l3_validate_topology_params`` returning ``ok: True``, this
     function does not re-validate.
 
-    NAMING RULE (umbrella #201 WP3 fix-round D5 — state this explicitly, the
+    NAMING RULE (umbrella #201 WP3 — state this explicitly, the
     tests must prove THIS shipping contract, not an alternate one): one entry
     per ``sources[]`` item, N-shaped (never a 2-source special case).
     ``release``/``netbox_service_name`` are both

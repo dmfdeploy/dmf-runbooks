@@ -1,0 +1,33 @@
+# Allowlist for bin/check-review-comments.sh. One entry per line:
+#   <path>:<fixed substring of the line>  # <reason>
+# Entries go away as the lines they cover change; add one only for a mention
+# that is not review history, or for text that is data rather than a comment.
+bin/working-model-digest.sh:codex/qwen don't run hooks  # names the agents this hook cannot reach; not review history
+playbooks/finalise-purge.yml:claude1's WO requires a  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/launch-mxl-fabrics-demo.yml:fix-round D3/D4: this release's own  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/launch-mxl-fabrics-demo.yml:fix-round D3: a scalar (non-topology)  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/launch-mxl-fabrics-demo.yml:fix-round D4: cold-launch-only write  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/switch-mxl-fabrics-demo.yml:(umbrella #323 fix round — MUST stay the first task  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/switch-mxl-fabrics-demo.yml:(umbrella #323 fix round, codex gate P2a) — the OTHER  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/switch-mxl-fabrics-demo.yml:never here (umbrella #323 fix round, codex  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/switch-mxl-fabrics-demo.yml:failed_when: false (umbrella #323 fix round, codex gate P2b):  # task name (a YAML string, not a comment); renaming a task changes run output
+roles/l3_run_guard/meta/main.yml:umbrella #202 WP3 (revised by codex round-1 R2a) — launcher-tier  # role description string in galaxy metadata, not a comment
+roles/l3_run_guard/tasks/capacity.yml:#201 WP3 fix-round D2 — the ONE authoritative  # task name (a YAML string, not a comment); renaming a task changes run output
+roles/l3_run_guard/tasks/rollback.yml:(R3a-3b pattern; umbrella #201 WP3 fix-round D4)  # task name (a YAML string, not a comment); renaming a task changes run output
+roles/l3_run_guard/tasks/rollback.yml:#201 WP3 fix-round D4 — OPT-IN, a no-op unless this run's own  # task name (a YAML string, not a comment); renaming a task changes run output
+roles/l3_run_guard/tasks/switch_outcome_guard.yml:(umbrella #323 fix round, P1) — the outcome-decision  # task name (a YAML string, not a comment); renaming a task changes run output
+tests/l3-control-flow.yml:(PR dmf-runbooks#46 review finding)  # assertion fail_msg text, not a comment
+tests/l3-finalise-purge-execution.yml:+ fix rounds FIX-A2b.1/FIX-A2b.3: playbooks/  # message text in a YAML value, not a comment; changing it changes runtime output
+tests/l3-playbook-execution.yml:(codex round-4 P2-3): all 7 REAL entry  # message text in a YAML value, not a comment; changing it changes runtime output
+tests/l3-playbook-structure.yml:(codex round-4 P2-3): every real entry  # message text in a YAML value, not a comment; changing it changes runtime output
+tests/l3-switch-execution.yml:(umbrella #323 fix round, codex gate:  # task name (a YAML string, not a comment); renaming a task changes run output
+tests/l3-switch-execution.yml:(pre-#306-round-2) play never read the Deployment  # task name (a YAML string, not a comment); renaming a task changes run output
+tests/l3-switch-execution.yml:(umbrella #323 fix round, codex gate P2a)  # task name (a YAML string, not a comment); renaming a task changes run output
+tests/l3-switch-execution.yml:Umbrella #323 fix round (codex adversarial gate P1): scenarios  # message text in a YAML value, not a comment; changing it changes runtime output
+tests/l3-topology-execution.yml:fix-round D5 — this run  # task name (a YAML string, not a comment); renaming a task changes run output
+tests/l3-topology-execution.yml:(fix-round D1-D5 + finding 7): the REAL,  # message text in a YAML value, not a comment; changing it changes runtime output
+tests/scripts/check_playbook_structure.py:(umbrella #323 fix round P1) — got   # error-message string in code, not a comment
+tests/scripts/check_playbook_structure.py:reopens the umbrella #323 fix round's own P1 hole  # error-message string in code, not a comment
+tests/scripts/check_playbook_structure.py:mirroring the umbrella #323 switch fix round's own P1)  # error-message string in code, not a comment
+tests/scripts/check_playbook_structure.py:umbrella #347 fix round P2   # error-message string in code, not a comment
+tests/scripts/check_playbook_structure.py:umbrella #347 fix round P3-1. A success  # error-message string in code, not a comment

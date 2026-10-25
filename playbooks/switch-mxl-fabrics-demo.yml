@@ -31,8 +31,8 @@
 # header for the full design rationale) rather than main.yml's full launch
 # gate or lock_only.yml's teardown entry point.
 #
-# Failure posture (spec §6.2, claude1/#201 WP4 addendum condition 4, REVISED
-# by umbrella #306 design round #2, frozen 2026-07-30): a failure at ANY
+# Failure posture (spec §6.2, umbrella #201 WP4 addendum condition 4, revised
+# by umbrella #306, frozen 2026-07-30): a failure at ANY
 # phase BEFORE PHASE 2's own upgrade verification leaves active-source
 # cleared (or never advanced) — a clean, zero-transmitter quiesced state,
 # no rollback needed because nothing was ever re-pointed. A failure OF
@@ -91,8 +91,7 @@
 # block, after the lock-release include, so nothing later can still fail
 # the run out from under an already-emitted success marker.
 #
-# THE TWO ROLLBACK-VERIFIED TOKENS (umbrella #323 fix round, codex gate
-# P2a): a VERIFIED rollback has two genuinely different endings, because
+# THE TWO ROLLBACK-VERIFIED TOKENS (umbrella #323): a VERIFIED rollback has two genuinely different endings, because
 # the restore task is deliberately skipped when the pre-switch coordinator
 # had NO active-source set (`when: ... and (_switch_baseline.active_source
 # | trim) != ''` — there is nothing to restore, and writing an empty
@@ -109,7 +108,7 @@
 # transition and must not be disturbed by a change that only concerns the
 # structured event.
 #
-# detail= ON refused (umbrella #323 fix round, operator ruling): `refused`
+# detail= ON refused (umbrella #323): `refused`
 # covers ~20 distinct terminal exits, from a pre-lock guard refusal
 # (nothing whatsoever touched) to a PHASE 3 final-readback mismatch (the
 # switch all but complete). The console cannot act on those the same way,
@@ -138,8 +137,8 @@
 # choosing. Well-formed values (32-char hex ids, Helm release names) render
 # unchanged.
 #
-# NON-FORGEABILITY OF ALL OF THE ABOVE (umbrella #323 fix round, codex gate
-# P1 — read roles/l3_run_guard/tasks/switch_outcome_guard.yml's own header
+# NON-FORGEABILITY OF ALL OF THE ABOVE (umbrella #323 — read
+# roles/l3_run_guard/tasks/switch_outcome_guard.yml's own header
 # for the full story, it is the substance of this fix). Ansible extra_vars
 # outrank task-level vars, set_fact and register alike, so a caller could
 # previously either silence this play's only outcome task
@@ -165,7 +164,7 @@
 # (successful/failed/...) — the marker adds STRUCTURE on top of that, it
 # doesn't replace it.
 #
-# TIMING CONTRACT (umbrella #306 design round #2 — the console watch budget
+# TIMING CONTRACT (umbrella #306 — the console watch budget
 # formula's own reference; DMF_CONSOLE_L3_SWITCH_SOURCE_TIMEOUT_SECONDS in
 # dmf-cms is a SEPARATE change, not this PR, but its default (360s) is
 # built directly from these four vars + AWX/poll slack — keep them in sync
@@ -206,7 +205,7 @@
     l3_switch_verify_poll_delay_seconds: 10
   tasks:
     # The ONE task that deliberately sits OUTSIDE the outer block below
-    # (umbrella #323 fix round, codex gate P1). It proves that none of the
+    # (umbrella #323). It proves that none of the
     # variables this play's own structured-outcome decision reads were
     # supplied as extra_vars, and on violation emits a hard-coded literal
     # `refused detail=reserved-var` marker and ends the play — before the
@@ -241,8 +240,8 @@
         # -> _assert_reserved_vars.yml, which would then find _switch_stage
         # already "defined" and refuse EVERY legitimate switch run as a
         # forged reserved var — the exact trap switch_validate.yml's own
-        # header documents (qwen1 gate fix round, caught live again here by
-        # probing this fix against the stub harness before writing tests).
+        # header documents (caught live by probing against the stub harness
+        # before writing tests).
         # The default is not a fallback guess either: the only code that can
         # fail between this play's first task and the first transition below
         # is identity.yml's own reserved-var/request-id validation and the
@@ -609,8 +608,8 @@
         # BOTH the k8s_info read and the conjunction assert below, and a
         # failure of the read itself is not a mismatch. Naming the stage
         # after only one of its two failure modes would reintroduce exactly
-        # the false-enum class this fix round closed for
-        # rollback_verified_no_previous_source (P2a). The assert's own
+        # the false-enum class that rollback_verified_no_previous_source
+        # exists to avoid. The assert's own
         # legacy stdout line keeps its more specific, unchanged
         # "detail=switch-final-readback-mismatch" wording.
         - name: "L3 switch stage -> final-readback (PHASE 3 verification: the readback read AND its conjunction assert)"
@@ -711,8 +710,8 @@
           # Skip ONLY when the sentinel says a specific marker already fired
           # AND the trusted failure state that is the sole legitimate reason
           # for one agrees: PHASE 2 verify genuinely ran and concluded
-          # not-ready. Defense in depth for the umbrella #323 fix round's
-          # own P1 — the guard at the top of this play already proves both
+          # not-ready. Defense in depth (umbrella #323): the guard at the
+          # top of this play already proves both
           # names caller-free, and this conjunction means that even if that
           # guard were bypassed, no SINGLE shadowed extra_var could suppress
           # this event: `-e _switch_outcome_emitted=true` alone still emits,

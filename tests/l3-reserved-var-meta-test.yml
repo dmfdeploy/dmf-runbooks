@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3 R5a (codex round-4 P1-1) — self-maintaining reserved-var
+# Self-maintaining reserved-var
 # meta-test. Thin ansible-playbook wrapper around
 # tests/scripts/check_reserved_vars.py (kept as a standalone Python script,
 # not embedded Ansible/Jinja, since the actual work is text-parsing every
@@ -10,9 +10,9 @@
 # Run:  ansible-playbook tests/l3-reserved-var-meta-test.yml
 #
 # FAILS if roles/l3_run_guard/tasks/*.yml declares any register:/set_fact:
-# name that _assert_reserved_vars.yml's blocklist doesn't reserve (codex
-# round-4's exact finding: the R4a blocklist covered set_fact but not
-# register targets) — see the script's own module docstring for the full
+# name that _assert_reserved_vars.yml's blocklist doesn't reserve (a
+# blocklist covering set_fact but not
+# register targets would miss forgeries) — see the script's own module docstring for the full
 # rationale.
 
 - name: "umbrella #202 WP3 R5a — L3 reserved-var meta-test"

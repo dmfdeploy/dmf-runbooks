@@ -1,5 +1,5 @@
 ---
-# umbrella #201 WP3 fix-round D4 — coordinator active-source rollback
+# umbrella #201 WP3 — coordinator active-source rollback
 # restore/remove. OPT-IN, driven ENTIRELY by the snapshot's own persisted
 # coordinator_state (rollback_snapshot_read.yml's own recovery task) — a
 # complete no-op (every task below skips) when that state is empty: every

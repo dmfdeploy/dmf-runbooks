@@ -1,7 +1,7 @@
 ---
 # umbrella #347 (Arc 2b, demo-journey UI track) — finalise-purge: the
 # "delete permanently" SoT removal of a fully finalised media workload's
-# residual dmf-catalog NetBox records (operator ruling 2026-08-02). Residue
+# residual dmf-catalog NetBox records. Residue
 # = the ipam.Service members left at lifecycle:bootstrapped carrying the
 # preserved workload:<slug> tag, plus the Tag object workload:<slug> itself
 # — deleted LAST, only after every member reference is confirmed gone.
@@ -35,8 +35,8 @@
 # on ipam.service/extras.tag, no add/change) instead, because the shared
 # catalog-writer token's necessary add/change on those same two models made
 # its delete grant self-manufacturable — create a workload:<x> tag, attach it
-# to an unrelated record, then delete it (lkirc caught this twice against the
-# shared-token constraint-only design). JT name is frozen as
+# to an unrelated record, then delete it (a constraint-only design on the
+# shared token fails this way). JT name is frozen as
 # media-finalise-purge.
 #
 # SHAPE: mirrors playbooks/teardown-mxl-fabrics-demo.yml's single outer
@@ -85,8 +85,7 @@
   connection: local
   gather_facts: false
   vars:
-    # PR #37 fix round FIX-A2b.3 (operator review 2026-08-03): this play
-    # includes netbox_catalog_common directly (a role with no defaults of
+    # This play includes netbox_catalog_common directly (a role with no defaults of
     # its own for this) rather than a role like roles/mxl that carries the
     # netbox_api_token mapping in ITS OWN defaults/main.yml:14-17 — and
     # l3_run_guard's OWN identical-looking default (defaults/main.yml:102)
@@ -115,7 +114,7 @@
     # and _assert_netbox_token.yml's structural check refuses it, never a
     # silent credential upgrade.
     netbox_api_token: "{{ vault_netbox_purge_token | default('') }}"
-    # lkirc review (dmf-runbooks#41): names the var this playbook actually
+    # Names the var this playbook actually
     # reads, so a blank-token refusal (_assert_netbox_token.yml, run from
     # lock_only.yml as this play's own pre-lock guard) points an operator
     # at vault_netbox_purge_token, not the generic vault_netbox_catalog_token
@@ -125,7 +124,7 @@
     l3_netbox_token_hint: vault_netbox_purge_token
   tasks:
     # The ONE task that deliberately sits OUTSIDE the outer block below
-    # (mirrors switch-mxl-fabrics-demo.yml's own umbrella #323 fix-round
+    # (mirrors switch-mxl-fabrics-demo.yml's
     # placement exactly — see purge_outcome_guard.yml's own header for why
     # a variable-based fix is impossible against extra_vars, and why this
     # position is load-bearing).

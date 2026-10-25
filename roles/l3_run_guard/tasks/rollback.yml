@@ -1,28 +1,27 @@
 ---
-# umbrella #202 WP3-B — L3 rollback-run authoritative flow (revised by
-# codex round-1 R2a and round-2 R3a).
+# umbrella #202 WP3-B — L3 rollback-run authoritative flow.
 #
 # Included via `include_role: name: l3_run_guard, tasks_from: rollback`
-# from playbooks/rollback-run.yml. Stage order (R3a-5, codex round-2
-# P1-5): identity -> facility lock (§4.5) -> snapshot read (§4.1,
-# refusal classification — NOW UNDER THE HELD LOCK, so a concurrent run
-# can no longer supersede/mutate/finish the snapshot between this read
-# and the lock acquisition the R2a draft left as two separate,
+# from playbooks/rollback-run.yml. Stage order:
+# identity -> facility lock (§4.5) -> snapshot read (§4.1,
+# refusal classification — UNDER THE HELD LOCK, so a concurrent run
+# cannot supersede/mutate/finish the snapshot between the read
+# and the lock acquisition, which would be two separate,
 # race-prone steps) -> helm surface (§4.4) -> netbox surface (§4.2) ->
-# coordinator surface (umbrella #201 WP3 fix-round D4 — OPT-IN, a no-op
+# coordinator surface (umbrella #201 WP3 — OPT-IN, a no-op
 # unless the snapshot recorded a coordinator mechanism) -> terminal
-# (§4.5/§4.6 aggregate outcome, marker, lock release — R2a-7:
+# (§4.5/§4.6 aggregate outcome, marker, lock release —
 # ALWAYS rollback_incomplete in WP3, see rollback_terminal.yml).
 #
 # l3_catalog_key/l3_release are DERIVED from the snapshot (now stage 3,
 # post-lock), not caller-supplied — a rollback is driven purely by
 # l3_run_id.
 #
-# R3a-4 (codex round-2 P1-4): the ENTIRE post-acquire lifecycle
+# The ENTIRE post-acquire lifecycle
 # (snapshot-read through terminal) sits in ONE outer block/rescue so the
 # lock is never left held on ANY failure in that span, not just the
 # surfaces stages. Because rollback_terminal.yml's own fail is
-# UNCONDITIONAL (R2a-7: every rollback ends rollback_incomplete), it is
+# UNCONDITIONAL (every rollback ends rollback_incomplete), it is
 # INSIDE this block too — which means it ALWAYS trips the rescue below.
 # The rescue distinguishes "terminal already ran its own full cleanup"
 # (status-patch + marker + lock release, then its own expected fail) from
@@ -33,47 +32,42 @@
 # expected case just re-raises without redoing (and potentially
 # double-emitting/overwriting) work terminal already did correctly.
 #
-# R4a (codex round-3 P1-7): the SAME problem existed one stage earlier —
+# The SAME problem applies one stage earlier —
 # rollback_snapshot_read.yml's own no-snapshot/stale-snapshot refusal
 # also fails inside this block (via _refuse_pre_mutation.yml), but
 # l3_rollback_terminal_reached is (correctly) still false there, since
-# terminal never ran. Without a second sentinel the rescue below used to
+# terminal never ran. Without a second sentinel the rescue below would
 # treat that as "unexpected" and emit a SECOND rollback_incomplete marker
 # on top of the honest no-snapshot/stale-snapshot one _refuse_pre_mutation
-# already emitted — dmf-cms selects the LAST event, so the operator never
-# saw the real outcome. Fixed with a second sentinel,
-# l3_expected_refusal, set by rollback_snapshot_read.yml itself right
-# before its own fail: the rescue below now re-raises for THAT case too,
+# already emitted — dmf-cms selects the LAST event, so the operator would never
+# see the real outcome. So a second sentinel,
+# l3_expected_refusal, is set by rollback_snapshot_read.yml itself right
+# before its own fail: the rescue below re-raises for THAT case too,
 # without emitting anything further.
 #
-# R5a (codex round-4 P1-4, found while wiring up the SAME round's
-# checkpoint-before-every-terminal-patch fix): a THIRD case existed —
-# EVERY lock_checkpoint.yml call inside this block (the pre-existing ones
-# before the helm/netbox surface stages, R3a-3b; and the new one this
-# round inside rollback_terminal.yml, before its own terminal patch) can
+# A THIRD case:
+# EVERY lock_checkpoint.yml call inside this block (the ones
+# before the helm/netbox surface stages, and the one
+# inside rollback_terminal.yml, before its own terminal patch) can
 # ALSO fail closed on a fenced-out holder, which routes through
 # _refuse_pre_mutation.yml exactly like any other hand-written refusal —
 # setting l3_pre_mutation_marker_emitted and emitting its OWN honest
-# marker (post-mutation-failed, detail=lock-lost). The rescue below used
-# to check ONLY l3_rollback_terminal_reached/l3_expected_refusal, so a
+# marker (post-mutation-failed, detail=lock-lost). If the rescue checked
+# ONLY l3_rollback_terminal_reached/l3_expected_refusal, a
 # fenced checkpoint would fall through to "UNEXPECTED failure" and emit a
 # SECOND, wrong (rollback_incomplete) marker on top of the honest
-# lock-lost one — the exact same class of bug P1-7 already fixed twice
-# above, now closed for this third case too.
+# lock-lost one — the exact same class of bug as the two above.
 #
-# R5a (codex round-4 P2-3, found by the real-playbook execution harness):
-# a FOURTH gap existed — stages 1 (identity) and 2 (lock) used to run
-# OUTSIDE this block entirely, the exact same "main.yml's own early
-# stages ran unenclosed" bug R4a/P1-3 fixed for launch/teardown, just
-# never carried over to rollback at the time. An UNEXPECTED exception
+# A FOURTH case:
+# stages 1 (identity) and 2 (lock) sit INSIDE this block too, the same as
+# launch/teardown's main.yml early stages. An UNEXPECTED exception
 # during identity/lock (not one of their own deliberate, self-cleaning
 # refusals — those already emit their own marker and release via
-# _refuse_pre_mutation.yml regardless of enclosure) had nothing to catch
-# it: playbooks/rollback-run.yml's own outer always: (added this same
-# round) still released the lock, but NO marker was ever emitted —
-# confirmed by real execution, not just code inspection. Moved inside
-# this block as stages 1-2, ahead of stage 3, so the SAME rescue below
-# now covers the whole flow from identity through terminal, exactly
+# _refuse_pre_mutation.yml regardless of enclosure) would otherwise have
+# nothing to catch it: playbooks/rollback-run.yml's own outer always:
+# would still release the lock, but NO marker would be emitted.
+# With stages 1-2 ahead of stage 3 in this block, the SAME rescue below
+# covers the whole flow from identity through terminal, exactly
 # matching launch/teardown's own Backbone shape.
 
 - name: "WP3-B post-acquire lifecycle (R3a-4, widened R5a/P2-3 to cover

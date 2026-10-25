@@ -1,12 +1,12 @@
 ---
-# umbrella #202 WP3 R3a-3b (codex round-2 P1-3, holder-liveness half) —
+# umbrella #202 WP3 R3a-3b —
 # checkpoint THIS attempt's continued ownership of the facility lock,
 # invoked immediately before EACH mutating stage (helm install, each
 # NetBox provision/configure include in the calling playbook; every
 # rollback surface stage — see each call site). A TTL-expired lock with
 # no active-holder heartbeat could otherwise be reclaimed by a DIFFERENT
 # attempt while THIS one is still genuinely in-flight and mutating —
-# UID-conditioned deletion (R2a-3c) protects the delete RACE, but does
+# UID-conditioned deletion protects the delete RACE, but does
 # nothing to stop a live holder's LATER writes once it's already been
 # reclaimed out from under it. This checkpoint catches that: a holder
 # mismatch means this run has been FENCED OUT (someone else now

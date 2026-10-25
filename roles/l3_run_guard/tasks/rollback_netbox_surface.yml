@@ -1,7 +1,7 @@
 ---
-# umbrella #202 WP3-B stage — NetBox surface rollback (§4.2), revised by
-# codex round-1 R2a-5 (by-id classification, exact-name lookup) and R2a-7
-# (readback verification, threaded through the per-item task files).
+# umbrella #202 WP3-B stage — NetBox surface rollback (§4.2). It
+# classifies by id, looks records up by exact name, and verifies
+# by readback (threaded through the per-item task files).
 #
 # Same snapshot-vs-live diff principle as the helm surface: a CURRENT
 # record whose ID was already in the pre-run snapshot pre-existed this run
@@ -15,7 +15,7 @@
 # same name is a NEW record, not "unchanged") — see l3_budget.py's
 # l3_netbox_records_to_restore_or_delete docstring.
 #
-# R2a-5: looked up by EXACT NAME (l3_catalog_key — the same identity the
+# Looked up by EXACT NAME (l3_catalog_key — the same identity the
 # provision stage's own lookup uses, see snapshot.yml's header comment),
 # NOT by tag — a tag-based lookup would miss a record that hasn't (yet)
 # been tagged app:<key>.
@@ -28,8 +28,8 @@
 # wrapper is a convenience layer over the same filter, not required) and
 # _netbox_owned_namespace.
 
-# umbrella #201 WP3 fix-round (finding 7's own coverage caught this LIVE —
-# a pre-existing, role-wide defect, not new to this WP): `include_role`
+# Caught LIVE by execution coverage —
+# a role-wide defect: `include_role`
 # defaults to `public: no` — its role defaults (_netbox_owned_namespace)
 # stay PRIVATE to this one include_role task and never escape into the
 # LATER, separately-included _rollback_netbox_restore_one.yml/

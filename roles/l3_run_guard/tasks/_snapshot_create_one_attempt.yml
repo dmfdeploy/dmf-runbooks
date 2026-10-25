@@ -1,32 +1,28 @@
 ---
-# umbrella #202 WP3 R4a (codex round-3 P1-6 + P2-4) — one bounded attempt
+# One bounded attempt
 # at CREATE-ONLY snapshot capture. THE CALLER (snapshot.yml) drives the
 # retry via a NATIVE Ansible `loop:` on `include_tasks` — same
-# non-recursive shape as _lock_acquire_one_attempt.yml (P1-1); see that
+# non-recursive shape as _lock_acquire_one_attempt.yml; see that
 # file's own header for why a recursive self-include is never used here.
 #
-# P1-6: the R3a-6 draft classified a 409 collision as either a narrowly-
-# defined "resumable retry of THIS run" (proceed without ownership) or a
-# fail-closed collision. Codex round-3 found the resumable path could
-# never reach an honest terminal (l3_snapshot_created stays unset for a
+# A 409 collision is never classified as a narrowly-defined "resumable
+# retry of THIS run" (proceed without ownership). The resumable path
+# could never reach an honest terminal (l3_snapshot_created stays unset for a
 # resumable retry BY DESIGN, so launch_success/launch_rescue's own
 # `when: l3_snapshot_created` guards never fire for it — a successful
 # resumed retry left the snapshot "in-progress" forever, and a FAILED
-# resumed retry could never be marked failed_rollback_required). Simplest
-# correct fix (flagged as a deviation in the WP3-R4a reply): resume is
-# REMOVED entirely. ANY snapshot-name 409 with a non-empty read is now a
+# resumed retry could never be marked failed_rollback_required). So resume
+# does not exist. ANY snapshot-name 409 with a non-empty read is now a
 # fail-closed collision refusal, full stop — no classification, no
-# proceed-without-ownership path. `l3_snapshot_collision_resumable` (the
-# pure filter this replaces) has been deleted from l3_budget.py; nothing
-# else referenced it.
+# proceed-without-ownership path.
 #
-# P2-4: a 409 immediately followed by a k8s_info read that finds ZERO
-# resources (the same create-then-read race lock.yml's own P1-1 fix
-# handles) previously indexed `resources[0]` unconditionally while
+# A 409 immediately followed by a k8s_info read that finds ZERO
+# resources (the same create-then-read race lock.yml handles)
+# must not index `resources[0]` unconditionally while
 # building the collision report message — an IndexError on the empty-
-# read race, crashing before refusal cleanup could even run (and, per
-# finding 3/the backbone rescue, leaking the lock). Fixed the same way as
-# the lock: this file does ONE POST + (if 409) one READ + decide, and
+# read race, crashing before refusal cleanup could even run (and, without
+# the backbone rescue, leaking the lock). As with
+# the lock, this file does ONE POST + (if 409) one READ + decide, and
 # leaves the EMPTY-READ RACE to the caller's loop — every path through
 # THIS file either sets l3_snapshot_created, fails the play via
 # _refuse_pre_mutation.yml (fail-closed collision), or falls through
@@ -38,7 +34,7 @@
 # have already rendered _l3_snapshot_manifest and confirmed
 # _l3_api_available.
 #
-# R4a Backbone (execution-tested, codex round-3 P2-5): the SAME class of
+# The SAME class of
 # bug the sibling lock file's own header now documents — a `when:` on the
 # CALLER's looped `include_tasks` is not reliably visible to l3_lock_
 # acquire's own equivalent, `l3_snapshot_created is not defined`, once an
@@ -66,7 +62,7 @@
       register: _l3_snapshot_create
       no_log: true
 
-    # ── R5a/P1-1 (codex round-4): CLUSTER-TRUTH READBACK before trusting a
+    # ── CLUSTER-TRUTH READBACK before trusting a
     #    claimed snapshot creation — the same reasoning as the facility
     #    lock's own fix (see _lock_acquire_one_attempt.yml's header). A
     #    forged _l3_snapshot_create.status=201 with no real POST would

@@ -1,8 +1,8 @@
 ---
-# umbrella #202 WP3 R2a-2 — the SINGLE named marker-emission task. Every
+# The SINGLE named marker-emission task. Every
 # DMF_L3_OUTCOME emission across this role routes through this one file so
 # there is exactly one ansible.builtin.debug task literally named
-# 'dmf-l3-outcome' in the whole play — the console (R2b) reads AWX job
+# 'dmf-l3-outcome' in the whole play — the console reads AWX job
 # events filtered BY THAT TASK NAME and parses event_data.res.msg, not
 # stdout scraping. Markers moved OFF stdout entirely: an ansible job's
 # stdout always ends with the PLAY RECAP epilogue (plus possible framework

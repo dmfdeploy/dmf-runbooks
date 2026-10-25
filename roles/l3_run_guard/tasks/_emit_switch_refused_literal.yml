@@ -1,5 +1,5 @@
 ---
-# umbrella #323 fix round (codex adversarial gate, P1) — the SECOND, and
+# The SECOND, and
 # deliberately the ONLY other, sanctioned DMF_L3_SWITCH_OUTCOME emission
 # point: a marker whose ENTIRE payload is a YAML string literal, carrying
 # no Jinja at all.
@@ -8,8 +8,8 @@
 # and kv from l3_switch_outcome_token/l3_switch_outcome_kv, supplied as
 # task-level `vars:` on the include_role call. Ansible extra_vars OUTRANK
 # task-level vars, set_fact and register identically — the same precedence
-# fact _assert_reserved_vars.yml's own R4a/P1-2 header documents, and
-# re-verified empirically for this fix round (a throwaway play showed
+# fact _assert_reserved_vars.yml's own header documents, and
+# re-verified empirically (a throwaway play showed
 # `-e tok=X` beating BOTH an include_role `vars: tok:` and a set_fact of
 # the same name, and `-e sentinel=true` turning a `when: not (sentinel |
 # default(false))` catch-all into a skip). Those names ARE reserved in the

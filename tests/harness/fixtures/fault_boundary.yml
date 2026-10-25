@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3 R4a/P2-5 — control-flow execution fixture: replicates
+# control-flow execution fixture: replicates
 # the EXACT block/rescue/always shape every real launch-*.yml playbook now
 # uses (see playbooks/launch-nmos-cpp.yml) with a TRIVIAL stand-in for the
 # caller's own provision/install/configure stage, run against the test
@@ -21,7 +21,7 @@
 #                                          this value WITHOUT supplying
 #                                          l3_run_id directly — l3_run_id is
 #                                          a RESERVED var on the launch path
-#                                          (R4a/P1-2) and passing it here
+#                                          and passing it here
 #                                          would itself trip that refusal,
 #                                          not exercise the boundary under
 #                                          test.

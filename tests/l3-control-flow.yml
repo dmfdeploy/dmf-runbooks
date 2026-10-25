@@ -1,17 +1,16 @@
 ---
-# umbrella #202 WP3 R4a (codex round-3 P2-5, "THE deliverable") — task-file
+# Task-file
 # EXECUTION tests. tests/l3-budget-logic.yml proves the pure filter
 # functions are correct; it proves NOTHING about the task-file/control-flow
-# layer (codex round-3's own point — see docs referenced in the WP3-R4a
-# work order). This suite actually RUNS roles/l3_run_guard's real,
+# layer. This suite actually RUNS roles/l3_run_guard's real,
 # unmodified task files against tests/harness's stub K8s/NetBox/helm
 # backends and asserts on REAL observed behavior:
 #
 #   1. the bounded 409-then-empty-read lock retry loops-then-succeeds, and
 #      separately loops-then-refuses (facility-busy/lock-race) — never a
-#      raw "Recursive loop detected in template" crash (P1-1).
+#      raw "Recursive loop detected in template" crash.
 #   2. a reserved-var extra_var (l3_attempt_id) is refused at entry, and
-#      separately l3_run_id is refused at entry on the LAUNCH path (P1-2);
+#      separately l3_run_id is refused at entry on the LAUNCH path;
 #      and separately, a forged l3_milestone_token extra_var is refused at
 #      entry too (PR dmf-runbooks#46 review fix — dmfdeploy/dmfdeploy#390's
 #      milestone marker var was missed from the original reservation).
@@ -25,10 +24,10 @@
 #   4. supersede does NOT fire on a pre-mutation refusal — an older
 #      rollback-eligible snapshot survives untouched when a NEW run's own
 #      reserved-var refusal fires before that new run ever reaches its
-#      first-mutation boundary (P1-5).
+#      first-mutation boundary.
 #   5. a rollback against a run_id with no snapshot emits exactly ONE
 #      marker (no-snapshot) — not a second rollback_incomplete on top of
-#      it (P1-7).
+#      it.
 #
 # Run:  ansible-playbook tests/l3-control-flow.yml
 #
@@ -192,7 +191,7 @@
           failed_when: false
 
     # ════════════════════════════════════════════════════════════════════
-    # Scenario 2: reserved-var + launch l3_run_id refused AT ENTRY (P1-2)
+    # Scenario 2: reserved-var + launch l3_run_id refused AT ENTRY
     # ════════════════════════════════════════════════════════════════════
     - name: "(2) reserved-var rejection — start fresh stubs"
       block:
@@ -561,7 +560,7 @@
           failed_when: false
 
     # ════════════════════════════════════════════════════════════════════
-    # Scenario 4: supersede does NOT fire on a pre-mutation refusal (P1-5)
+    # Scenario 4: supersede does NOT fire on a pre-mutation refusal
     # ════════════════════════════════════════════════════════════════════
     - name: "(4) supersede-not-on-pre-mutation-refusal — start fresh stubs"
       block:
@@ -651,7 +650,7 @@
           failed_when: false
 
     # ════════════════════════════════════════════════════════════════════
-    # Scenario 5: rollback with no snapshot — EXACTLY ONE marker (P1-7)
+    # Scenario 5: rollback with no snapshot — EXACTLY ONE marker
     # ════════════════════════════════════════════════════════════════════
     - name: "(5) rollback no-snapshot single-marker — start fresh stubs, run the fixture as a nested ansible-playbook"
       block:
@@ -717,8 +716,8 @@
 
     # ════════════════════════════════════════════════════════════════════
     # Scenario 6: forged _l3_lock_create=201 extra_var against a GENUINE
-    # 409 must NOT acquire the lock (R5a/P1-1, codex round-4's exact
-    # executed proof) — the cluster-truth readback must catch it.
+    # 409 must NOT acquire the lock (an executed
+    # proof) — the cluster-truth readback must catch it.
     # ════════════════════════════════════════════════════════════════════
     - name: "(6) forged register (_l3_lock_create=201) — start fresh stubs, pre-seed a REAL lock held by someone else"
       block:
@@ -812,7 +811,7 @@
 
     # ════════════════════════════════════════════════════════════════════
     # Scenario 7: l3_fault_inject is INERT without the L3_TESTMODE env
-    # sentinel (R5a/P2-1, codex round-4) — a production run supplying
+    # sentinel — a production run supplying
     # l3_fault_inject as an extra_var (the ONLY channel it could ever
     # reach a real AWX dispatch through) must never trigger anything.
     # ════════════════════════════════════════════════════════════════════
@@ -878,7 +877,7 @@
     # ════════════════════════════════════════════════════════════════════
     # Scenario 8: holder-replacement (lock-lost) at a terminal-patch
     # checkpoint boundary — the OLD (fenced-out) attempt must NOT patch
-    # the snapshot; the run_complete write must never land (R5a/P1-4).
+    # the snapshot; the run_complete write must never land.
     # ════════════════════════════════════════════════════════════════════
     - name: "(8) holder-replacement at a terminal checkpoint — start fresh stubs"
       block:

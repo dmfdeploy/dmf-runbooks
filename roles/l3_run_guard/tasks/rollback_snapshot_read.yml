@@ -1,7 +1,7 @@
 ---
 # umbrella #202 WP3-B stage — snapshot read + refusals (§4.1).
 #
-# R3a-5 (codex round-2 P1-5): this now runs UNDER THE HELD LOCK (rollback.yml
+# This now runs UNDER THE HELD LOCK (rollback.yml
 # moved the lock acquisition to stage 2, before this stage) — a concurrent
 # run can no longer supersede/mutate/finish the snapshot in the gap
 # between reading it and holding the lock, which the R2a draft's
@@ -18,10 +18,8 @@
 # run already reached a terminal outcome, or its snapshot was superseded
 # by a later run). An operator cannot "override" their way past a missing
 # or untrustworthy diff baseline; the rollback literally has nothing safe
-# to compute against. (codex WP3-B's own text doesn't mention override for
-# these two refusals, unlike facility-busy/no-fit/missing-budget in
-# WP3-A, which explicitly do — treating that omission as deliberate here,
-# flagged in the WP3-B report.)
+# to compute against. (Unlike facility-busy/no-fit/missing-budget in
+# WP3-A, which explicitly allow it, these two refusals have no override.)
 
 - name: "L3 rollback: read the run's snapshot ConfigMap"
   kubernetes.core.k8s_info:

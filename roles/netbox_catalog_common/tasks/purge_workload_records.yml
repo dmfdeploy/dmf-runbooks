@@ -7,10 +7,9 @@
 # facility lock, after the L3 gate's own lock_checkpoint (frozen behavior
 # #1 — every NetBox write here happens with a checkpointed lock).
 #
-# umbrella #347 fix round FIX-A2b.1 (codex GATE-A2b.1 P1-2, P2-1) —
-# restructured on two fronts from the original WO-A2b-1 shape:
+# Two properties matter here:
 #
-#   P1-2: the DELETE loop below only EVER touches ids that appear in the
+#   The DELETE loop below only EVER touches ids that appear in the
 #   FRESH workload membership itself (_purge_found_ids — already validated
 #   against the expected set + lifecycle). An expected id NOT in that fresh
 #   membership is NEVER deleted directly anymore — "not currently grouped
@@ -22,7 +21,7 @@
 #   200 (or a failed read) is a fail-closed violation — refuse the WHOLE
 #   run, delete nothing.
 #
-#   P2-1: the fresh membership read is now PAGINATED (paginate_services.yml,
+#   The fresh membership read is now PAGINATED (paginate_services.yml,
 #   bounded at 100 pages) instead of trusting the first ?limit=500 page as
 #   the whole world — a global dmf-catalog query, not scoped to this
 #   workload, so an unexpected/bad-lifecycle member for THIS workload could

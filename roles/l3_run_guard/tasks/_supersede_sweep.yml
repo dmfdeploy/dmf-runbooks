@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3 R3a-5 (codex round-2 P1-5) — shared supersede sweep:
+# Shared supersede sweep:
 # ANY later mutating run (a fresh launch OR a teardown) invalidates ALL
 # OLDER rollback-eligible snapshots ({in-progress, failed_rollback_required,
 # rollback_incomplete} — l3_classify_run_records' widened definition,
@@ -10,10 +10,9 @@
 # CM stays as an audit trail).
 #
 # Called from TWO places, BOTH now at the just-before-first-mutation
-# boundary (R4a/P1-5 — moved from right-after-lock-acquire; a refusal
+# boundary (not right after lock acquire: a refusal
 # during read-only planning, before this run is known to mutate anything,
-# must never invalidate an older dirty run's only safe rollback baseline
-# — codex round-3's exact finding):
+# must never invalidate an older dirty run's only safe rollback baseline):
 #   * capacity.yml (launch flow) — after missing-budget/no-fit have
 #     either passed or been explicitly overridden, right before this
 #     stage's own fault-injection boundary and the caller's provision

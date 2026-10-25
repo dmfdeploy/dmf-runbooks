@@ -1,11 +1,11 @@
 ---
-# umbrella #347 fix round FIX-A2b.1 (P1-2, codex GATE-A2b.1) — one bounded
+# One bounded
 # GET-by-id check for an expected id that the fresh membership read did NOT
 # find, invoked via loop+include_tasks from purge_workload_records.yml.
 # `_purge_member_id` is one entry of _purge_missing_ids (loop_control.loop_var).
 #
 # THE BUG THIS CLOSES: "not currently grouped under workload:<slug>" is NOT
-# the same fact as "the record is gone". codex's executed probe retagged a
+# the same fact as "the record is gone". An executed probe retagged a
 # still-live, still-seeded service from workload:demo-d to
 # workload:other-workload while leaving its id in purge_expected_service_ids
 # — the OLD code treated "not found in this workload's own fresh read" as

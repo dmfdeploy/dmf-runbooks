@@ -174,9 +174,9 @@
           failed_when: false
 
     # ════════════════════════════════════════════════════════════════════
-    # Scenario 2: umbrella #201 WP3 fix-round D1/D3 — topology_params
-    # ABSENT on a view-role launch is now a fully legitimate SCALAR path
-    # (there is no more "required" refusal at all, per D1's own fix — see
+    # Scenario 2: umbrella #201 WP3 — topology_params
+    # ABSENT on a view-role launch is a fully legitimate SCALAR path
+    # (there is no "required" refusal at all — see
     # topology_validate.yml's header), so this scenario proves the
     # COMPLEMENT to scenario 5: a scalar (non-topology) view launch reaches
     # lock acquisition JUST AS CLEANLY, with topology_validate.yml a
@@ -708,7 +708,7 @@
           failed_when: false
 
     # ════════════════════════════════════════════════════════════════════
-    # Scenario 6 (finding 7 coverage): the group CAPACITY loop-and-sum
+    # Scenario 6: the group CAPACITY loop-and-sum
     # actually renders every release. Reaches PAST the gate (capacity.yml's
     # own `helm pull`+`helm template`), so needs the `helm` PATH shim
     # (same mechanism as l3-playbook-execution.yml's own scenarios 8-11)
@@ -892,9 +892,9 @@
           failed_when: false
 
     # ════════════════════════════════════════════════════════════════════
-    # Scenario 7 (finding 7 coverage): snapshot -> SEPARATE rollback-run.yml
+    # Scenario 7: snapshot -> SEPARATE rollback-run.yml
     # round-trip, exercising BOTH the persisted topology_service_names (N+1
-    # NetBox records, all genuinely created this time) AND D4's coordinator
+    # NetBox records, all genuinely created this time) AND the coordinator
     # state (a REAL active-source write this run made, which rollback must
     # remove). Fault at the NEW post-topology-mutation boundary (fires
     # after the topology group's own NetBox provision + the coordinator
@@ -1179,7 +1179,7 @@
           failed_when: false
 
     # ════════════════════════════════════════════════════════════════════
-    # Scenario 8 (fix-round addendum, codex cross-WP FAIL): a SOURCE-role
+    # Scenario 8: a SOURCE-role
     # launch carrying topology_params — the exact shape today's live
     # catalog wiring produces while topology_ref is still attached to the
     # source entry too (dmf-media#22, pending) — must refuse BEFORE lock

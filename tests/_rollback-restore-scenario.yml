@@ -1,7 +1,7 @@
 ---
 # umbrella #202 WP3-B — rollback tag-restore scenario, extending ADR-0046
-# decision 4 coverage to the rollback path (codex's own instruction:
-# "tests/tag-preservation.yml must cover the rollback path too").
+# decision 4 coverage to the rollback path (tests/tag-preservation.yml
+# must cover the rollback path too).
 #
 # Proves: (a) the OWNED subset (lifecycle:*, monitoring:*, dmf-catalog,
 # app:*, exposure:*) is restored to exactly what the snapshot recorded —
