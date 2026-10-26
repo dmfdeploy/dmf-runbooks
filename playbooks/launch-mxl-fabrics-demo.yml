@@ -20,7 +20,7 @@
     # (Was the full chart ref, which doubled the name in the pull URL and
     # could never resolve — latent since the chart was never published.)
     l3_chart_ref: "oci://zot.zot.svc.cluster.local:5000/dmf/charts"
-    # umbrella #201 WP3: bumped 0.2.1 -> 0.4.0 for the WP2 per-source
+    # Bumped 0.2.1 -> 0.4.0 for the per-source
     # flow.id/pattern/sourceId values + active-source supervisor gate this
     # playbook's topology mode now depends on (charts/mxl-fabrics-demo,
     # dmf-media). dmf-infra's own JT extra_vars pin (0.3.1) and the 630 seed
@@ -57,7 +57,7 @@
     mxl_function_key: "{{ l3_catalog_key }}"
     mxl_release: "{{ l3_release }}"
     mxl_namespace: "{{ l3_target_namespace }}"
-    # umbrella #202 WP3-A: the SAME --set values the install task below
+    # The SAME --set values the install task below
     # passes to `helm upgrade --install` — reused for the L3 capacity
     # preflight's `helm template` recompute so it evaluates the chart this
     # play is actually about to install, not a stale approximation.
@@ -68,7 +68,7 @@
       - "image.tag={{ mxl_image_tag }}"
       - "placementMode={{ mxl_placement_mode }}"
       - "nodeAccess.create={{ mxl_node_access_create | bool | lower }}"
-    # umbrella #201 WP3 — topology mode. l3_run_guard's topology_validate.yml
+    # Topology mode. l3_run_guard's topology_validate.yml
     # stage activates PURELY on whether a topology_params extra_var was
     # supplied (no separate required-flag; see that file's
     # own header for the forgery a computed mxl_role-based flag was
@@ -96,7 +96,7 @@
       - "nodeAccess.create={{ mxl_node_access_create | bool | lower }}"
     # Scalar-source semantics: chart 0.4.0's
     # source-handshake.yaml gates the initiator on
-    # `active-source == own sourceId` (WP2's new supervisor entry gate), so a
+    # `active-source == own sourceId` (the supervisor's new entry gate), so a
     # SCALAR (non-topology) source launch — the pre-topology demo's own
     # walked flow, runbook #203: deploy source, deploy viewer, preview works
     # — would now park forever with no topology_params in sight, unless THIS
@@ -130,7 +130,7 @@
     # barrier — mxl_role is itself an ordinary, extra-vars-shadowable input
     # (same as l3_release/l3_catalog_key throughout this whole file), so
     # this guard cannot be the adversarial anchor against a deliberate
-    # attacker; that anchor remains WP3a's own delivery guarantee (only a
+    # attacker; that anchor remains the console's own delivery guarantee (only a
     # genuine viewer-entry deploy's launch seam attaches topology_params)
     # plus the dmf-media#22 catalog cleanup that removes topology_ref from
     # the source entry entirely. This guard's job is narrower and more

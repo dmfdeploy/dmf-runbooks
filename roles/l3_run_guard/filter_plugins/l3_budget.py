@@ -1,5 +1,4 @@
-"""umbrella #202 WP3 — launcher-tier authoritative capacity/lock/snapshot/
-rollback logic (WP3-A/WP3-B, revised as R2a).
+"""Launcher-tier authoritative capacity/lock/snapshot/rollback logic.
 
 Pure functions only (mirrors roles/netbox_catalog_common/filter_plugins/netbox_tags.py):
 offline-unit-testable via tests/l3-budget-logic.yml, no live cluster required.
@@ -15,8 +14,8 @@ lifetime, so their requests are CUMULATIVE with the app sum, and also
 CUMULATIVE with every LATER sequential init container's own peak (a
 sequential init that starts after a sidecar is already running pays for
 both). This is only detectable from a live pod spec (or a rendered chart
-template) — the console's Prometheus/KSM-derived supply view (umbrella #202
-WP1) has no visibility into restartPolicy at all, so it can only ever
+template) — the console's Prometheus/KSM-derived supply view
+has no visibility into restartPolicy at all, so it can only ever
 approximate with app+init-max. The launcher tier reads live/rendered specs
 directly, so it implements the real distinction.
 
@@ -133,11 +132,11 @@ def l3_pod_demand(pod: dict) -> dict:
 
     R2a-6b: implements Kubernetes' REAL cumulative-prefix algorithm
     (upstream ``k8s.io/kubernetes/pkg/api/v1/resource.PodRequests``), not
-    the WP3-A draft's "sequential-max vs concurrent-sum" approximation
+    the older "sequential-max vs concurrent-sum" approximation
     (which silently UNDER-counted whenever a sequential init container
     followed a restartable sidecar — exact repro: sidecar 200m
-    THEN sequential 900m, app 100m must total 1100m; the WP3-A draft
-    returned 900m, dropping the sidecar's concurrent cost entirely).
+    THEN sequential 900m, app 100m must total 1100m; an approximation
+    would return 900m, dropping the sidecar's concurrent cost entirely).
 
     For each init container ``i`` in declaration ORDER, define::
 
@@ -331,7 +330,7 @@ def l3_render_demand(manifests: list) -> dict:
     rendered pod template has BOTH cpu and memory requests present — one
     fully-budgeted container next to one bare container still refuses
     missing-budget (exact repro fixture: two containers, one
-    budgeted, one bare — the WP3-A draft's "any nonzero total" rule missed
+    budgeted, one bare — an "any nonzero total" rule would miss
     this entirely since the budgeted container's nonzero sum masked the
     bare one).
 
@@ -493,7 +492,7 @@ def l3_lock_decision(existing_lock, now_epoch, ttl_seconds) -> dict:
     (or ``None``/``{}`` if absent — those are equivalent to "no lock").
 
     R2a-3b (final disposition): NO within-TTL reclaim
-    EVER, not even by the SAME run_id. This DROPS the WP3-A/A2
+    EVER, not even by the SAME run_id. This DROPS the
     same-run-residue reclaim carve-out entirely — two attempts of the same
     run are still two DIFFERENT attempt_ids (R2a-3a: attempt_id is now a
     separate, freshly-minted identity per play invocation, distinct from
@@ -569,7 +568,7 @@ def l3_lock_release_decision(current_lock_data, my_attempt_id) -> dict:
 
 
 # The FULL rollback-eligible status set — a
-# widened supersede rule. The WP3-A/R2a draft only superseded records
+# widened supersede rule. An older rule only superseded records
 # still ``in-progress``, leaving ``failed_rollback_required`` and
 # ``rollback_incomplete`` residue eligible for rollback FOREVER even after
 # a later launch/teardown already invalidated their baseline — this
@@ -661,7 +660,7 @@ def l3_set_values_dicts(set_values: list) -> list:
     ``helm --set`` semantics exactly, the same interpretation
     ``l3_set_flag_argv``'s ``--set`` argv gets from the helm CLI.
 
-    umbrella #202 WP3 R6a: this is the
+    This is the
     INSTALL-side twin of ``l3_set_flag_argv`` — both are one-line, direct
     transformations of the SAME flat ``l3_chart_set_values`` list, so a
     launch playbook's ``kubernetes.core.helm`` install task and
@@ -695,7 +694,7 @@ def l3_flatten_set_values(values: dict, _prefix: str = "") -> list:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# WP3-B — rollback-run pure logic (plan §4.1/§4.2/§4.4/§4.5/§4.6)
+# Rollback-run pure logic (plan §4.1/§4.2/§4.4/§4.5/§4.6)
 # ═══════════════════════════════════════════════════════════════════════
 
 # §4.1: a run's snapshot ConfigMap status that means the snapshot is STALE
@@ -703,13 +702,13 @@ def l3_flatten_set_values(values: dict, _prefix: str = "") -> list:
 # makes a subtractive diff against this snapshot unsafe (a superseded
 # snapshot's "pre-existing" baseline may no longer reflect reality; a
 # run_complete run has nothing left to roll back — NOTE rollback_complete
-# is no longer a member: R2a-7 makes it structurally unreachable in WP3,
+# is no longer a member: it is structurally unreachable,
 # so there is nothing to remove it FROM here; it never gets written).
 _STALE_SNAPSHOT_STATUSES = frozenset({"run_complete", "superseded"})
 # Statuses a rollback may legitimately proceed against — including its OWN
 # prior state (failed_rollback_required — the normal trigger) and
 # rollback_incomplete (the §4.5 idempotent retry case — the ONLY terminal
-# rollback status in WP3, per R2a-7).
+# rollback status).
 _PROCEED_SNAPSHOT_STATUSES = frozenset({"in-progress", "failed_rollback_required", "rollback_incomplete"})
 
 
@@ -756,8 +755,8 @@ def l3_helm_release_diff(pre_run_releases: list, current_releases: list) -> list
 
 def l3_releases_to_remove(pre_run_helm_surface: dict, current_helm_surface: dict) -> dict:
     """Per-namespace wrapper around ``l3_helm_release_diff`` — both
-    surfaces are shaped ``{"mxl": [...], "nmos": [...]}`` (WP3-A
-    snapshot.yml's own ``_l3_helm_surface`` shape).
+    surfaces are shaped ``{"mxl": [...], "nmos": [...]}`` (snapshot.yml's
+    own ``_l3_helm_surface`` shape).
     """
     namespaces = set(pre_run_helm_surface or {}) | set(current_helm_surface or {})
     return {
@@ -1204,15 +1203,14 @@ def l3_rollback_outcome(helm_dirty: bool, netbox_dirty: bool) -> dict:
     R2a-7 (§4.6-honest amendment, final disposition):
     monitoring drain is STRUCTURALLY UNVERIFIABLE from the launcher EE — no
     live PromSD read exists anywhere in this tier (see snapshot.yml's own
-    monitoring-surface header comment; this was already true in WP3-A/B,
-    R2a-7 just stops pretending otherwise at the terminal-status layer).
+    monitoring-surface header comment; the terminal-status layer
+    reports it rather than hiding it).
     Because of that, ``monitoring`` is now ALWAYS a member of the dirty-
     surfaces list, on EVERY rollback, regardless of how clean the helm/
     netbox readbacks came back — which makes ``verdict="rollback_complete"``
-    STRUCTURALLY UNREACHABLE in WP3 (grep-provable: this function never
-    returns that string, on any input). WP4's console-side verification is
-    the only tier that can ever upgrade a run to fully clean — the umbrella
-    #202 acceptance gate closes only with WP4, not this WP.
+    STRUCTURALLY UNREACHABLE (grep-provable: this function never
+    returns that string, on any input). The console-side verification is
+    the only tier that can ever upgrade a run to fully clean.
 
     ``helm_dirty``/``netbox_dirty`` now come from READBACK verification
     (``l3_helm_readback_dirty``/``l3_netbox_restore_dirty``/

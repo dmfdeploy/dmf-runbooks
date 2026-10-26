@@ -1,9 +1,9 @@
 ---
-# umbrella #202 WP3 R2a-4 (teardown lock-only guard), revised R3a-9/R3a-10
-# — identity: SAME resolution as the launch flow
+# Teardown lock-only guard.
+# Identity: SAME resolution as the launch flow
 # (identity.yml, shared) — a console-driven teardown DOES carry
-# l3_request_id (WP2 tracks teardown and defines its identity as the
-# launch's own l3_request_id; the R2a-4 draft self-minted UNCONDITIONALLY
+# l3_request_id (the console tracks teardown and defines its identity as the
+# launch's own l3_request_id; an earlier draft self-minted UNCONDITIONALLY
 # and its own comment claiming "teardown isn't console-tracked" was WRONG
 # — it silently overwrote a console-supplied id with a fresh, uncorrelated
 # one on every teardown). Fixed by reusing identity.yml's own hex32-

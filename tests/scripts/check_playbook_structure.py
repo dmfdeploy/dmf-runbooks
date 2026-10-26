@@ -1385,7 +1385,7 @@ def _check_playbook(filename: str, flow: str, *, outer_index: int = 0) -> list[s
         # key at this outer level for rollback-run.yml, unlike
         # launch/teardown.
         #
-        # R5a-6 FINDING, FIXED same round (see tests/l3-playbook-execution.yml
+        # Fixed bug (see tests/l3-playbook-execution.yml
         # scenario 7's own comment for the full writeup): this suite's own
         # construction surfaced that rollback.yml's stage 1 (identity) and
         # stage 2 (facility lock — where the shared post-lock

@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3-B — L3 rollback-run: authoritative launcher-tier
+# L3 rollback-run: authoritative launcher-tier
 # rollback of a run whose deploy started then failed (plan §4.1-§4.6).
 #
 # Inputs (extra_vars):

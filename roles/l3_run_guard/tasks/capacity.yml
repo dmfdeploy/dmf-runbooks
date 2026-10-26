@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3 stage — capacity recompute (§3.2, scheduler-accurate).
+# Capacity recompute stage (§3.2, scheduler-accurate).
 # Multi-node hard-fail + RBAC-forbidden
 # handling live in preflight.yml, which runs BEFORE the lock — see
 # its header comment. This stage runs AFTER snapshot.yml:
@@ -9,8 +9,8 @@
 # exists and must be marked superseded + the lock released, which
 # _refuse_pre_mutation.yml handles uniformly).
 #
-# Unlike the console's conservative Prometheus/KSM-derived upper bound
-# (umbrella #202 WP1), this tier reads LIVE specs directly — node
+# Unlike the console's conservative Prometheus/KSM-derived upper bound,
+# this tier reads LIVE specs directly — node
 # allocatable, every pod's actual containers/initContainers (including the
 # restartPolicy==Always restartable-sidecar distinction the console can't
 # see at all), and the chart's OWN rendered manifest for the run about to

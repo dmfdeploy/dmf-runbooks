@@ -84,10 +84,10 @@
 # through to whatever a bare/absent kubeconfig resolves to on the
 # operator's machine, not the stub.
 #
-# R5a-6 FINDING, FIXED same round: this suite's own construction
+# Fixed bug: this suite's own construction
 # surfaced that rollback.yml's stages 1-2 (identity, facility lock) used
 # to run OUTSIDE rollback.yml's own inner block/rescue — the exact same
-# "early stages ran unenclosed" bug R4a/P1-3 fixed for launch/teardown,
+# "early stages ran unenclosed" bug already fixed for launch/teardown,
 # never carried over to rollback. An UNEXPECTED failure during those two
 # stages (like the shared `post-lock` fault used below) propagated with
 # the facility lock still correctly released (rollback-run.yml's own
@@ -743,8 +743,8 @@
           failed_when: false
 
     # ════════════════════════════════════════════════════════════════════
-    # Scenario 7: rollback-run.yml, fault at post-lock — the R5a-6 FINDING,
-    # FIXED same round (see this file's own header for the full writeup).
+    # Scenario 7: rollback-run.yml, fault at post-lock — the bug this suite found,
+    # now fixed (see this file's own header for the full writeup).
     # post-lock is the ONLY fault-injection boundary reachable on the
     # rollback flow at all (rollback_helm_surface.yml/
     # rollback_netbox_surface.yml/rollback_terminal.yml never call

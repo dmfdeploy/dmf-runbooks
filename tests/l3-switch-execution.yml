@@ -1,5 +1,5 @@
 ---
-# umbrella #201 WP4b — REAL-playbook stubbed execution tests for
+# REAL-playbook stubbed execution tests for
 # playbooks/switch-mxl-fabrics-demo.yml (spec §6.2's quiesce -> re-point ->
 # select). Same pattern as tests/l3-topology-execution.yml: each scenario
 # starts a FRESH stub-server process, runs the REAL, unmodified switch

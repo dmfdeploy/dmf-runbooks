@@ -8,7 +8,7 @@
 # stdout always ends with the PLAY RECAP epilogue (plus possible framework
 # noise) after the launcher's own last debug line, which made a
 # stdout-tail-based contract unreliable in the first place (see dmf-cms's
-# WP3-D amendment for the console-side history of the prior stdout-based
+# amendment for the console-side history of the prior stdout-based
 # approach this replaces).
 #
 # Callers set l3_outcome_token (required) and l3_outcome_kv (optional, a

@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3 stage — pre-run snapshot (§4.1, post-lock — R2a-8: this
+# Pre-run snapshot stage (§4.1, post-lock): this
 # now runs BEFORE capacity.yml, as early after lock acquisition as
 # possible, so the pre-mutation baseline exists before ANY refusal that
 # could still fire post-lock; see capacity.yml's own header comment for
@@ -21,7 +21,7 @@
 #      compares by id, never by name alone (a delete-then-recreate under
 #      the same name must not be mistaken for "unchanged").
 #   2. Helm — every release currently installed in the two catalog
-#      namespaces (mxl, nmos), so a rollback (WP3-B) has a "what else was
+#      namespaces (mxl, nmos), so a rollback has a "what else was
 #      here" baseline independent of this run's own release. R3a-8:
 #      enriched with a per-release CONTENT-IDENTITY fingerprint
 #      (values_hash, alongside the already-present chart/app_version
@@ -29,7 +29,7 @@
 #   3. Monitoring — sourced from the NetBox record's own fields (custom
 #      fields + monitoring:probe tag presence), NOT a live PromSD read: the
 #      EE cannot assume off-cluster PromSD reachability. Drain
-#      VERIFICATION (did the probe actually go away) is WP4's console-side
+#      VERIFICATION (did the probe actually go away) is the console's
 #      job; this snapshot only needs the pre-run attribution set to exist.
 #
 # dmf.io/topology's combined "<key>/<release>" was an ILLEGAL K8s
@@ -208,7 +208,7 @@
       ansible.builtin.set_fact:
         _l3_monitoring_surface: "{{ _l3_netbox_surface | l3_monitoring_surface }}"
 
-    # ── umbrella #201 WP3 — OPT-IN coordinator-state capture.
+    # ── OPT-IN coordinator-state capture.
     #    l3_coordinator_configmap_name is empty by default (role default,
     #    see defaults/main.yml) — a no-op for every launcher that doesn't
     #    set it; only launch-mxl-fabrics-demo.yml does (mxl-coordinator).
@@ -275,7 +275,7 @@
               dmf.io/catalog-key: "{{ l3_catalog_key | string }}"
               dmf.io/release: "{{ l3_release | string }}"
               dmf.io/owner: "{{ _l3_owner | string }}"
-          # topology_service_names (umbrella #201 WP3): persisted so a LATER
+          # topology_service_names: persisted so a LATER
           # rollback-run.yml invocation (a separate Ansible process —
           # l3_release_group is a runtime-only fact, never available there)
           # can recover the same name set for its own current-state NetBox

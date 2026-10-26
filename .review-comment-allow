@@ -31,3 +31,51 @@ tests/scripts/check_playbook_structure.py:reopens the umbrella #323 fix round's 
 tests/scripts/check_playbook_structure.py:mirroring the umbrella #323 switch fix round's own P1)  # error-message string in code, not a comment
 tests/scripts/check_playbook_structure.py:umbrella #347 fix round P2   # error-message string in code, not a comment
 tests/scripts/check_playbook_structure.py:umbrella #347 fix round P3-1. A success  # error-message string in code, not a comment
+playbooks/launch-mxl-fabrics-demo.yml:umbrella #202 WP3-A authoritative  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/launch-mxl-fabrics-demo.yml:umbrella #201 WP3)"  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/launch-mxl-fabrics-demo.yml:umbrella #201 WP3 — one  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/launch-mxl-fabrics-demo.yml:umbrella #201 WP3, spec §5  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/launch-mxl-fabrics-demo.yml:umbrella #201 WP3  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/launch-mxl-fabrics-demo.yml:umbrella #201 WP3 —  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/launch-mxl-fabrics-demo.yml:umbrella #201 WP3 — the SAME pulled/local  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/launch-mxl-fabrics-demo.yml:umbrella #201 WP3 — every group item is always  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/launch-mxl-fabrics-demo.yml:umbrella #201 WP3 — a no-op  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/launch-nmos-cpp.yml:umbrella #202 WP3-A authoritative  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/launch-nmos-crosspoint.yml:umbrella #202 WP3-A authoritative  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/switch-mxl-fabrics-demo.yml:umbrella #201 WP4b,  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/teardown-mxl-fabrics-demo.yml:umbrella #202 WP3 R2a-4)  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/teardown-mxl-fabrics-demo.yml:umbrella #201 WP3b —  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/teardown-mxl-fabrics-demo.yml:umbrella #201 WP3b)"  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/teardown-mxl-fabrics-demo.yml:umbrella #201 WP3b — a topology source's own  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/teardown-nmos-cpp.yml:umbrella #202 WP3 R2a-4)  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/teardown-nmos-crosspoint.yml:umbrella #202 WP3 R2a-4)  # task name (a YAML string, not a comment); renaming a task changes run output
+roles/l3_run_guard/tasks/_lock_acquire_one_attempt.yml:umbrella #202 WP3 R2a-3d) — a concurrent run  # message text in a YAML value, not a comment; changing it changes runtime output
+roles/l3_run_guard/tasks/capacity.yml:umbrella #201 WP3 — reuses the SAME resolved chart path/vers  # task name (a YAML string, not a comment); renaming a task changes run output
+roles/l3_run_guard/tasks/main.yml:umbrella #201 WP3, before lock — same before-lock  # task name (a YAML string, not a comment); renaming a task changes run output
+roles/l3_run_guard/tasks/preflight.yml:umbrella #202 WP3-C)"  # task name (a YAML string, not a comment); renaming a task changes run output
+roles/l3_run_guard/tasks/preflight.yml:umbrella #202 WP3-C): ' ~ (_l3_all_pods.msg | default('')))  # message text in a YAML value, not a comment; changing it changes runtime output
+roles/l3_run_guard/tasks/rollback_netbox_surface.yml:umbrella #201 WP3 generalizes the  # task name (a YAML string, not a comment); renaming a task changes run output
+roles/l3_run_guard/tasks/rollback_netbox_surface.yml:umbrella #201 WP3 — flattens every name's  # task name (a YAML string, not a comment); renaming a task changes run output
+roles/l3_run_guard/tasks/rollback_snapshot_read.yml:umbrella #201 WP3  # task name (a YAML string, not a comment); renaming a task changes run output
+roles/l3_run_guard/tasks/snapshot.yml:umbrella #201 WP3 — this run's own  # task name (a YAML string, not a comment); renaming a task changes run output
+roles/l3_run_guard/tasks/snapshot.yml:umbrella #201 WP3 generalizes the former single-name  # task name (a YAML string, not a comment); renaming a task changes run output
+roles/l3_run_guard/tasks/snapshot.yml:umbrella #201 WP3 — flattens every name's own results list f  # task name (a YAML string, not a comment); renaming a task changes run output
+tests/l3-budget-logic.yml:umbrella #202 WP3-A — L3 launcher offline gates"  # task name (a YAML string, not a comment); renaming a task changes run output
+tests/l3-budget-logic.yml:umbrella #202 WP3 (R2a revision): no-double-count, state-dri  # message text in a YAML value, not a comment; changing it changes runtime output
+tests/l3-control-flow.yml:umbrella #202 WP3 R4a/P2-5 — L3 launcher task-file execution  # task name (a YAML string, not a comment); renaming a task changes run output
+tests/l3-control-flow.yml:umbrella #202 WP3 R4a/P2-5 + R5a: bounded lock retry  # message text in a YAML value, not a comment; changing it changes runtime output
+tests/l3-playbook-execution.yml:Umbrella #202 WP3 R5a-6 — L3 real-playbook stubbed execution  # task name (a YAML string, not a comment); renaming a task changes run output
+tests/l3-playbook-structure.yml:Umbrella #202 WP3 R5a-6 — L3 real-playbook structural meta-t  # task name (a YAML string, not a comment); renaming a task changes run output
+tests/l3-reserved-var-meta-test.yml:umbrella #202 WP3 R5a — L3 reserved-var meta-test"  # task name (a YAML string, not a comment); renaming a task changes run output
+tests/l3-reserved-var-meta-test.yml:umbrella #202 WP3 R5a: every register:/set_fact: name in  # message text in a YAML value, not a comment; changing it changes runtime output
+tests/l3-switch-execution.yml:Umbrella #201 WP4b — L3 switch playbook real-playbook stubbe  # task name (a YAML string, not a comment); renaming a task changes run output
+tests/l3-switch-execution.yml:umbrella #201 WP4b: the REAL, unmodified playbooks/switch-mx  # message text in a YAML value, not a comment; changing it changes runtime output
+tests/l3-topology-execution.yml:Umbrella #201 WP3 — L3 topology_params real-playbook stubbed  # task name (a YAML string, not a comment); renaming a task changes run output
+tests/l3-topology-logic.yml:umbrella #201 WP3 — L3 topology_params offline gates"  # task name (a YAML string, not a comment); renaming a task changes run output
+tests/l3-topology-logic.yml:umbrella #201 WP3: structural topology_params validation (th  # message text in a YAML value, not a comment; changing it changes runtime output
+tests/tag-preservation.yml:umbrella #202 WP3-B's rollback restore scenario  # message text in a YAML value, not a comment; changing it changes runtime output
+playbooks/switch-mxl-fabrics-demo.yml:#201 WP4b, roles/l3_run_guard/tasks/switch_read_coordinator.yml)  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/switch-mxl-fabrics-demo.yml:#201 WP4b condition 1, chart arg fixed by umbrella #306,  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/switch-mxl-fabrics-demo.yml:#201 WP4b condition 3, REVISED by umbrella #306 design round  # task name (a YAML string, not a comment); renaming a task changes run output
+playbooks/teardown-mxl-fabrics-demo.yml:#201 WP3b): a topology launch names every source release  # task name (a YAML string, not a comment); renaming a task changes run output
+roles/l3_run_guard/tasks/capacity.yml:#201 WP3 — now the COMBINED scalar+group total, see above)"  # task name (a YAML string, not a comment); renaming a task changes run output

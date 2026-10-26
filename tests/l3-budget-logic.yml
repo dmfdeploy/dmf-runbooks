@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3-A — L3 launcher capacity/lock/snapshot logic, offline
+# L3 launcher capacity/lock/snapshot logic, offline
 # gates (the plan's own gate list). Exercises roles/l3_run_guard's filter
 # plugin functions directly with synthetic fixtures — no live cluster
 # required, mirroring tests/tag-preservation.yml's pattern.
@@ -89,7 +89,7 @@
           ee_reserve) would wrongly refuse. Got: {{ _gate_a_fit }}
 
     # ── Gate (b): STATE-DRIFT SIM ────────────────────────────────────────
-    # A console-FIT-shaped fixture (the console's WP1 preflight said FIT
+    # A console-FIT-shaped fixture (the console's preflight said FIT
     # based on its own Prometheus-derived supply snapshot) where a NEW pod
     # has since appeared on the node — the launcher's live-spec recompute
     # must catch it and refuse NO-FIT, with a legible shortfall line in
@@ -149,7 +149,7 @@
     #   InitContainerUse(0, sidecar)     = 0          + 200 = 200
     #   InitContainerUse(1, sequential)  = 200(before) + 900 = 1100  <- max
     #   reqs = app(100) + total_restartable(200) = 300
-    #   pod_demand = max(300, 1100) = 1100m  (the WP3-A draft returned 900m
+    #   pod_demand = max(300, 1100) = 1100m  (an approximation returned 900m
     #   here — it never added the sidecar's concurrent cost to the LATER
     #   sequential init's own peak at all).
     - name: "(c) cumulative-prefix — Order A: sidecar THEN sequential"
@@ -377,7 +377,7 @@
           (parseable) and must NOT trip missing-budget — got
           {{ _gate_d_explicit_zero_manifests | l3_render_demand }}
 
-    # ── Gate (d2): R4a/P2-1 — replica/parallelism accounting ─────────────
+    # ── Check (d2): replica/parallelism accounting ─────────────
     - name: "(d2) zero-replica — codex's exact repro: a zero-scaled Deployment must charge ZERO, never floored to 1x"
       ansible.builtin.set_fact:
         _gate_d2_zero_replica_manifests:
@@ -610,7 +610,7 @@
           nothing to supersede FOR). Got: {{ _gate_f_result }}
 
     # ═════════════════════════════════════════════════════════════════════
-    # umbrella #202 WP3-B — rollback-run offline gates
+    # Rollback-run offline gates
     # ═════════════════════════════════════════════════════════════════════
 
     # ── Gate (g): snapshot-refusal classification table ─────────────────
@@ -666,7 +666,7 @@
         fail_msg: "(h) release diff FAIL: {{ _gate_h_diff }}"
 
     # ── Gate (i): R2a-7 §4.6-honest — monitoring ALWAYS dirty,
-    #    rollback_complete STRUCTURALLY UNREACHABLE in WP3 ─────────────────
+    #    rollback_complete STRUCTURALLY UNREACHABLE ─────────────────
     - name: "(i) rollback outcome — helm+netbox both CLEAN — monitoring still makes it incomplete (R2a-7)"
       ansible.builtin.set_fact:
         _gate_i_both_clean: "{{ false | l3_rollback_outcome(false) }}"

@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3-A — L3 launcher authoritative gate defaults.
+# L3 launcher authoritative gate defaults.
 
 # ── Facility lock (§4.5) ────────────────────────────────────────────────────
 # One fixed lock object for the single facility — namespace nmos is the
@@ -86,7 +86,7 @@ l3_coordinator_configmap_name: ""
 # an l3_-prefixed shadow copy, so an operator/inventory override of
 # netbox_api_url|netbox_api_token applies uniformly whether l3_run_guard
 # or the catalog role reads it. This role runs BEFORE the catalog role's
-# own include (per playbook ordering, WP3-A stage 6), so it cannot rely on
+# own include (per playbook ordering, stage 6), so it cannot rely on
 # that role's defaults/main.yml having loaded yet — it must carry its own
 # copy, same as every other role in this tree already does independently.
 netbox_api_url: "http://netbox.netbox.svc.cluster.local"
@@ -103,7 +103,7 @@ netbox_api_token: "{{ vault_netbox_catalog_token | default('') }}"
 # uses. Empty by default (the normal OCI-pull path, unaffected).
 l3_chart_local: ""
 
-# ── Topology params (umbrella #201 WP3, §3.2) ──────────────────────────────
+# ── Topology params (§3.2) ──────────────────────────────
 # There is deliberately NO
 # l3_topology_params_required default here — topology_validate.yml gates
 # purely on `topology_params is defined`, never a separate named flag (see
@@ -115,7 +115,7 @@ l3_chart_local: ""
 # and any topology viewer flow.id override — empty by default (a no-op for
 # every launcher that never sets it; nmos-cpp/nmos-crosspoint never do).
 # This role has no opinion on WHAT these values mean (e.g. mxl's own
-# sourceId= for a scalar source launch, umbrella #201 WP3) — it only
+# sourceId= for a scalar source launch) — it only
 # guarantees they reach the SAME render+install path as everything else.
 l3_chart_extra_set_values: []
 
@@ -149,10 +149,10 @@ l3_awx_job_id: "{{ awx_job_id | default(tower_job_id | default('direct'), true) 
 # else l3_awx_job_id (itself AWX-job-id-or-'direct'). Empty by default
 # (documents the contract, doesn't silently stamp a fake identity).
 # topology_params.target_facility integration (a richer facility/owner
-# model) is umbrella #201 WP3a's concern, not this role's.
+# model) is the console's concern, not this role's.
 l3_owner: ""
 
-# ── Rollback (WP3-B, §4.2) ───────────────────────────────────────────────
+# ── Rollback (§4.2) ───────────────────────────────────────────────
 # The custom-fields-clear shape a run-created NetBox record's finalise
 # PATCH sends before deletion — the SAME key set every catalog role
 # already declares as its own netbox_service_monitoring_custom_fields_clear

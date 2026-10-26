@@ -1,5 +1,5 @@
 ---
-# umbrella #201 WP3 stage — topology_params validation + release-group
+# Topology stage: topology_params validation + release-group
 # derivation, an OPTIONAL stage BEFORE lock acquisition (main.yml wires this
 # as stage 2.5, between preflight.yml and lock.yml — a topology-shaped
 # launch's whole point, N helm releases derived from sources[], is decided
@@ -37,12 +37,12 @@
 # caller input on rollback), l3_release_group/l3_topology_viewer_projection
 # have no legitimate caller-input case on ANY entry path, so both live in
 # _assert_reserved_vars.yml's universal list rather than a bespoke check
-# here — see that file's own umbrella #201 WP3 addendum.
+# here — see that file's own addendum.
 #
 # target_facility's LIVE agreement check (spec §3.4, dmf-media
 # catalog/topology-params.schema.yaml's own awx_inventory_timing note): the
 # launcher validates AGREEMENT against the env's own NetBox site, never
-# SELECTION — WP3a (dmf-cms) already resolved target_facility to the env's
+# SELECTION — dmf-cms already resolved target_facility to the env's
 # real site slug before injecting it into extra_vars (replacing the
 # catalog's illustrative placeholder), so a mismatch here means either a
 # stale/forged extra_var or an env with the wrong NetBox site shape, not a
@@ -51,7 +51,7 @@
 # With
 # topology_ref still attached to the SOURCE catalog entry too
 # (dmf-media#22, pending cleanup — the ratified design is viewer-only),
-# WP3a's launch seam attaches topology_params to a SOURCE-entry console
+# the console's launch seam attaches topology_params to a SOURCE-entry console
 # deploy as well, and the presence-keyed gate above would then
 # validate + derive a release group + patch active-source for that run —
 # a HALF-topology mutation with no paired viewer install. l3_topology_
@@ -115,7 +115,7 @@
 #    structurally valid topology_params. Queries NetBox for the env's OWN
 #    site (exactly one legal shape in J1); refuses on 0/>1 sites (this
 #    launcher must never GUESS a facility) or a mismatch against the
-#    received target_facility (WP3a already resolved it to the env's real
+#    received target_facility (the console already resolved it to the env's real
 #    slug before injection — a mismatch here is stale/forged input, not a
 #    legitimate choice; #231/multi-facility is the only place selection
 #    ever belongs). ──────────────────────────────────────────────────────

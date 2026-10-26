@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3 stage — facility lock (§4.5, atomic).
+# Facility lock stage (§4.5, atomic).
 #
 # Every lock ACQUISITION ATTEMPT mints its own attempt_id (uuid4,
 # distinct from run_id/request_id) — two attempts of the SAME run are

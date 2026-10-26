@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3 R2a-3e/R2a-8 — invoked by the CALLING launch-*.yml
+# Invoked by the CALLING launch-*.yml
 # playbook (`include_role: name: l3_run_guard, tasks_from: launch_success`)
 # from its OWN block, immediately after its provision/install/configure
 # stage completes successfully. Terminalizes the snapshot

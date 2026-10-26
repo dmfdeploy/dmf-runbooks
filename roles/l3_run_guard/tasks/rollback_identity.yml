@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3-B stage 1 — rollback identity + input validation.
+# Stage 1: rollback identity + input validation.
 #
 # Unlike the launch flow (identity.yml), l3_run_id here is a REQUIRED
 # INPUT (the snapshot target to roll back — the ORIGINAL failed deploy's
@@ -7,7 +7,7 @@
 # anything else. l3_request_id is a SEPARATE, secondary correlator for
 # THIS rollback command's own dispatch/audit trail (mirrors the console's
 # POST /api/runs/{run_id}/rollback minting its own request_id distinct
-# from run_id, umbrella #202 WP2) — self-minted for a direct
+# from run_id) — self-minted for a direct
 # run-playbook.sh invocation exactly like the launch flow's identity.yml.
 
 - name: "L3 rollback: assert l3_run_id was supplied and is well-formed"

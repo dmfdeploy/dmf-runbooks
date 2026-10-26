@@ -1,8 +1,8 @@
 ---
-# umbrella #202 WP3-A stage 1 — identity + entry path.
+# Stage 1: identity and entry path.
 #
-# Console-driven runs carry l3_request_id (minted by dmf-cms at dispatch,
-# umbrella #202 WP2) — that IS this run's identity end to end (the console's
+# Console-driven runs carry l3_request_id (minted by dmf-cms at dispatch) —
+# that IS this run's identity end to end (the console's
 # Operation.run_id, the launcher's snapshot ConfigMap name, and the
 # rollback command's run_id all correlate on this single value). A direct
 # run-playbook.sh invocation (ADR-0010 escape hatch) carries none of that —

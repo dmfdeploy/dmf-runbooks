@@ -1,6 +1,6 @@
 ---
 # MXL Fabrics demo - Switch: reconfigure an already-running viewer's active
-# source (umbrella #201 WP4b, spec §6.2's own quiesce -> re-point -> select
+# source (spec §6.2's own quiesce -> re-point -> select
 # sequencing, `DMF v0.2b Multi-Source Switch Spec 2026-07-15.md`).
 #
 # Consumes dmf-cms's ReconnectViaAwxActuator extra_vars contract VERBATIM
@@ -31,8 +31,8 @@
 # header for the full design rationale) rather than main.yml's full launch
 # gate or lock_only.yml's teardown entry point.
 #
-# Failure posture (spec §6.2, umbrella #201 WP4 addendum condition 4, revised
-# by umbrella #306, frozen 2026-07-30): a failure at ANY
+# Failure posture (spec §6.2, revised by umbrella #306, frozen
+# 2026-07-30): a failure at ANY
 # phase BEFORE PHASE 2's own upgrade verification leaves active-source
 # cleared (or never advanced) — a clean, zero-transmitter quiesced state,
 # no rollback needed because nothing was ever re-pointed. A failure OF

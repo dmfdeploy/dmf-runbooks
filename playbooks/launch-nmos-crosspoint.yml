@@ -29,7 +29,7 @@
     # Admin password — sourced from OpenBao (AWX credential / extra_vars). The
     # SHA256 (not the plaintext) is what lands in the rendered users.json Secret.
     crosspoint_admin_password: "{{ vault_nmos_crosspoint_admin_password | default('', true) }}"
-    # umbrella #202 WP3-A: single source of truth for the chart's install
+    # Single source of truth for the chart's install
     # values — used BOTH by the set_values install below AND (flattened
     # to --set-style strings via l3_flatten_set_values, R6a-1) by the L3
     # capacity preflight's `helm template` recompute. adminPasswordSha256 is
