@@ -100,7 +100,7 @@ def _default_state() -> dict:
         "pods": [],
         # when True, GET /api/v1/pods returns 403 Forbidden (RBAC-probe path)
         "pods_forbidden": False,
-        # TEST-ONLY (umbrella #202 WP3 R4a/P2-5): (namespace, name) -> int.
+        # TEST-ONLY: (namespace, name) -> int.
         # Simulates the create-then-read race l3_lock_acquire_one_attempt.yml
         # / _snapshot_create_one_attempt.yml retry over: while the counter
         # for a key is > 0, POST returns 409 WITHOUT actually storing the

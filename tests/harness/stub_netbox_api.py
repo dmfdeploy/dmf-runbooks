@@ -35,7 +35,7 @@ touches ipam.services):
     for the provision stage's own "device exists" assert; not a real
     per-device store)
 
-Plus a minimal `dcim.sites` surface (umbrella #201 WP3 — topology_validate.yml's
+Plus a minimal `dcim.sites` surface (topology_validate.yml's
 own live target_facility agreement check, the first caller of this route):
   * GET  /api/dcim/sites/                   (list ALL stored sites, no
     filtering — mirrors extras.tags' own "ignore query params, return
@@ -124,7 +124,7 @@ def _default_state() -> dict:
         # ?name= filter) and create.
         "tags": {},
         "_tags_next_id": 1,
-        # dcim.sites — umbrella #201 WP3 topology_validate.yml's own live
+        # dcim.sites — topology_validate.yml's own live
         # target_facility agreement check. Empty by default (the
         # 0-sites/ambiguous case is the DEFAULT state a scenario need not
         # seed anything for); a scenario POSTs 1 or 2 sites to drive the

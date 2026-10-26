@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3-A/B — shared override handling, honored on EVERY path
+# Shared override handling, honored on EVERY path
 # (launch AND rollback) regardless of eventual verdict: the banner below
 # always prints when override is set, whether the downstream checks would
 # themselves have refused or not. Requires l3_run_id already set by the

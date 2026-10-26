@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3-B — rollback tag-restore scenario, extending ADR-0046
+# Rollback tag-restore scenario, extending ADR-0046
 # decision 4 coverage to the rollback path (tests/tag-preservation.yml
 # must cover the rollback path too).
 #

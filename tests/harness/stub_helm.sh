@@ -67,7 +67,7 @@
 #                                       playbook's own expected shape.
 #   L3_STUB_HELM_ROLLBACK_FAIL=1        simulate `helm rollback` failure
 #   L3_STUB_HELM_UNINSTALL_FAIL=1       simulate `helm uninstall` failure
-#   L3_STUB_HELM_UPGRADE_FAIL=1         simulate `helm upgrade` failure (umbrella #201 WP4b)
+#   L3_STUB_HELM_UPGRADE_FAIL=1         simulate `helm upgrade` failure
 #   L3_STUB_HELM_LOG=<path>             when set, EVERY invocation (any
 #                                       subcommand) appends its full
 #                                       received argv as one line to this

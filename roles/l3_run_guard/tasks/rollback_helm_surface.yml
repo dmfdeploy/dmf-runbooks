@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3-B stage — helm surface rollback (§4.4). It verifies
+# Helm surface rollback (§4.4). It verifies
 # by readback (call-success never equals
 # clean), checks mxl-* releases
 # SPECIFICALLY for coordinator cleanup (never suppress a listing failure), and

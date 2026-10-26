@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3 R2a-8/R2a-3e — shared pre-mutation refusal cleanup.
+# Shared pre-mutation refusal cleanup.
 # Used by every refusal path that can fire BEFORE this run's own provision
 # stage has mutated anything (preflight-error, facility-busy,
 # lock-unavailable, missing-budget, no-fit): nothing was ever mutated, so

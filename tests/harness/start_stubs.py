@@ -55,8 +55,7 @@ def _apply_k8s_seed(seed_path: str) -> None:
     HTTP via a real POST after the server starts instead. ``phantom_conflicts``
     keys are ``"<namespace>|<name>"`` strings (JSON object keys can't be
     tuples either) — see stub_k8s_api.STATE's own docstring for what this
-    TEST-ONLY field simulates (the create-then-read race, umbrella #202
-    WP3 R4a/P2-5).
+    TEST-ONLY field simulates (the create-then-read race).
     """
     import json
 

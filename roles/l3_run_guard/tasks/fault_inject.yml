@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3 — TEST-ONLY fault injection point. Included at each stage
+# TEST-ONLY fault injection point. Included at each stage
 # boundary listed below with `vars: l3_fault_inject_boundary: <name>`.
 #
 # `l3_fault_inject` (a plain extra_var,
@@ -42,7 +42,7 @@
 #   post-first-mutation     — immediately after the caller's first real mutation
 #                           completes (launch: provision; teardown: helm removal;
 #                           rollback: first surface mutation)
-#   post-topology-mutation  — umbrella #201 WP3 — ONLY
+#   post-topology-mutation  — ONLY
 #                           wired by launch-mxl-fabrics-demo.yml, immediately
 #                           after its topology release-group NetBox provision
 #                           + mxl-coordinator active-source patch, before any
@@ -51,7 +51,7 @@
 #                           the coordinator's active-source write already in
 #                           place, so a SEPARATE rollback-run.yml invocation
 #                           has something real to restore/remove (D4).
-#   post-topology-teardown-mutation — umbrella #201 WP3b — ONLY wired by
+#   post-topology-teardown-mutation — ONLY wired by
 #                           teardown-mxl-fabrics-demo.yml, immediately after
 #                           its topology source Helm releases are uninstalled
 #                           (the viewer's own release + post-first-mutation
@@ -61,20 +61,20 @@
 #                           topology teardown" with the N source releases
 #                           already gone but their NetBox records/the
 #                           coordinator ConfigMap still present.
-#   post-switch-lock        — umbrella #201 WP4b — ONLY wired by
+#   post-switch-lock        — ONLY wired by
 #                           switch-mxl-fabrics-demo.yml, immediately after
 #                           switch_lock acquisition, before ANY coordinator
 #                           mutation — proves a pre-mutation switch failure
 #                           releases the lock with the coordinator
 #                           completely untouched.
-#   post-switch-quiesce     — umbrella #201 WP4b — ONLY wired by
+#   post-switch-quiesce     — ONLY wired by
 #                           switch-mxl-fabrics-demo.yml, immediately after
 #                           phase 1 (active-source + target-info/epoch
 #                           cleared), before phase 2 (viewer re-point) —
 #                           proves a quiesce-only failure leaves zero
 #                           transmitters (coordinator cleared, viewer NOT
 #                           yet re-pointed) and releases the lock.
-#   post-switch-repoint     — umbrella #201 WP4b — ONLY wired by
+#   post-switch-repoint     — ONLY wired by
 #                           switch-mxl-fabrics-demo.yml, immediately after
 #                           phase 2 (the viewer's Helm release re-pointed,
 #                           --atomic), before phase 3 (select) — proves

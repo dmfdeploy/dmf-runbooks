@@ -1,9 +1,9 @@
 ---
-# umbrella #202 WP3 — L3 launcher authoritative gate.
+# L3 launcher authoritative gate.
 #
 # Included as the FIRST play-level actions of every launch-*.yml playbook,
 # before that playbook's own provision-stage role include. Stage order
-# (R2a-9/R2a-8, changed from the original WP3-A order):
+# (changed from an earlier order):
 #   1. identity   — l3_run_id (l3_attempt_id is minted later, in lock.yml —
 #                   it's per LOCK ATTEMPT, not per run)
 #   2. preflight  — structural preconditions (multi-node shape, namespace
@@ -12,7 +12,7 @@
 #                   no reason to deny every other run the facility while
 #                   checking them. Frozen 'preflight-error' marker, never
 #                   override-able.
-#   2.5. topology  — umbrella #201 WP3: topology_params validation +
+#   2.5. topology  — topology_params validation +
 #                   l3_release_group derivation, gated PURELY on
 #                   `topology_params is defined` (no
 #                   separate required-flag: any such flag is itself a

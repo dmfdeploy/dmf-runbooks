@@ -43,7 +43,7 @@
     api_version: v1
     kind: Pod
   register: _l3_all_pods
-  # The WP3-A draft used `failed_when` here —
+  # An earlier version used `failed_when` here —
   # a documented Ansible gotcha: `failed_when` OVERWRITES the registered
   # result's own `.failed` field with the failed_when expression's outcome,
   # it does not merely gate whether the TASK aborts. So a genuine Forbidden

@@ -1,6 +1,5 @@
 ---
-# umbrella #202 WP3 R3a-3b —
-# checkpoint THIS attempt's continued ownership of the facility lock,
+# Checkpoint THIS attempt's continued ownership of the facility lock,
 # invoked immediately before EACH mutating stage (helm install, each
 # NetBox provision/configure include in the calling playbook; every
 # rollback surface stage — see each call site). A TTL-expired lock with

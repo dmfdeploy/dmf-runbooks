@@ -1,5 +1,5 @@
 ---
-# umbrella #201 WP3 — REAL-playbook stubbed execution tests for
+# REAL-playbook stubbed execution tests for
 # topology_validate.yml. Same pattern as tests/l3-playbook-execution.yml
 # (which this file complements, not replaces): each scenario starts a
 # FRESH stub-server process, runs the REAL, unmodified
@@ -7,7 +7,7 @@
 # subprocess, and asserts on its real stdout + real HTTP against the
 # stub K8s API.
 #
-# Scenario 9 (umbrella #201 WP3b) extends this file to the TEARDOWN side:
+# Scenario 9 extends this file to the TEARDOWN side:
 # playbooks/teardown-mxl-fabrics-demo.yml becoming topology-aware (removing
 # the N source releases + resetting their NetBox records a topology launch
 # created, not just the viewer's own scalar release).
@@ -174,7 +174,7 @@
           failed_when: false
 
     # ════════════════════════════════════════════════════════════════════
-    # Scenario 2: umbrella #201 WP3 — topology_params
+    # Scenario 2: topology_params
     # ABSENT on a view-role launch is a fully legitimate SCALAR path
     # (there is no "required" refusal at all — see
     # topology_validate.yml's header), so this scenario proves the
@@ -1351,10 +1351,10 @@
           failed_when: false
 
     # ════════════════════════════════════════════════════════════════════
-    # Scenario 9 (umbrella #201 WP3b): teardown-mxl-fabrics-demo.yml becomes
+    # Scenario 9: teardown-mxl-fabrics-demo.yml becomes
     # topology-aware — tearing down a topology-launched viewer must also
     # remove its N source Helm releases + reset their NetBox records, not
-    # just its own scalar release (the pre-WP3b orphaning bug). stub_helm.sh
+    # just its own scalar release (the earlier orphaning bug). stub_helm.sh
     # is STATELESS across upgrade/uninstall calls (it just answers `helm
     # list` from a fixed L3_STUB_HELM_LIST_MXL env var, see its own header),
     # so this seeds the "already-launched" state directly (3 NetBox

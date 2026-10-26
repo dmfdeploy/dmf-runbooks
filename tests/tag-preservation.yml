@@ -72,7 +72,7 @@
       ansible.builtin.include_role:
         name: netbox_catalog_common
 
-    # umbrella #202 WP3-B: also load l3_run_guard (filters only, no
+    # Also load l3_run_guard (filters only, no
     # live-cluster tasks — see roles/l3_run_guard/tasks/filters_only.yml)
     # for the rollback-restore scenario's l3_filter_owned_tags filter.
     - name: Load l3_run_guard role (filter plugins only)
@@ -96,7 +96,7 @@
     - name: "Test #239 workload-tag single-workload-wins + no-op-when-unset"
       ansible.builtin.include_tasks: _workload-tag-scenario.yml
 
-    # ── umbrella #202 WP3-B — rollback path tag-restore ─────────────────────
+    # ── Rollback path tag-restore ─────────────────────
     - name: "Test WP3-B rollback restore — drifted workload:* survives, owned subset restored to snapshot"
       ansible.builtin.include_tasks: _rollback-restore-scenario.yml
 

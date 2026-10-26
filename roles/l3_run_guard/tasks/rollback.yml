@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3-B — L3 rollback-run authoritative flow.
+# L3 rollback-run authoritative flow.
 #
 # Included via `include_role: name: l3_run_guard, tasks_from: rollback`
 # from playbooks/rollback-run.yml. Stage order:
@@ -8,10 +8,10 @@
 # cannot supersede/mutate/finish the snapshot between the read
 # and the lock acquisition, which would be two separate,
 # race-prone steps) -> helm surface (§4.4) -> netbox surface (§4.2) ->
-# coordinator surface (umbrella #201 WP3 — OPT-IN, a no-op
+# coordinator surface (OPT-IN, a no-op
 # unless the snapshot recorded a coordinator mechanism) -> terminal
 # (§4.5/§4.6 aggregate outcome, marker, lock release —
-# ALWAYS rollback_incomplete in WP3, see rollback_terminal.yml).
+# ALWAYS rollback_incomplete, see rollback_terminal.yml).
 #
 # l3_catalog_key/l3_release are DERIVED from the snapshot (now stage 3,
 # post-lock), not caller-supplied — a rollback is driven purely by

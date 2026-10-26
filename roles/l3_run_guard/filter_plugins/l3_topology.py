@@ -1,5 +1,5 @@
-"""umbrella #201 WP3 — topology_params projection (dmf-media
-catalog/topology-params.schema.yaml, WP1 frozen contract).
+"""The topology_params projection (dmf-media
+catalog/topology-params.schema.yaml, frozen contract).
 
 Pure functions only (same posture as l3_budget.py): offline-unit-testable,
 no live cluster required. Ansible tasks (roles/l3_run_guard/tasks/
@@ -8,8 +8,8 @@ are thin IO wrappers that feed the topology_params object (carried as AWX
 launch extra_vars, per the umbrella spec §3.2 seam) into these functions.
 
 Validation mirrors dmf-cms's own ``catalog.load_topology_instance``
-(cms-wp3a-201 branch, src/dmf_cms/catalog.py) field-for-field — the launcher
-is the SECOND fail-closed gate on this object (the console's WP3a seam is
+(src/dmf_cms/catalog.py) field-for-field — the launcher
+is the SECOND fail-closed gate on this object (the console's launch seam is
 the first), so both consumers judge the object by the same rules. Kept as
 an independent Python re-implementation, not a cross-repo import (Ansible
 filter plugins are role-scoped; dmf-cms is a different repo/runtime
@@ -27,12 +27,12 @@ def _err(msg: str) -> dict:
 
 def l3_validate_topology_params(topology_params) -> dict:
     """Fail-closed structural validation of a ``topology_params`` object
-    (WP1 schema_version 1). Returns ``{"ok": True}`` or
+    (schema_version 1). Returns ``{"ok": True}`` or
     ``{"ok": False, "error": "<reason>"}`` — never raises, so a task file
     can gate a refusal on ``.ok`` without wrapping this in its own
     block/rescue.
 
-    Enforces the full WP1 frozen contract: schema_version == 1; sources is
+    Enforces the full frozen contract: schema_version == 1; sources is
     a non-empty list with unique ids, each entry has id/flow_id/pattern,
     flow_id is a well-formed UUID and unique across sources[] (compared by
     PARSED uuid.UUID value, not the raw string — two spellings of the same
@@ -112,12 +112,12 @@ def l3_validate_topology_params(topology_params) -> dict:
 
 
 def l3_topology_release_group(topology_params: dict, l3_release: str, base_set_values: list) -> list:
-    """Derive the per-source release group (umbrella #201 WP3, spec §3.2/
+    """Derive the per-source release group (spec §3.2/
     §5) from a VALIDATED ``topology_params`` — caller must have already
     gated on ``l3_validate_topology_params`` returning ``ok: True``, this
     function does not re-validate.
 
-    NAMING RULE (umbrella #201 WP3 — state this explicitly, the
+    NAMING RULE (stated explicitly, the
     tests must prove THIS shipping contract, not an alternate one): one entry
     per ``sources[]`` item, N-shaped (never a 2-source special case).
     ``release``/``netbox_service_name`` are both
@@ -128,18 +128,18 @@ def l3_topology_release_group(topology_params: dict, l3_release: str, base_set_v
     ``mxl-videotest-view-source-a`` / ``mxl-videotest-view-source-b`` for
     J1's two sources. dmf-media's viewer catalog entry must author
     ``provision.netbox_service`` as the matching N-element list of exactly
-    these names (umbrella #201 ledger, WP1 follow-up) — drain.py already
-    resolves an N-element list natively (condition-3 finding, WP3 report).
+    these names — drain.py already
+    resolves an N-element list natively.
     ``chart_set_values`` is
     ``base_set_values`` (the caller's own common values — interface, image
     tag, placement mode, etc., IDENTICAL to what the viewer's own scalar
     install already threads) PLUS the three topology-contract projections
-    named by the WP1 seam doc (docs/topology-params-seam.md): ``role=source``
+    named by the seam doc (docs/topology-params-seam.md): ``role=source``
     (a source release is always role=source, regardless of what role this
     PLAYBOOK RUN itself is — the group is threaded from the co-running
     viewer launch, see topology_validate.yml's own header), ``flow.id``,
-    ``pattern``, ``sourceId`` — the chart's own value names (WP2
-    charts/mxl-fabrics-demo/values.yaml), which happen to match the
+    ``pattern``, ``sourceId`` — the chart's own value names
+    (charts/mxl-fabrics-demo/values.yaml), which happen to match the
     topology schema's field names 1:1 except for the id->sourceId rename
     (the chart's ``sourceId`` compares against the coordinator's
     ``active-source``, so it cannot literally be named ``id`` without
@@ -168,7 +168,7 @@ def l3_topology_viewer_projection(topology_params: dict) -> dict:
     (spec §5 step 3): the coordinator's ``active-source`` value (verbatim
     ``viewer.source_selection``) and the viewer's OWN ``flow.id`` — looked
     up as ``sources[<source_selection>].flow_id``, NOT left on whichever
-    source's flow the viewer happened to start with (the WP1 schema's own
+    source's flow the viewer happened to start with (the schema's own
     ``viewer.source_selection.projection`` note: an implementation that
     sets active-source alone, without also re-deriving the viewer's
     flow.id from this lookup, leaves the viewer receiving the wrong

@@ -1,5 +1,5 @@
 ---
-# umbrella #201 WP3 — render ONE l3_release_group item's chart + compute its
+# Render ONE l3_release_group item's chart + compute its
 # demand, accumulating into _l3_group_demand_accum. Looped from capacity.yml
 # over l3_release_group (loop_var l3_capacity_group_item) — never included
 # at all when l3_release_group is undefined, so this file has zero effect

@@ -207,7 +207,7 @@
           - _l3_snapshot_read is not defined
           - _l3_snapshot_verify_read is not defined
           - _l3_target_ns is not defined
-          # umbrella #201 WP3 — topology_params validation + l3_release_group
+          # topology_params validation + l3_release_group
           # derivation (topology_validate.yml) and its downstream group-aware
           # consumers (capacity.yml, snapshot.yml, rollback_netbox_surface.yml).
           # l3_release_group/l3_topology_viewer_projection have NO legitimate
@@ -257,12 +257,12 @@
           - _l3_coordinator_snapshot_extra is not defined
           - _l3_snapshot_coordinator_state is not defined
           - _l3_coordinator_rollback_read is not defined
-          # umbrella #201 WP3b: teardown-mxl-fabrics-demo.yml's own
+          # teardown-mxl-fabrics-demo.yml's own
           # topology-aware source-release discovery (Helm release-name
           # prefix match) + removal loop.
           - _mxl_topology_source_releases is not defined
           - _mxl_topology_source_uninstall is not defined
-          # umbrella #201 WP4b: switch-mxl-fabrics-demo.yml's own
+          # switch-mxl-fabrics-demo.yml's own
           # validation/derivation facts (topology_params structural check,
           # the switch-target viewer projection, the pre-switch coordinator
           # read).

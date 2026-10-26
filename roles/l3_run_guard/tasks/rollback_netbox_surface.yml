@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3-B stage — NetBox surface rollback (§4.2). It
+# NetBox surface rollback (§4.2). It
 # classifies by id, looks records up by exact name, and verifies
 # by readback (threaded through the per-item task files).
 #

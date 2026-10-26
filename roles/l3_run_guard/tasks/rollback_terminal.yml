@@ -1,5 +1,5 @@
 ---
-# umbrella #202 WP3-B stage — terminal: aggregate outcome, update the
+# Terminal stage: aggregate outcome, update the
 # snapshot CM's status, emit the marker, release the lock (§4.5/§4.6
 # partial-failure posture — never false-green).
 #
@@ -8,14 +8,13 @@
 # exists anywhere in this tier) — so `monitoring` is now ALWAYS a dirty
 # surface, on EVERY rollback, and the verdict is ALWAYS
 # `rollback_incomplete`. `rollback_complete` is STRUCTURALLY UNREACHABLE
-# in WP3 — grep this repo for "rollback_complete" as a value ever WRITTEN
-# by this role: it doesn't happen. WP4's console-side monitoring-drain
+# — grep this repo for "rollback_complete" as a value ever WRITTEN
+# by this role: it doesn't happen. The console-side monitoring-drain
 # verification is the only tier that can ever upgrade a run's status past
-# this — the umbrella #202 acceptance gate for a truly clean rollback
-# closes only with WP4, not this WP. This is why the play below
+# this. This is why the play below
 # UNCONDITIONALLY fails at the end — an AWX job status of "failed" here is
 # not a bug, it correctly mirrors the marker: this rollback is not (and,
-# in WP3, can never be) fully verified clean.
+# can never be) fully verified clean.
 
 - name: "L3 rollback: aggregate outcome (pure — l3_rollback_outcome; R2a-7 — always rollback_incomplete in WP3)"
   ansible.builtin.set_fact:
@@ -56,7 +55,7 @@
     l3_outcome_kv: "run_id={{ l3_run_id | l3_marker_value }} request_id={{ l3_request_id | l3_marker_value }} surfaces={{ _l3_rollback_outcome.surfaces | join(',') }}"
 
 # ── Lock release: TERMINAL for lock purposes regardless of verdict — even
-#    a dirty/incomplete rollback (R2a-7: every WP3 rollback) reached a
+#    a dirty/incomplete rollback (every rollback here) reached a
 #    stop; an indefinitely-held lock blocking the whole facility until TTL
 #    expiry would be worse than releasing it. R2a-3b: a retry re-acquires
 #    via a plain create (TTL-expired reclaim if it somehow raced) — NOT
