@@ -398,6 +398,9 @@
           # every launch-*.yml provision stage runs) are EQUALLY forgeable
           # — the scanner covers the directory they live in.
           - _merged_tags is not defined
+          - _verified_service_read is not defined
+          - _written_owned_names is not defined
+          - _read_owned_names is not defined
           - _workload_tags is not defined
           - netbox_catalog_common_workload_tag_lookup is not defined
           - netbox_catalog_common_workload_tag_create is not defined

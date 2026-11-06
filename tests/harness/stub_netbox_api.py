@@ -332,6 +332,16 @@ class StubNetBoxHandler(BaseHTTPRequestHandler):
                 if key not in ("tags", "custom_fields"):
                     updated[key] = value
             STATE["services"][service_id] = updated
+            # Test hook: $L3_STUB_NETBOX_INTERLEAVE_TAGS (comma-separated tag
+            # names) makes a second writer land right after this PATCH, so a
+            # later GET shows that tag list while this response still shows
+            # the PATCH result.
+            interleaved = os.environ.get("L3_STUB_NETBOX_INTERLEAVE_TAGS")
+            if interleaved:
+                STATE["services"][service_id] = json.loads(json.dumps(updated))
+                STATE["services"][service_id]["tags"] = [
+                    {"name": n} for n in interleaved.split(",")
+                ]
         self._write_json(200, updated)
 
     def _create_service(self):

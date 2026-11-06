@@ -109,6 +109,8 @@ jobs:
         run: ansible-playbook tests/l3-switch-execution.yml
       - name: l3-finalise-purge-execution
         run: ansible-playbook tests/l3-finalise-purge-execution.yml
+      - name: service-tag-patch-verified
+        run: ansible-playbook tests/service-tag-patch-verified.yml
 
   review-comments:
     # Comments state why, not which review prompted them

@@ -1,0 +1,132 @@
+---
+# Verified service-tag PATCH (dmfdeploy/dmfdeploy#255) — role-level test.
+#
+# Runs the real roles/netbox_catalog_common/tasks/patch_service_tags_verified.yml
+# against the stub NetBox (tests/harness/stub_netbox_api.py). The stub's
+# L3_STUB_NETBOX_INTERLEAVE_TAGS hook makes a second writer land right after
+# the task's PATCH, so the task's re-read sees a different tag list.
+#
+#   - no interleaved writer   -> the task passes
+#   - interleaved lifecycle:* -> the task fails and names the owned tags
+#   - interleaved non-owned   -> the task passes (preserved by design)
+#   - interleaved workload:*  -> fails when workload: is an extra owned prefix
+#   - tag change between the stage read and the PATCH -> NOT detected: the
+#     task passes and the other writer's tags are lost. This documents a
+#     known limitation of NetBox 4.5, which has no conditional writes.
+#     Until NetBox If-Match is used, the expectation stays "passes and
+#     loses the write"; a change that closes the gap must flip it on purpose.
+#
+# The runtime scenarios run first, so an old implementation that PATCHes
+# without a read-back fails at runtime (scenario 2 expects a loud failure and
+# gets a silent pass) before the static check. The static check then pins
+# that every launcher PATCH goes through the task, so a new bare tag PATCH in
+# a stage file fails here.
+#
+# MUST FAIL when the task file is absent, when the task does not read back
+# after its PATCH, or when a stage file PATCHes tags directly.
+#
+# Run:  ansible-playbook tests/service-tag-patch-verified.yml
+
+- name: "#255 verified service-tag PATCH"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    l3_harness_dir: "{{ playbook_dir }}/harness"
+    _launcher_stage_files:
+      - roles/mxl/tasks/provision.yml
+      - roles/mxl/tasks/configure.yml
+      - roles/mxl/tasks/finalise.yml
+      - roles/nmos-cpp/tasks/provision.yml
+      - roles/nmos-cpp/tasks/configure.yml
+      - roles/nmos-cpp/tasks/finalise.yml
+      - roles/nmos-crosspoint/tasks/provision.yml
+      - roles/nmos-crosspoint/tasks/configure.yml
+      - roles/nmos-crosspoint/tasks/finalise.yml
+
+  tasks:
+    - name: Load netbox_catalog_common role (filter plugins + defaults)
+      ansible.builtin.include_role:
+        name: netbox_catalog_common
+
+    - name: "(1) no interleaved writer — passes"
+      ansible.builtin.include_tasks: _service-tag-patch-scenario.yml
+      vars:
+        _sc_name: no-interleave
+        _sc_interleave: ""
+        _sc_extra_prefixes: []
+        _sc_expect_fail: false
+
+    - name: "(2) interleaved writer sets another lifecycle:* — fails loudly"
+      ansible.builtin.include_tasks: _service-tag-patch-scenario.yml
+      vars:
+        _sc_name: interleave-lifecycle
+        _sc_interleave: "dmf-catalog,app:test,exposure:private,lifecycle:bootstrapped,monitoring:probe"
+        _sc_extra_prefixes: []
+        _sc_expect_fail: true
+
+    - name: "(3) interleaved writer changes only a non-owned tag — passes"
+      ansible.builtin.include_tasks: _service-tag-patch-scenario.yml
+      vars:
+        _sc_name: interleave-non-owned
+        _sc_interleave: "dmf-catalog,app:test,exposure:private,lifecycle:active,monitoring:probe,team:other"
+        _sc_extra_prefixes: []
+        _sc_expect_fail: false
+
+    - name: "(4) interleaved writer drops workload:* while it is owned — fails loudly"
+      ansible.builtin.include_tasks: _service-tag-patch-scenario.yml
+      vars:
+        _sc_name: interleave-workload
+        _sc_interleave: "dmf-catalog,app:test,exposure:private,lifecycle:active,monitoring:probe"
+        _sc_extra_prefixes: ["workload:"]
+        _sc_with_workload_tag: true
+        _sc_expect_fail: true
+
+    - name: "(5) known limitation: a tag change between the stage read and the PATCH is lost and the task passes"
+      ansible.builtin.include_tasks: _service-tag-patch-scenario.yml
+      vars:
+        _sc_name: pre-patch-write-lost
+        _sc_interleave: ""
+        _sc_extra_prefixes: []
+        _sc_between_write_tags:
+          - name: dmf-catalog
+          - name: app:test
+          - name: exposure:private
+          - name: lifecycle:degraded
+          - name: team:other
+        # The stage's tag list was built from the original read, so it
+        # overwrites both the other writer's owned lifecycle:degraded and its
+        # non-owned team:other. Until NetBox If-Match is used, this is the
+        # accepted behaviour; closing the gap must change this expectation.
+        _sc_final_tags_expected:
+          - dmf-catalog
+          - app:test
+          - exposure:private
+          - lifecycle:active
+          - monitoring:probe
+        _sc_expect_fail: false
+
+    - name: Read each launcher stage file
+      ansible.builtin.slurp:
+        src: "{{ playbook_dir }}/../{{ item }}"
+      register: _stage_reads
+      loop: "{{ _launcher_stage_files }}"
+
+    - name: Every launcher stage uses the verified PATCH and no bare PATCH
+      ansible.builtin.assert:
+        that:
+          - "'patch_service_tags_verified' in (item.content | b64decode)"
+          - "'method: PATCH' not in (item.content | b64decode)"
+        fail_msg: "{{ item.item }} must call patch_service_tags_verified and not PATCH tags itself"
+      loop: "{{ _stage_reads.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: ALL VERIFIED-SERVICE-TAG-PATCH TESTS PASSED
+      ansible.builtin.debug:
+        msg: >-
+          The verified service-tag PATCH passed when the owned tags matched,
+          failed when another writer changed an owned tag, and ignored a
+          non-owned change, and documents that a write before the PATCH is lost.
+          All nine launcher stage files use the task.
