@@ -1,0 +1,105 @@
+---
+# PATCH a NetBox service's tags, then re-read the service and fail when the
+# owned tag set on the record differs from the set this call wrote.
+#
+# What this detects: a change to the owned tags that lands after this PATCH
+# and is still in place at the re-read. It turns that silent wrong result into
+# a loud failure. A change that is reverted before the re-read is not
+# observable. A change to the tags list between the caller's read of the
+# service (the stage read that produced _current_tags for
+# merge_owned_tags.yml) and this PATCH is NOT detected: the PATCH sends a
+# whole tag list built from that read, so it overwrites that tag change,
+# owned or not, and the task passes. The PATCH sends only tags and
+# custom_fields, so changes to other service fields are not overwritten. The
+# re-read also cannot see a write that lands after it.
+#
+# Why that gap stays: closing it needs a conditional write, and the platform
+# pins NetBox v4.5.0 (dmf-infra k3s-lab-bootstrap/charts/netbox/Chart.yaml,
+# appVersion "4.5", subchart 7.3.0), which has no ETag/If-Match support on
+# writes; upstream adds it in NetBox 4.6. Until NetBox If-Match is in use,
+# treat the pre-PATCH window as a known limitation.
+#
+# Who the window affects: launcher runs already take the facility lock
+# (roles/l3_run_guard/tasks/main.yml:86-87, tasks/lock.yml:1) before they run
+# the stage tasks (for example playbooks/launch-mxl-fabrics-demo.yml:204-210),
+# so in normal cooperating operation two launcher runs do not interleave. The
+# lock is TTL-based, though: a paused launcher can resume after another
+# launcher reclaims the expired lock, because the checkpoint before a stage is
+# not atomic with the stage's tag read and PATCH (see the residual window in
+# roles/l3_run_guard/tasks/lock_checkpoint.yml). A writer outside the
+# launchers, such as an operator or another tool editing the service in
+# NetBox, does not take the lock at all.
+#
+# Inputs (caller must provide):
+#   _patch_service_id     — id of the ipam.Service record to PATCH.
+#   _patch_custom_fields  — custom_fields dict sent in the same PATCH.
+#   _merged_tags          — tags to write; output of merge_owned_tags.yml.
+#   _extra_owned_prefixes — OPTIONAL, as for merge_owned_tags.yml. Pass the
+#                           same include-scoped value the merge call got, so
+#                           a workload:* tag counts as owned here too.
+#
+# Only the owned set is compared, so a non-owned tag that another writer
+# changes after the PATCH does not fail the check. A non-owned tag change made
+# before the PATCH is overwritten like any other tag change (see above).
+
+- name: PATCH NetBox service tags and custom fields
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/{{ _patch_service_id }}/"
+    method: PATCH
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      tags: "{{ _merged_tags }}"
+      custom_fields: "{{ _patch_custom_fields }}"
+    validate_certs: false
+    status_code: [200]
+  no_log: true
+
+- name: Re-read NetBox service to verify the written tags
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/{{ _patch_service_id }}/"
+    method: GET
+    headers:
+      Authorization: "Token {{ netbox_api_token }}"
+    validate_certs: false
+    return_content: true
+    status_code: [200]
+  register: _verified_service_read
+  no_log: true
+
+# Owned names are every name that merge_owned_tags would not preserve. This
+# reuses the filter's own ownership rule rather than restating it.
+- name: Compute owned tag names written and read back
+  ansible.builtin.set_fact:
+    _written_owned_names: >-
+      {{
+        _merged_tags | map(attribute='name') | list
+        | difference(
+            _merged_tags
+            | merge_owned_tags(_netbox_owned_namespace + (_extra_owned_prefixes | default([])), [])
+            | map(attribute='name') | list
+          )
+        | sort
+      }}
+    _read_owned_names: >-
+      {{
+        _verified_service_read.json.tags | map(attribute='name') | list
+        | difference(
+            _verified_service_read.json.tags
+            | merge_owned_tags(_netbox_owned_namespace + (_extra_owned_prefixes | default([])), [])
+            | map(attribute='name') | list
+          )
+        | sort
+      }}
+
+- name: Fail when another writer changed the owned tags
+  ansible.builtin.assert:
+    that:
+      - _written_owned_names == _read_owned_names
+    fail_msg: >-
+      NetBox service {{ _patch_service_id }} owned tags changed after the
+      PATCH — another writer (a concurrent configure or finalise) won.
+      Wrote: {{ _written_owned_names }}. Read back: {{ _read_owned_names }}.
+      Re-run the stage once the other launch has finished.

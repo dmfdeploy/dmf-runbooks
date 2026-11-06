@@ -44,19 +44,12 @@
     tasks_from: merge_owned_tags
 
 - name: Flip NetBox tag to lifecycle:bootstrapped and clear monitoring stamps
-  ansible.builtin.uri:
-    url: "{{ netbox_api_url }}/api/ipam/services/{{ mxl_netbox_service_id }}/"
-    method: PATCH
-    headers:
-      Authorization: "Token {{ netbox_api_token }}"
-      Content-Type: "application/json"
-    body_format: json
-    body:
-      tags: "{{ _merged_tags }}"
-      custom_fields: "{{ netbox_service_monitoring_custom_fields_clear }}"
-    validate_certs: false
-    status_code: [200]
-  no_log: true
+  ansible.builtin.include_role:
+    name: netbox_catalog_common
+    tasks_from: patch_service_tags_verified
+  vars:
+    _patch_service_id: "{{ mxl_netbox_service_id }}"
+    _patch_custom_fields: "{{ netbox_service_monitoring_custom_fields_clear }}"
 
 - name: Report teardown complete
   ansible.builtin.debug:

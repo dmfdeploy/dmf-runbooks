@@ -1,0 +1,108 @@
+---
+# One scenario for service-tag-patch-verified.yml. Expects _sc_name,
+# _sc_interleave, _sc_extra_prefixes and _sc_expect_fail from the caller.
+# Optional: _sc_between_write_tags (a list of {name: ...} tags) is written to
+# the service after the seed and before the verified PATCH (the test supplies
+# a constructed merged list instead of running a stage read and merge),
+# and _sc_final_tags_expected (list) is compared with the record afterwards.
+
+- name: "[{{ _sc_name }}] run scenario against the stub"
+  block:
+    # The hook is read by the stub at PATCH time, so it must be in the stub
+    # process's environment: set it for the start command.
+    - name: "[{{ _sc_name }}] start stubs"
+      ansible.builtin.command:
+        argv: [python3, "{{ l3_harness_dir }}/start_stubs.py", --pidfile, "/tmp/l3-tagpatch-{{ _sc_name }}.json"]
+      environment:
+        L3_STUB_NETBOX_INTERLEAVE_TAGS: "{{ _sc_interleave }}"
+      register: _sc_start
+      changed_when: false
+
+    - name: "[{{ _sc_name }}] parse NetBox stub URL"
+      ansible.builtin.set_fact:
+        netbox_api_url: "{{ _sc_start.stdout_lines | select('match', '^NETBOX_STUB_URL=') | first | regex_replace('^NETBOX_STUB_URL=', '') }}"
+        netbox_api_token: fake-netbox-token
+
+    - name: "[{{ _sc_name }}] seed a service at lifecycle:bootstrapped"
+      ansible.builtin.uri:
+        url: "{{ netbox_api_url }}/api/ipam/services/"
+        method: POST
+        body_format: json
+        body:
+          name: tagpatch-test
+          tags:
+            - name: dmf-catalog
+            - name: app:test
+            - name: exposure:private
+            - name: lifecycle:bootstrapped
+        status_code: [201]
+      register: _sc_seed
+
+    - name: "[{{ _sc_name }}] set the tags the stage wants to write"
+      ansible.builtin.set_fact:
+        _merged_tags: >-
+          {{
+            [{'name': 'dmf-catalog'}, {'name': 'app:test'}, {'name': 'exposure:private'},
+             {'name': 'lifecycle:active'}, {'name': 'monitoring:probe'}]
+            + ([{'name': 'workload:video'}] if (_sc_with_workload_tag | default(false)) else [])
+          }}
+
+    - name: "[{{ _sc_name }}] another writer lands between the stage's read and its PATCH"
+      ansible.builtin.uri:
+        url: "{{ netbox_api_url }}/api/ipam/services/{{ _sc_seed.json.id }}/"
+        method: PATCH
+        body_format: json
+        body:
+          tags: "{{ _sc_between_write_tags }}"
+        status_code: [200]
+      when: _sc_between_write_tags | default([]) | length > 0
+
+    - name: "[{{ _sc_name }}] run the verified PATCH"
+      block:
+        - name: "[{{ _sc_name }}] include the task file"
+          ansible.builtin.include_role:
+            name: netbox_catalog_common
+            tasks_from: patch_service_tags_verified
+          vars:
+            _patch_service_id: "{{ _sc_seed.json.id }}"
+            _patch_custom_fields: {}
+            _extra_owned_prefixes: "{{ _sc_extra_prefixes }}"
+        - name: "[{{ _sc_name }}] record success"
+          ansible.builtin.set_fact:
+            _sc_failed: false
+            _sc_msg: ""
+      rescue:
+        - name: "[{{ _sc_name }}] record failure"
+          ansible.builtin.set_fact:
+            _sc_failed: true
+            _sc_msg: "{{ ansible_failed_result.msg | default('') }}"
+
+    - name: "[{{ _sc_name }}] read the record back"
+      ansible.builtin.uri:
+        url: "{{ netbox_api_url }}/api/ipam/services/{{ _sc_seed.json.id }}/"
+        method: GET
+        return_content: true
+      register: _sc_final
+      when: _sc_final_tags_expected is defined
+
+    - name: "[{{ _sc_name }}] assert the final tags"
+      ansible.builtin.assert:
+        that:
+          - (_sc_final.json.tags | map(attribute='name') | list | sort) == (_sc_final_tags_expected | sort)
+        fail_msg: "[{{ _sc_name }}] final tags {{ _sc_final.json.tags | map(attribute='name') | list }}"
+      when: _sc_final_tags_expected is defined
+
+    - name: "[{{ _sc_name }}] assert the outcome"
+      ansible.builtin.assert:
+        that:
+          - _sc_failed == _sc_expect_fail
+          - not _sc_expect_fail or ('another writer' in _sc_msg)
+        fail_msg: >-
+          [{{ _sc_name }}] expected failed={{ _sc_expect_fail }}; got
+          failed={{ _sc_failed }} msg={{ _sc_msg }}
+  always:
+    - name: "[{{ _sc_name }}] stop stubs"
+      ansible.builtin.command:
+        argv: [python3, "{{ l3_harness_dir }}/stop_stubs.py", --pidfile, "/tmp/l3-tagpatch-{{ _sc_name }}.json"]
+      changed_when: false
+      failed_when: false

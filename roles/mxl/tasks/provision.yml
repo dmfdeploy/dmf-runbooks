@@ -145,19 +145,14 @@
     _extra_owned_prefixes: "{{ ['workload:'] if (workload_slug is defined and workload_slug | length > 0) else [] }}"
 
 - name: "Ensure {{ mxl_function_key }} service carries monitoring metadata"
-  ansible.builtin.uri:
-    url: "{{ netbox_api_url }}/api/ipam/services/{{ mxl_netbox_service_id }}/"
-    method: PATCH
-    headers:
-      Authorization: "Token {{ netbox_api_token }}"
-      Content-Type: "application/json"
-    body_format: json
-    body:
-      tags: "{{ _merged_tags }}"
-      custom_fields: "{{ netbox_service_monitoring_custom_fields }}"
-    validate_certs: false
-    status_code: [200]
-  no_log: true
+  ansible.builtin.include_role:
+    name: netbox_catalog_common
+    tasks_from: patch_service_tags_verified
+  vars:
+    _patch_service_id: "{{ mxl_netbox_service_id }}"
+    _patch_custom_fields: "{{ netbox_service_monitoring_custom_fields }}"
+    # Same include-scoped value as the merge call above.
+    _extra_owned_prefixes: "{{ ['workload:'] if (workload_slug is defined and workload_slug | length > 0) else [] }}"
   when:
     - mxl_netbox_service_id is defined
     - mxl_netbox_service_id | int > 0
