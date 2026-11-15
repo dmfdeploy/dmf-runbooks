@@ -17,11 +17,9 @@ Launchers run `connection: local` in an AWX EE pod and install Helm charts from
 
 ## Build and test
 
-After `ansible-galaxy collection install -r requirements.yml`, run what CI runs:
-
-- `yamllint playbooks/ roles/` and `ansible-lint playbooks/ roles/ -p`
-- `ansible-playbook <file> --syntax-check` for each file in `playbooks/`
-- `ansible-playbook tests/tag-preservation.yml` and each `tests/l3-*.yml`
+Setup, the fast checks, the slow suites with their run times, the hooks, and the
+pull request gates are in [CONTRIBUTING.md](CONTRIBUTING.md#develop-and-test).
+That section is the one copy of the commands.
 
 ## Rules that are easy to miss
 
