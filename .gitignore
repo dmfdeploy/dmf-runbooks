@@ -34,6 +34,9 @@ __MACOSX/
 __pycache__/
 *.pyc
 
+# Local Python virtual environments (see CONTRIBUTING.md).
+.venv*/
+
 # === Secrets-prevention baseline (dmfdeploy platform 2026-05-07) ===
 # Patterns that should never be committed across any dmfdeploy platform repo.
 # Repo-specific rules belong above this block; add new shared rules here.

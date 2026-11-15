@@ -234,11 +234,9 @@ uppercasing rule.
 
 `_smoke_test.yml` is this harness's own self-check (NOT a test of
 `roles/l3_run_guard` itself — that role is out of scope for this harness's
-own author, being edited concurrently elsewhere). Run it directly:
-
-```bash
-ansible-playbook tests/harness/_smoke_test.yml
-```
+own author, being edited concurrently elsewhere). For the command that runs it,
+see [Check the test harness](../../CONTRIBUTING.md#check-the-test-harness) in
+CONTRIBUTING.
 
 It starts both stubs, then drives each harness surface with the same module
 types the role's real tasks use: `kubernetes.core.k8s_info` (Node list),

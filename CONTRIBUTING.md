@@ -10,8 +10,180 @@ single source of truth: all changes land via **Pull Request** against `main`.
 1. Read the platform overview in the [dmfdeploy/dmfdeploy](https://github.com/dmfdeploy/dmfdeploy) umbrella repo
    (`docs/architecture/dmfdeploy-platform-plan.md`) and apply any relevant ADRs from
    `docs/decisions/INDEX.md`.
-2. Fork or branch, make your change on a topic branch, open a PR against `main`.
-3. Ensure CI is green and your commits are **signed off** (see DCO below).
+2. Set up your machine and run the checks (see [Develop and test](#develop-and-test)).
+3. Fork or branch, make your change on a topic branch, open a PR against `main`.
+4. Ensure CI is green, your commits are **signed off** (see DCO below), and the
+   PR body links its issue (see [What a pull request needs](#what-a-pull-request-needs)).
+
+## Develop and test
+
+This section is the one place for development and test commands. The README,
+`AGENTS.md` and `tests/harness/README.md` point here. The commands match what CI
+runs in `.github/workflows/ci.yml`. Where CI doesn't run a command, the text
+says so.
+
+### Prerequisites
+
+- **Python 3.12 or later.** CI runs one test leg on 3.12 and one on 3.11. See
+  [Run the pinned CI leg](#run-the-pinned-ci-leg).
+- **Network access to Ansible Galaxy**, to install the collections.
+- **Optional tools.** [gitleaks](https://github.com/gitleaks/gitleaks) powers
+  the commit hook.
+
+You don't need a cluster, NetBox, AWX, or a cloud account. The test playbooks
+start stub Kubernetes and NetBox servers on your machine, and a stub `helm`
+command stands in for Helm, so you don't need Helm installed either.
+
+### Set up
+
+Run these commands from the repository root. Check first that `python3` is
+version 3.12 or later. If it isn't, use the full name of a newer interpreter,
+such as `python3.13`, in place of `python3`.
+
+```bash
+python3 --version
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install ansible-core ansible-lint yamllint kubernetes
+ansible-galaxy collection install -r requirements.yml
+```
+
+`pip` installs the newest `ansible-core` that your Python supports. CI's
+`latest` leg does the same on Python 3.12, so you may test a newer
+`ansible-core` than CI does. The `kubernetes` package is the Python client that
+the `kubernetes.core` modules need when a test runs them. `ansible-galaxy`
+installs the collections into `~/.ansible/collections`, outside the virtual
+environment, where other projects can see them.
+
+### Run the fast checks
+
+Run these commands from the repository root, with the virtual environment
+active, before you push. They take about a minute together.
+
+```bash
+yamllint playbooks/ roles/
+ansible-lint playbooks/ roles/ -p
+for pb in playbooks/*.yml; do
+  echo "=== syntax-check: $pb ==="
+  ansible-playbook "$pb" --syntax-check
+done
+ansible-playbook tests/tag-preservation.yml
+ansible-playbook tests/l3-budget-logic.yml
+ansible-playbook tests/l3-budget-self-demand.yml
+ansible-playbook tests/l3-playbook-structure.yml
+ansible-playbook tests/l3-reserved-var-meta-test.yml
+ansible-playbook tests/l3-topology-logic.yml
+ansible-playbook tests/service-tag-patch-verified.yml
+```
+
+| Command | Time |
+| --- | --- |
+| `yamllint` | A few seconds |
+| `ansible-lint` | About 20 seconds |
+| Syntax check of every playbook | A few seconds |
+| `tests/tag-preservation.yml` | A few seconds |
+| The five fast `tests/l3-*` suites | A few seconds each |
+| `tests/service-tag-patch-verified.yml` | About 15 seconds |
+
+### Run the slow suites
+
+Five suites run a real playbook as a nested `ansible-playbook` process against
+the stub servers, and each starts fresh stubs for every scenario. They are the
+slow part of the test run. The times come from one run on an 8-core laptop.
+
+```bash
+ansible-playbook tests/l3-control-flow.yml
+ansible-playbook tests/l3-topology-execution.yml
+ansible-playbook tests/l3-switch-execution.yml
+ansible-playbook tests/l3-finalise-purge-execution.yml
+ansible-playbook tests/l3-playbook-execution.yml
+```
+
+| Suite | What it runs | Time |
+| --- | --- | --- |
+| `l3-control-flow` | The run guard's task files, its lock retry loop and its refused inputs | About 2 minutes |
+| `l3-topology-execution` | The MXL launch and teardown playbooks with a topology | About 3 minutes |
+| `l3-switch-execution` | `switch-mxl-fabrics-demo.yml` | About 4.5 minutes |
+| `l3-finalise-purge-execution` | `finalise-purge.yml` | About 6.5 minutes |
+| `l3-playbook-execution` | Every catalog playbook, with a fault injected | About 14 minutes |
+
+All five together take about 30 minutes. Before you push, run the fast checks
+and the slow suite that matches the playbook you changed. If you change
+`roles/l3_run_guard/`, which every playbook uses, run all five, or push and let
+CI run them. If you run a suite under a time limit, allow at least 20 minutes
+for `l3-playbook-execution`.
+
+### Check the test harness
+
+The stub servers and the stub `helm` live in `tests/harness/`. Its own
+self-check starts both servers and drives each one. CI doesn't run it. Run it
+when you change the harness. It takes a few seconds.
+
+```bash
+ansible-playbook tests/harness/_smoke_test.yml
+```
+
+### What CI runs
+
+The `ci` workflow in `.github/workflows/ci.yml` has these jobs:
+
+- **`ansible`** installs the newest `ansible` package, then runs `yamllint`,
+  `ansible-lint`, the syntax check and `tests/tag-preservation.yml` from the fast
+  checks.
+- **`l3-harness`** installs `ansible-core` and the `kubernetes` package, then
+  runs the `l3-*` suites and `service-tag-patch-verified` from the two lists in this section, twice. The
+  `ee-pinned` leg uses Python 3.11, `ansible-core==2.15.*` and
+  `kubernetes>=28.0.0,<32.0.0`, which match the AWX execution environment. The
+  `latest` leg uses Python 3.12 and the newest of both packages. The job allows
+  45 minutes.
+- **`review-comments`** runs `bin/check-review-comments.sh` and its
+  `--self-test`.
+- **`working-model`** confirms that the working-model block in `AGENTS.md`,
+  `CLAUDE.md` and `QWEN.md` matches the umbrella template. It needs a checkout
+  of the umbrella repo, so it runs in CI only.
+
+The `guard` workflow scans for secrets and vulnerabilities, lints the workflow
+files, and checks commit subjects and the issue link. The `DCO` workflow checks
+sign-offs. Both run in CI only. None of these checks needs a live environment.
+
+You can run the review-comment check yourself:
+
+```bash
+bin/check-review-comments.sh
+bin/check-review-comments.sh --self-test
+```
+
+### Run the pinned CI leg
+
+A green local run on a new `ansible-core` doesn't cover the `ee-pinned` leg.
+Behavior has differed between the two in the past. To reproduce the leg, make
+a second virtual environment in a directory named `.venv-ee`, which leaves your
+first one in place. Use a Python 3.11 interpreter in place of `python3` for the
+first two commands.
+
+```bash
+python3 --version
+python3 -m venv .venv-ee
+. .venv-ee/bin/activate
+python -m pip install "ansible-core==2.15.*" "kubernetes>=28.0.0,<32.0.0"
+ansible-galaxy collection install -r requirements.yml
+```
+
+Then run the `tests/` commands from the fast and slow suite sections in this
+environment. The pinned leg doesn't run `yamllint` or `ansible-lint`, so you
+don't need to install them here.
+
+### Install the hooks
+
+Run this once in each clone:
+
+```bash
+bin/install-hooks.sh
+```
+
+The script sets `core.hooksPath` to `.githooks/`. The `pre-commit` and
+`pre-push` hooks scan your changes with gitleaks. They skip the scan with a
+warning when gitleaks isn't installed. CI runs the same scan.
 
 ## Branch & PR model
 
@@ -19,10 +191,35 @@ single source of truth: all changes land via **Pull Request** against `main`.
   banned; linear history is required.
 - Topic branches: **`<handle>/<short-slug>`** (e.g. `jdoe/fix-probe-path`). One
   logical change per branch; rebase onto `main` rather than long-lived branches.
-- **Conventional Commits** (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`,
-  `test:`, `build:`, `ci:`) are **required** on `main` and checked in CI. Other
-  prefixes are rejected.
 - A reviewer (per `CODEOWNERS`) and green required checks are needed to merge.
+
+## What a pull request needs
+
+CI checks each of these.
+
+- **An issue link in the PR body.** Write a fully qualified reference to an issue
+  in the [dmfdeploy/dmfdeploy](https://github.com/dmfdeploy/dmfdeploy/issues)
+  backlog, such as `Refs dmfdeploy/dmfdeploy#912`. Use `Closes dmfdeploy/dmfdeploy#N`
+  if the pull request finishes the issue. A bare `#N` doesn't count, because it
+  points at this repo. If your change has no issue, such as a typo fix, a
+  maintainer can add the `no-issue` label. Only maintainers can add labels, so
+  if you open the pull request from a fork, ask in the PR. The check runs when
+  you open the pull request, push a commit, or edit the PR body. Adding a label
+  doesn't run it, so after a maintainer adds `no-issue`, edit the PR body or
+  push a commit to run the check again.
+- **A DCO sign-off on every commit.** Use `git commit -s`. See the next section.
+- **Conventional commit subjects.** Use `type(scope): summary`, with one
+  optional scope. The scope may use only `a-z`, `0-9`, `.`, `_` and `-`. The types are `feat`, `fix`, `docs`, `chore`, `refactor`, `test`,
+  `build`, `ci`, `perf`, `revert` and `style`. An `!` before the colon marks a
+  breaking change. Other types, such as `wip`, are rejected, and so is a scope
+  list such as `(api,ui)`.
+- **Passing CI.** The `ci` workflow runs the checks in
+  [Develop and test](#develop-and-test). The `guard` workflow adds secret and
+  vulnerability scans.
+
+Also leave agent session links out of commit messages and the PR body. The
+`guard` workflow rejects one known session-link format. It can't recognize
+every tool's links, so reviewers look for them too.
 
 ## Developer Certificate of Origin (DCO)
 

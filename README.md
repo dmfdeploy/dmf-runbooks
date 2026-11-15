@@ -18,7 +18,7 @@ The playbooks do more than start a chart. Before any change, every playbook take
 - `roles/l3_run_guard/` holds the run guard. Every catalog playbook includes it to check who is asking, take the shared facility lock and release the lock when the run ends. The switch and purge playbooks report a structured outcome on every exit, and the rollback playbook always reports one. The launch and teardown playbooks report one only when they fail or refuse, and on success the AWX job result is the signal. Only the launch playbooks use its full gate, which also saves the pre-run snapshot and checks the resource budget. Teardown and purge take the lock but skip the snapshot and the budget check, and the switch playbook keeps its own baseline for a Helm rollback.
 - `roles/nmos-cpp/`, `roles/nmos-crosspoint/` and `roles/mxl/` hold the NetBox tasks for one function each: provision, configure and finalise.
 - `roles/netbox_catalog_common/` holds NetBox tasks that several functions share, such as workload tags and the permanent purge of leftover records.
-- `tests/` holds the Ansible test playbooks for the guard and the launchers.
+- `tests/` holds the Ansible test playbooks for the guard and the launchers. To run them, see [Develop and test](CONTRIBUTING.md#develop-and-test) in CONTRIBUTING.
 - `docs/runbooks/` holds operational runbooks.
 
 ## Catalog playbooks
@@ -54,6 +54,6 @@ For the architecture decisions behind this layout, see ADR-0014 (AWX project lay
 
 This project is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text. Third-party components (notably Sony nmos-cpp) are listed in [NOTICE](NOTICE).
 
-## Repository layout notes
+## For contributors
 
-`AGENTS.md`, `CLAUDE.md` and `QWEN.md` hold instructions for AI coding agents that help maintain this repository. You do not need them to use or contribute to the code.
+For setup, the test commands and their run times, the git hooks and what a pull request needs, see [CONTRIBUTING.md](CONTRIBUTING.md). `AGENTS.md`, `CLAUDE.md` and `QWEN.md` hold instructions for AI coding agents that help maintain this repository.
