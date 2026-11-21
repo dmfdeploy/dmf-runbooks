@@ -144,3 +144,18 @@ jobs:
           persist-credentials: false
       - name: Working-model block sync (strict)
         run: .umbrella/bin/check-working-model-sync.sh --repo . --strict --template .umbrella/docs/templates/working-model-block.md
+
+  alert-anchors:
+    # Every alert in the dmf-infra Prometheus role links to a section of
+    # docs/alerts.md. The check fetches the rule template from dmf-infra main
+    # and fails when a linked section has no heading.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Anchor rules self-test
+        run: bin/check-alert-anchors.sh --self-test
+      - name: Every alert anchor has a section
+        run: bin/check-alert-anchors.sh
