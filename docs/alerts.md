@@ -3,12 +3,21 @@
 **Scope:** what each alert in the dmfdeploy monitoring suite means, what to
 check first, and which recovery steps the repositories document.
 
-**How you get here:** every alert in the dmf-infra Prometheus role sets
-`runbook_url` to this page plus an anchor. The anchor is the lowercase alert
-name. Alerts that come in more than one severity share one section. The rules
-live in `k3s-lab-bootstrap/roles/base/prometheus/templates/rules/alerts.yaml.j2`
-in dmf-infra. A check in this repository fails when a rule points at an anchor
-that has no section here.
+**How you get here:** the alerts in
+`k3s-lab-bootstrap/roles/base/prometheus/templates/rules/alerts.yaml.j2` in
+dmf-infra set `runbook_url` to `prometheus_alert_runbook_base` plus an anchor.
+That variable points to this page. Each section covers one anchor. For most
+alerts the anchor is the lowercase alert name, and alerts that come in more
+than one severity share a section. Two anchors cover groups:
+`openbao-approle-rotation` and `openbao-token-revoker`.
+
+Two kinds of alert link elsewhere. `Watchdog` has no `runbook_url`.
+`AWXReplicaDivergence` links to the umbrella runbook `awx-operator-restart.md`.
+Neither is on this page.
+
+A test in dmf-infra
+(`k3s-lab-bootstrap/tests/test_alert_runbook_anchors.py`) fails when a rule
+uses an anchor that has no section here.
 
 **Prerequisite:** a working `kubectl` context for the cluster that raised the
 alert. Run `kubectl config current-context` before you run anything below.
@@ -48,10 +57,25 @@ Alerts: `OpenBaoAppRoleObserverDown`, `OpenBaoAppRoleMetadataUnavailable`,
 
 **What it means.** The `dmf-promsd` observer reads the rotation record of each
 AppRole target and exports it as metrics. `OpenBaoAppRoleObserverDown` means
-Prometheus cannot scrape the observer. The other alerts report a missing
-record, a SecretID with less than two thirds of its lifetime left (`info`),
-less than 25% left (`warning`), less than 10% left (`critical`), a failed
-latest run, or no successful scheduled rotation for 26 hours.
+Prometheus cannot scrape the observer for 5 minutes (`info`). The other
+alerts report the following:
+
+- `OpenBaoAppRoleMetadataUnavailable` (`info`, 10 minutes): the observer has
+  no valid record for a target.
+- `OpenBaoAppRoleRotationDue` (`info`, 15 minutes): at least two thirds of the
+  SecretID lifetime has passed, so one third or less is left.
+- `OpenBaoAppRoleSecretIDExpiryWarning` (`warning`, 15 minutes): at least 10%
+  but less than 25% of the lifetime is left.
+- `OpenBaoAppRoleSecretIDExpiryCritical` (`critical`, 5 minutes): less than
+  10% of the lifetime is left.
+- `OpenBaoAppRoleRotationLatestRunFailed` (`warning`, 5 minutes): the latest
+  recorded rotation run failed.
+- `OpenBaoAppRoleScheduledRotationHeartbeatMissing` (`critical`,
+  15 minutes): the last successful scheduled rotation is more than 26 hours
+  old.
+- `OpenBaoAppRoleScheduledRotationHeartbeatNeverRecorded` (`critical`,
+  26 hours): a record has been available for 26 hours with no successful
+  scheduled rotation ever recorded.
 
 **Check first.**
 
@@ -90,9 +114,12 @@ approval executor leaves behind. `OpenBaoRevokerRecordUnreadable`
 (`critical`, after 3 minutes) means the audit record is missing, unreadable or
 fails its chain check. The revoker then counts no token as recorded and
 revokes only executor tokens older than its 5-minute grace period.
-`OpenBaoRevokerNotScanning` (`warning`) means no complete scan finished for
-5 minutes. `OpenBaoRevokerScanFailing` (`warning`) means the latest scans
-failed a login, a listing, a lookup, or a revoke.
+`OpenBaoRevokerNotScanning` (`warning`) means the last complete scan
+finished more than 5 minutes ago, and the condition has held for another
+5 minutes, so the alert fires after about 10 minutes without a complete scan.
+`OpenBaoRevokerScanFailing` (`warning`) means the latest scan failed a login,
+a listing, a lookup, or a revoke, and the failure count has stayed over zero
+for 3 minutes.
 
 **Check first.** Read the log of the revoker pod in the `openbao` namespace:
 `kubectl -n openbao get pods`, then
@@ -170,7 +197,7 @@ workloads. Check the volumes with `kubectl get pvc -A`.
 
 **What it means.** The highest thermal-zone temperature on a host stays over
 `prometheus_alert_temp_warn_celsius` for 5 minutes (`warning`) or over
-`prometheus_alert_temp_crit_celsius` (`critical`). The series exist only on
+`prometheus_alert_temp_crit_celsius` for 5 minutes (`critical`). The series exist only on
 bare-metal Raspberry Pi nodes. On VM and cloud environments the alert never
 fires.
 
@@ -414,7 +441,8 @@ alert through Alertmanager to ntfy.
 
 ### `PrometheusNotificationErrors`
 
-**What it means.** Prometheus fails to send alerts to Alertmanager for
+**What it means.** Prometheus counted errors when it sent alerts to
+Alertmanager, over a 10-minute window, and the condition has held for
 10 minutes (`warning`). Notifications are dropped or delayed. The rule exists
 only when `prometheus_alertmanager_enabled` is true.
 
@@ -428,8 +456,8 @@ Check the formatter bridge with
 
 ### `PrometheusConfigReloadFailed`
 
-**What it means.** The last configuration reload failed (`critical`).
-Prometheus runs on a stale configuration, so rule and scrape changes are not
+**What it means.** The last configuration reload failed, and the condition has held for
+5 minutes (`critical`). Prometheus runs on a stale configuration, so rule and scrape changes are not
 live.
 
 **Check first.** Run
@@ -453,8 +481,8 @@ The rendered rules are in the `prometheus-server` ConfigMap. The header of
 
 ### `PrometheusRuleEvalFailures`
 
-**What it means.** Recording or alerting rule evaluations failed in the last
-15 minutes (`warning`). The verdict pane and the alert suite may run on missing
+**What it means.** Rule evaluations failed in the last 15 minutes, and the
+condition has held for 5 minutes (`warning`). The verdict pane and the alert suite may run on missing
 series.
 
 **Check first.** Run
@@ -594,8 +622,9 @@ compare with [`InternetUnreachable`](#internetunreachable).
 
 ### `GatewayHighJitter`
 
-**What it means.** The round-trip time to the LAN gateway varies by more than
-50 ms over 10 minutes, for 15 minutes (`info`). The local link is unstable.
+**What it means.** The standard deviation of the round-trip time to the LAN
+gateway over 10 minutes is more than 50 ms, and has been for 15 minutes
+(`info`). The local link is unstable.
 The lane note under [`GatewayUnreachable`](#gatewayunreachable) applies.
 
 **Check first.** See [`GatewayUnreachable`](#gatewayunreachable).
