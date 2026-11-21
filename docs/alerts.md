@@ -15,10 +15,6 @@ Two kinds of alert link elsewhere. `Watchdog` has no `runbook_url`.
 `AWXReplicaDivergence` links to the umbrella runbook `awx-operator-restart.md`.
 Neither is on this page.
 
-A test in dmf-infra
-(`k3s-lab-bootstrap/tests/test_alert_runbook_anchors.py`) fails when a rule
-uses an anchor that has no section here.
-
 **Prerequisite:** a working `kubectl` context for the cluster that raised the
 alert. Run `kubectl config current-context` before you run anything below.
 This page never names a cluster or an environment.
