@@ -1,4 +1,17 @@
 collections:
-  - ansible.posix
-  - ansible.netcommon
-  - kubernetes.core
+  # Dependabot does not update Galaxy collections; bump these by hand.
+  # ansible.posix and kubernetes.core are the newest releases that support
+  # ansible-core 2.15, which the AWX execution environment ships, and sit inside
+  # the ranges its requirements.yml gives (dmf-infra
+  # k3s-lab-bootstrap/ee/requirements.yml). ansible.netcommon is the newest
+  # release that supports ansible-core 2.15. ansible.utils is a dependency of
+  # ansible.netcommon; it is pinned so the install cannot pick a release that
+  # needs a newer core.
+  - name: ansible.posix
+    version: 1.6.2
+  - name: ansible.netcommon
+    version: 7.2.0
+  - name: kubernetes.core
+    version: 5.4.3
+  - name: ansible.utils
+    version: 5.1.2
