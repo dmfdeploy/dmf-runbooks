@@ -7,7 +7,7 @@ ARG IMAGE_VERSION=0.1.0-dev
 ARG VCS_REF=unknown
 
 # ── Stage 1: Builder ──────────────────────────────────────────────────────────
-FROM ubuntu:22.04 AS builder
+FROM ubuntu:26.04 AS builder
 
 ARG NMOS_CPP_REF
 
@@ -42,7 +42,7 @@ RUN cmake -S . -B build \
 RUN cmake --build build --target nmos-cpp-registry -j$(nproc)
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
-FROM ubuntu:22.04
+FROM ubuntu:26.04
 
 ARG IMAGE_VERSION
 ARG VCS_REF
