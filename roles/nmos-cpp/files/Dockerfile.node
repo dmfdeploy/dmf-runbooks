@@ -7,13 +7,13 @@ ARG IMAGE_VERSION=0.1.0-dev
 ARG VCS_REF=unknown
 
 # ── Stage 1: Builder ──────────────────────────────────────────────────────────
-FROM ubuntu:22.04 AS builder
+FROM ubuntu:26.04 AS builder
 
 ARG NMOS_CPP_REF
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake git pkg-config \
-    python3-pip \
+    python3-venv \
     libssl-dev \
     make \
     libavahi-client-dev \
@@ -21,7 +21,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libavahi-compat-libdnssd-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --no-cache-dir conan
+# Ubuntu 26.04 marks the system Python as externally managed (PEP 668), so
+# install conan into its own virtual environment.
+RUN python3 -m venv /opt/conan \
+    && /opt/conan/bin/pip install --no-cache-dir conan
+ENV PATH="/opt/conan/bin:$PATH"
 
 RUN conan profile detect
 
@@ -42,7 +46,7 @@ RUN cmake -S . -B build \
 RUN cmake --build build --target nmos-cpp-node -j$(nproc)
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
-FROM ubuntu:22.04
+FROM ubuntu:26.04
 
 ARG IMAGE_VERSION
 ARG VCS_REF
