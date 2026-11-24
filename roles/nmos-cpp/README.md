@@ -69,15 +69,27 @@ credential.
 The Dockerfiles require an explicit upstream Sony nmos-cpp SHA per
 dmfdeploy platform ADR-0025 and the public container registry publishing plan
 (both in the dmfdeploy platform umbrella repo, §5.1 of the latter).
-Builds from upstream `master` fail loud — `NMOS_CPP_REF` is required, no default.
+Builds from upstream `master` fail loud — `NMOS_CPP_REF` is required, must be
+a full 40-character commit sha, and has no default.
 
-Pick a Sony nmos-cpp commit (release tag or specific SHA) and record it in
-release notes:
+The role pins the upstream commit in one file, `roles/nmos-cpp/NMOS_CPP_REF`.
+Upstream has no release tags, and a build from its current `HEAD` can't start
+through the chart: its binaries reject a config file path
+(`nmos-cpp-registry /config/registry.json` fails with "Bad command-line
+settings"), while the chart mounts `/config/*.json` and the Dockerfiles' `CMD`
+passes them. The pinned commit is the one the published `0.1.0` images were
+built from. `push-nmos-images.sh` reads the file and passes it as the build
+argument. To move the pin, change the file, rebuild and check that the images
+start through the chart with the mounted config.
+
+The images record the dmf-runbooks commit they were built from, so build from a
+clean, committed checkout. `push-nmos-images.sh` refuses to build when the
+checkout has uncommitted changes. For a manual build, use the pinned commit:
 
 ```bash
 export REPO_ROOT="$(git rev-parse --show-toplevel)"
 export DOCKER_HOST="${DOCKER_HOST:-unix://$HOME/.colima/docker-build/docker.sock}"
-export NMOS_CPP_REF=<full-sha-from-https://github.com/sony/nmos-cpp/commits/master>
+export NMOS_CPP_REF="$(tr -d '[:space:]' < "$REPO_ROOT/roles/nmos-cpp/NMOS_CPP_REF")"
 export VCS_REF=$(git -C "$REPO_ROOT" rev-parse --short HEAD)
 export IMAGE_VERSION=0.1.0
 
@@ -96,10 +108,12 @@ docker build \
   --build-arg VCS_REF="$VCS_REF" \
   -t registry.dmf.example.com/dmf/nmos-cpp-node:$IMAGE_VERSION \
   -f Dockerfile.node .
+
+cd "$REPO_ROOT"
 ```
 
 The resulting image embeds OCI labels and `/etc/dmf/nmos_cpp_ref` for
-post-hoc audit (`docker run --rm <image> cat /etc/dmf/nmos_cpp_ref`).
+post-hoc audit (`docker run --rm --entrypoint cat <image> /etc/dmf/nmos_cpp_ref`).
 
 ## Publish — two registries (operator action; secrets via stdin only)
 
@@ -140,11 +154,12 @@ For deploys against a DMF environment, mirror images into in-cluster Zot via
 the existing script:
 
 ```bash
-roles/nmos-cpp/scripts/push-nmos-images.sh
+roles/nmos-cpp/scripts/push-nmos-images.sh        # tag 0.1.0
+IMAGE_TAG=<tag> roles/nmos-cpp/scripts/push-nmos-images.sh
 ```
 
-This builds (unconditionally — see script's TODO if you want a build-skip
-flag) and pushes to `registry.dmf.example.com` (env-specific Zot ingress).
+This builds from the pinned ref (unconditionally — see script's TODO if you want
+a build-skip flag; it needs a clean checkout) and pushes to `registry.dmf.example.com` (env-specific Zot ingress).
 Stage 4b of the convergence plan will later replace this with a
 GHCR-digest-aware mirror (`600-zot-seed.yml` per the public registry plan
 §6).

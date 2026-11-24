@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
 
-# Build args — must be passed at build time. No defaults for upstream ref
-# (plan §5.1: do not publish a public DMF image built from upstream `master`).
+# Build args — must be passed at build time. No default for the upstream ref:
+# the scripts pass the full commit from roles/nmos-cpp/NMOS_CPP_REF, and the
+# build fails for anything that is not a 40-character commit sha.
 ARG NMOS_CPP_REF
 ARG IMAGE_VERSION=0.1.0-dev
 ARG VCS_REF=unknown
@@ -30,7 +31,8 @@ ENV PATH="/opt/conan/bin:$PATH"
 RUN conan profile detect
 
 WORKDIR /src
-RUN test -n "$NMOS_CPP_REF" || (echo "ERROR: NMOS_CPP_REF build arg required (no master builds for public publish, plan §5.1)" >&2 && exit 1) \
+RUN printf '%s' "$NMOS_CPP_REF" | grep -Eq '^[0-9a-f]{40}$' \
+      || (echo "ERROR: NMOS_CPP_REF build arg must be a full 40-character commit sha (see roles/nmos-cpp/NMOS_CPP_REF)" >&2 && exit 1) \
     && git clone https://github.com/sony/nmos-cpp.git . \
     && git checkout "$NMOS_CPP_REF" \
     && git rev-parse HEAD > /src/.nmos_cpp_ref
