@@ -59,7 +59,7 @@
 # the ansible-core version, and this suite's own first attempt at it
 # silently produced a non-matching pattern under one such combination. A
 # pattern with no escapes at all cannot drift that way — which also matters
-# because CI runs an EE-pinned ansible-core 2.15 leg that cannot be
+# because CI runs a leg on the EE's ansible-core that cannot be
 # reproduced on this harness. The whole-match form also never RAISES on a
 # non-match (regex_search with a group reference does), so a missing field
 # surfaces as a readable assertion failure instead of a template error. (2) Scenario 11 covers the verified-rollback exit where the

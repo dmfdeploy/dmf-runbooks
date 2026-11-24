@@ -74,6 +74,7 @@ ansible-playbook tests/l3-playbook-structure.yml
 ansible-playbook tests/l3-reserved-var-meta-test.yml
 ansible-playbook tests/l3-topology-logic.yml
 ansible-playbook tests/service-tag-patch-verified.yml
+ansible-playbook tests/netbox-service-id-check.yml
 ```
 
 | Command | Time |
@@ -84,6 +85,7 @@ ansible-playbook tests/service-tag-patch-verified.yml
 | `tests/tag-preservation.yml` | A few seconds |
 | The five fast `tests/l3-*` suites | A few seconds each |
 | `tests/service-tag-patch-verified.yml` | About 15 seconds |
+| `tests/netbox-service-id-check.yml` | About 20 seconds |
 
 ### Run the slow suites
 
@@ -131,11 +133,13 @@ The `ci` workflow in `.github/workflows/ci.yml` has these jobs:
   `ansible-lint`, the syntax check and `tests/tag-preservation.yml` from the fast
   checks.
 - **`l3-harness`** installs `ansible-core` and the `kubernetes` package, then
-  runs the `l3-*` suites and `service-tag-patch-verified` from the two lists in this section, twice. The
-  `ee-pinned` leg uses Python 3.11, `ansible-core==2.15.*` and
-  `kubernetes>=28.0.0,<32.0.0`, which match the AWX execution environment. The
-  `latest` leg uses Python 3.12 and the newest of both packages. The job allows
-  45 minutes.
+  runs the `l3-*` suites, `service-tag-patch-verified` and
+  `netbox-service-id-check` from the two lists in this section, twice. The `ee`
+  leg uses the AWX execution environment's Python (3.14), `ansible-core` and
+  `kubernetes`. It reads the two pins from dmf-infra at the commit in
+  `EE_INFRA_REF` in the workflow, and a step fails if the interpreter or
+  `ansible-core` differs from them. The `latest` leg uses Python 3.12 and the
+  newest of both packages. The job allows 45 minutes.
 - **`review-comments`** runs `bin/check-review-comments.sh` and its
   `--self-test`.
 - **`working-model`** confirms that the working-model block in `AGENTS.md`,
@@ -155,23 +159,27 @@ bin/check-review-comments.sh --self-test
 
 ### Run the pinned CI leg
 
-A green local run on a new `ansible-core` doesn't cover the `ee-pinned` leg.
-Behavior has differed between the two in the past. To reproduce the leg, make
-a second virtual environment in a directory named `.venv-ee`, which leaves your
-first one in place. Use a Python 3.11 interpreter in place of `python3` for the
-first two commands.
+A green local run on a new `ansible-core` doesn't cover the `ee` leg. Behavior
+has differed between the two in the past. To reproduce the leg, make a second
+virtual environment in a directory named `.venv-ee`, which leaves your first one
+in place. Use a Python 3.14 interpreter in place of `python3` for the first two
+commands, and the pins from dmf-infra at the `EE_INFRA_REF` commit
+(`k3s-lab-bootstrap/requirements-ansible-core.txt` and the `kubernetes==` line of
+`k3s-lab-bootstrap/ee/requirements.txt`).
 
 ```bash
 python3 --version
 python3 -m venv .venv-ee
 . .venv-ee/bin/activate
-python -m pip install "ansible-core==2.15.*" "kubernetes>=28.0.0,<32.0.0"
+python -m pip install "ansible-core==<the pin>" "kubernetes==<the pin>"
 ansible-galaxy collection install -r requirements.yml
 ```
 
 Then run the `tests/` commands from the fast and slow suite sections in this
-environment. The pinned leg doesn't run `yamllint` or `ansible-lint`, so you
-don't need to install them here.
+environment, and check the interpreter and core with
+`python tests/scripts/assert_toolchain.py --python 3.14 --core ansible-core==<the pin>`.
+The `ee` leg doesn't run `yamllint` or `ansible-lint`, so you don't need to
+install them here.
 
 ### Install the hooks
 

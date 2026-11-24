@@ -38,10 +38,12 @@ jobs:
         run: ansible-playbook tests/tag-preservation.yml
 
   l3-harness:
-    # CI never ran the L3 harness suites on the AWX EE's ansible-core, so the
-    # #272/#273/#275 defect class (behavior differs between dev-harness
-    # ansible-core 2.20 and the EE's ansible-core 2.15/py3.9) shipped through
-    # 130 green tests (umbrella #274). This matrix runs the suites on both.
+    # The suites run on the AWX execution environment's ansible-core and Python
+    # (the `ee` leg) and on the newest release (the `latest` leg), because
+    # behavior differs between the two (dmfdeploy/dmfdeploy#274 and
+    # dmfdeploy/dmfdeploy#975). The legs stay
+    # separate when their versions are equal, so the `ee` leg keeps following the
+    # EE if `latest` moves on.
     #
     # The job timeout is 45 minutes, raised from 30. The
     # tests/l3-finalise-purge-execution.yml suite (12 scenarios, ~19 nested
@@ -53,22 +55,23 @@ jobs:
     # local runs, well under 5 minutes on this repo's own dev hardware).
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      # The dmf-infra commit that defines the EE this repository runs on. The `ee`
+      # leg reads its ansible-core pin and kubernetes client pin from that commit,
+      # not from a moving branch, so a pin change in dmf-infra changes this CI
+      # only when the new EE is published and this commit is moved. To move it:
+      # publish the new EE image from dmf-infra, then set this to the commit that
+      # built it (the image's org.opencontainers.image.revision label).
+      EE_INFRA_REF: 231671368d8740c1205c34d6e82ed376982c5156
     strategy:
       fail-fast: false
       matrix:
         include:
           # Dependabot does not track the pins in this matrix; bump them by hand.
-          # pairs with quay.io/ansible/awx-ee:24.6.1 (see dmf-infra
-          # k3s-lab-bootstrap/ee/execution-environment.yml) — bump the two
-          # together; matrix exists because #272/#273/#275 were invisible on
-          # dev-core (umbrella #274).
-          - name: ee-pinned
-            core: "ansible-core==2.15.13"
-            python: "3.11"
-            # the newest release inside the range dmf-infra
-            # k3s-lab-bootstrap/ee/requirements.txt gives the EE image
-            # (kubernetes>=28.0.0,<32.0.0).
-            k8s_client: "kubernetes==31.0.0"
+          - name: ee
+            # The EE image's Python: Fedora 43 `python3`, which ansible-core 2.21
+            # supports (3.12 to 3.14). The step below asserts the minor version.
+            python: "3.14"
           - name: latest
             core: "ansible-core==2.21.6"
             python: "3.12"
@@ -77,17 +80,46 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+      - name: Check out dmf-infra at the commit that defines the EE
+        if: matrix.name == 'ee'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: dmfdeploy/dmf-infra
+          ref: ${{ env.EE_INFRA_REF }}
+          path: .dmf-infra
+          sparse-checkout: |
+            k3s-lab-bootstrap/requirements-ansible-core.txt
+            k3s-lab-bootstrap/ee/requirements.txt
+          persist-credentials: false
+      - name: Resolve this leg's pins
+        env:
+          MATRIX_CORE: ${{ matrix.core }}
+          MATRIX_K8S: ${{ matrix.k8s_client }}
+        run: |
+          set -eu
+          if [ "${{ matrix.name }}" = ee ]; then
+            infra=.dmf-infra/k3s-lab-bootstrap
+            core="$(cat "$infra/requirements-ansible-core.txt")"
+            k8s="$(grep -E '^kubernetes==' "$infra/ee/requirements.txt")"
+          else
+            core="$MATRIX_CORE"
+            k8s="$MATRIX_K8S"
+          fi
+          echo "CORE_PIN=$core" >> "$GITHUB_ENV"
+          echo "K8S_PIN=$k8s" >> "$GITHUB_ENV"
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: "${{ matrix.python }}"
       - name: Install ansible-core (matrix leg)
-        run: pip install "${{ matrix.core }}"
+        run: pip install "$CORE_PIN"
       - name: Install kubernetes python client
         # ansible-galaxy does not install collections' python dependencies;
         # kubernetes.core's k8s/k8s_info modules need this at runtime, or
         # every task using them fails ("Failed to import the required
-        # Python library (kubernetes)") on a clean runner (umbrella #274).
-        run: pip install "${{ matrix.k8s_client }}"
+        # Python library (kubernetes)") on a clean runner (dmfdeploy/dmfdeploy#274).
+        run: pip install "$K8S_PIN"
+      - name: Assert the interpreter and ansible-core are the leg's pins
+        run: python3 tests/scripts/assert_toolchain.py --python "${{ matrix.python }}" --core "$CORE_PIN"
       - name: Install collections
         run: ansible-galaxy collection install -r requirements.yml
       - name: l3-budget-logic
@@ -112,6 +144,8 @@ jobs:
         run: ansible-playbook tests/l3-finalise-purge-execution.yml
       - name: service-tag-patch-verified
         run: ansible-playbook tests/service-tag-patch-verified.yml
+      - name: netbox-service-id-check
+        run: ansible-playbook tests/netbox-service-id-check.yml
 
   review-comments:
     # Comments state why, not which review prompted them

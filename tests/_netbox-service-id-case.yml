@@ -1,0 +1,73 @@
+---
+# One case for netbox-service-id-check.yml. Expects `case` (role, stage, service, start,
+# end) and netbox_api_url / netbox_api_token from the caller.
+
+- name: "[{{ case.role }} {{ case.stage }}] find a service left by an earlier case"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/?name={{ case.service }}"
+    method: GET
+    return_content: true
+  register: _left
+
+- name: "[{{ case.role }} {{ case.stage }}] remove it, so the stage sees exactly one service of that name"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/{{ item.id }}/"
+    method: DELETE
+    status_code: [204]
+  loop: "{{ _left.json.results }}"
+  loop_control:
+    label: "{{ item.id }}"
+
+- name: "[{{ case.role }} {{ case.stage }}] seed the service the stage looks up"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/"
+    method: POST
+    body_format: json
+    body:
+      name: "{{ case.service }}"
+      tags:
+        - name: dmf-catalog
+        - name: "app:{{ case.service }}"
+        - name: exposure:private
+        - name: "{{ case.start }}"
+    status_code: [201]
+  register: _seed
+
+- name: "[{{ case.role }} {{ case.stage }}] the stub hands out an integer id, as NetBox does"
+  ansible.builtin.assert:
+    that:
+      - _seed.json.id is integer
+      - _seed.json.id | int > 0
+
+- name: "[{{ case.role }} {{ case.stage }}] run the real stage file"
+  block:
+    - name: "[{{ case.role }} {{ case.stage }}] include the stage tasks"
+      ansible.builtin.include_role:
+        name: "{{ case.role }}"
+        tasks_from: "{{ case.stage }}"
+    - name: "[{{ case.role }} {{ case.stage }}] record success"
+      ansible.builtin.set_fact:
+        _case_failed: false
+        _case_msg: ""
+  rescue:
+    - name: "[{{ case.role }} {{ case.stage }}] record failure"
+      ansible.builtin.set_fact:
+        _case_failed: true
+        _case_msg: "{{ ansible_failed_result.msg | default('') }}"
+
+- name: "[{{ case.role }} {{ case.stage }}] read the record back"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/{{ _seed.json.id }}/"
+    method: GET
+    return_content: true
+  register: _after
+
+- name: "[{{ case.role }} {{ case.stage }}] the stage finished and flipped the lifecycle tag"
+  ansible.builtin.assert:
+    that:
+      - not _case_failed
+      - case.end in (_after.json.tags | map(attribute='name') | list)
+      - case.start not in (_after.json.tags | map(attribute='name') | list)
+    fail_msg: >-
+      {{ case.role }} {{ case.stage }} did not finish: failed={{ _case_failed }},
+      message={{ _case_msg | default('') }}, tags={{ _after.json.tags | map(attribute='name') | list }}
