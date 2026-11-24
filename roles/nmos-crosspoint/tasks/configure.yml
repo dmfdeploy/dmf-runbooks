@@ -28,7 +28,7 @@
 - name: Assert NetBox service exists
   ansible.builtin.assert:
     that:
-      - netbox_service_id is defined and netbox_service_id | length > 0
+      - netbox_service_id is defined and netbox_service_id | int > 0
     fail_msg: "NetBox service '{{ netbox_service_name }}' not found. Did the Provision stage create this service?"
   no_log: true
 
