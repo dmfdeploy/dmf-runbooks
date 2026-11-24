@@ -13,7 +13,8 @@
 #
 # Usage:
 #   cd <dmf-runbooks-checkout>
-#   roles/nmos-cpp/scripts/push-nmos-images.sh
+#   roles/nmos-cpp/scripts/push-nmos-images.sh        # tag 0.1.0
+#   IMAGE_TAG=<tag> roles/nmos-cpp/scripts/push-nmos-images.sh
 
 set -euo pipefail
 
@@ -22,14 +23,33 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 UMBRELLA="$(cd "$REPO_ROOT/.." && pwd)"
 ENV_ROOT="$UMBRELLA/dmf-env"
 
+# The one upstream pin (see roles/nmos-cpp/NMOS_CPP_REF); no build runs without it.
+NMOS_CPP_REF="$(tr -d '[:space:]' < "$REPO_ROOT/roles/nmos-cpp/NMOS_CPP_REF")"
+if ! [[ "$NMOS_CPP_REF" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "ERROR: roles/nmos-cpp/NMOS_CPP_REF must hold a full 40-character commit sha" >&2
+  exit 1
+fi
+IMAGE_TAG="${IMAGE_TAG:-0.1.0}"
+
+# The images record the checkout's commit, so build only from a clean, committed tree.
+if [[ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]]; then
+  echo "ERROR: $REPO_ROOT has uncommitted changes. Commit or discard them, then build again." >&2
+  exit 1
+fi
+VCS_REF="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+
 echo "=== Step 1: Build nmos-cpp-registry ==="
 export DOCKER_HOST=unix://$HOME/.colima/docker-build/docker.sock
 cd "$REPO_ROOT/roles/nmos-cpp/files"
-docker build -t registry.dmf.example.com/dmf/nmos-cpp-registry:0.1.0 -f Dockerfile.registry .
+docker build --build-arg NMOS_CPP_REF="$NMOS_CPP_REF" \
+  --build-arg IMAGE_VERSION="$IMAGE_TAG" --build-arg VCS_REF="$VCS_REF" \
+  -t registry.dmf.example.com/dmf/nmos-cpp-registry:"$IMAGE_TAG" -f Dockerfile.registry .
 
 echo ""
 echo "=== Step 2: Build nmos-cpp-node ==="
-docker build -t registry.dmf.example.com/dmf/nmos-cpp-node:0.1.0 -f Dockerfile.node .
+docker build --build-arg NMOS_CPP_REF="$NMOS_CPP_REF" \
+  --build-arg IMAGE_VERSION="$IMAGE_TAG" --build-arg VCS_REF="$VCS_REF" \
+  -t registry.dmf.example.com/dmf/nmos-cpp-node:"$IMAGE_TAG" -f Dockerfile.node .
 
 echo ""
 echo "=== Step 3: Set up isolated Docker config for Zot push ==="
@@ -55,11 +75,11 @@ unset ZOT_CREDS_JSON
 
 echo ""
 echo "=== Step 6: Push nmos-cpp-registry ==="
-docker push registry.dmf.example.com/dmf/nmos-cpp-registry:0.1.0
+docker push registry.dmf.example.com/dmf/nmos-cpp-registry:"$IMAGE_TAG"
 
 echo ""
 echo "=== Step 7: Push nmos-cpp-node ==="
-docker push registry.dmf.example.com/dmf/nmos-cpp-node:0.1.0
+docker push registry.dmf.example.com/dmf/nmos-cpp-node:"$IMAGE_TAG"
 
 echo ""
 echo "=== Done: both images pushed to Zot ==="
