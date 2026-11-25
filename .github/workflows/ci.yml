@@ -54,7 +54,8 @@ jobs:
     # not a functional regression (the identical suite passes clean, real
     # local runs, well under 5 minutes on this repo's own dev hardware).
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # The ee leg (Python 3.14) took 43m05s on its first run; the latest leg took 25m51s.
+    timeout-minutes: 60
     env:
       # The dmf-infra commit that defines the EE this repository runs on. The `ee`
       # leg reads its ansible-core pin and kubernetes client pin from that commit,
