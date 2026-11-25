@@ -58,7 +58,7 @@ jobs:
     # not a functional regression (the identical suite passes clean, real
     # local runs, well under 5 minutes on this repo's own dev hardware).
     runs-on: ubuntu-24.04
-    # The ee leg (Python 3.14) took 43m05s on its first run; the latest leg took 25m51s.
+    # The ee leg took 43m05s on its first run, on Python 3.14; the latest leg took 25m51s.
     timeout-minutes: 60
     env:
       # The dmf-infra commit that defines the EE this repository runs on. The `ee`
@@ -67,19 +67,19 @@ jobs:
       # only when the new EE is published and this commit is moved. To move it:
       # publish the new EE image from dmf-infra, then set this to the commit that
       # built it (the image's org.opencontainers.image.revision label).
-      EE_INFRA_REF: c98df82b3e9fe2d5ce651e453d88cfa86b43a400
+      EE_INFRA_REF: fc90d2f7e016c2b48919f684955a5473fc6bbf63
     strategy:
       fail-fast: false
       matrix:
         include:
           # Dependabot does not track the pins in this matrix; bump them by hand.
           - name: ee
-            # The EE image's Python: Fedora 43 `python3`, which ansible-core 2.22
+            # The EE image's Python: Fedora 45 `python3`, which ansible-core 2.22
             # supports (3.13 to 3.15). The step below asserts the minor version.
-            python: "3.14"
+            python: "3.15"
           - name: latest
             # 3.13 is the lowest Python that ansible-core 2.22 supports, so this
-            # leg tests the bottom of the range while the ee leg tests 3.14.
+            # leg tests the bottom of the range while the ee leg tests 3.15.
             core: "ansible-core==2.22.0"
             python: "3.13"
             k8s_client: "kubernetes==37.0.3"
