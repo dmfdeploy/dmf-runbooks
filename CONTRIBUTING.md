@@ -139,7 +139,7 @@ The `ci` workflow in `.github/workflows/ci.yml` has these jobs:
   `kubernetes`. It reads the two pins from dmf-infra at the commit in
   `EE_INFRA_REF` in the workflow, and a step fails if the interpreter or
   `ansible-core` differs from them. The `latest` leg uses Python 3.12 and the
-  newest of both packages. The job allows 45 minutes.
+  newest of both packages. The job allows 60 minutes.
 - **`review-comments`** runs `bin/check-review-comments.sh` and its
   `--self-test`.
 - **`working-model`** confirms that the working-model block in `AGENTS.md`,
