@@ -4,7 +4,7 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "monthly"
+      interval: "weekly"
     groups:
       github-actions:
         patterns:
@@ -16,7 +16,7 @@ updates:
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
-      interval: "monthly"
+      interval: "weekly"
     groups:
       pip-minor-patch:
         update-types:
@@ -29,7 +29,7 @@ updates:
   - package-ecosystem: "docker"
     directory: "/roles/nmos-cpp/files"
     schedule:
-      interval: "monthly"
+      interval: "weekly"
     groups:
       docker-minor-patch:
         update-types:
