@@ -45,7 +45,7 @@ jobs:
     # separate when their versions are equal, so the `ee` leg keeps following the
     # EE if `latest` moves on.
     #
-    # The job timeout is 45 minutes, raised from 30. The
+    # The job timeout was raised from 30 to 45 minutes, and then to 60. The
     # tests/l3-finalise-purge-execution.yml suite (12 scenarios, ~19 nested
     # ansible-playbook subprocess invocations across its own stub-server
     # lifecycles) pushed this job right to the old 30-minute ceiling — the
