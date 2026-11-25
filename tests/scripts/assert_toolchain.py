@@ -4,7 +4,7 @@
 The suites run through `ansible-playbook` on PATH, so this reads `ansible-playbook --version`:
 its core version and the Python it runs on. The Python that runs this script does not matter.
 The job log gets both lines.
-Usage: assert_toolchain.py --python 3.14 --core ansible-core==2.21.6
+Usage: assert_toolchain.py --python 3.14 --core ansible-core==2.22.0
 """
 import argparse
 import re

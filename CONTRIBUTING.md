@@ -24,7 +24,7 @@ says so.
 
 ### Prerequisites
 
-- **Python 3.12 or later.** CI runs one test leg on 3.12 and the `ee` leg on
+- **Python 3.13 or later.** CI runs one test leg on 3.13 and the `ee` leg on
   3.14, the EE image's Python. See [Run the pinned CI leg](#run-the-pinned-ci-leg).
 - **Network access to Ansible Galaxy**, to install the collections.
 - **Optional tools.** [gitleaks](https://github.com/gitleaks/gitleaks) powers
@@ -37,7 +37,7 @@ command stands in for Helm, so you don't need Helm installed either.
 ### Set up
 
 Run these commands from the repository root. Check first that `python3` is
-version 3.12 or later. If it isn't, use the full name of a newer interpreter,
+version 3.13 or later. If it isn't, use the full name of a newer interpreter,
 such as `python3.13`, in place of `python3`.
 
 ```bash
@@ -49,7 +49,7 @@ ansible-galaxy collection install -r requirements.yml
 ```
 
 `pip` installs the newest `ansible-core` that your Python supports. CI's
-`latest` leg does the same on Python 3.12, so you may test a newer
+`latest` leg does the same on Python 3.13, so you may test a newer
 `ansible-core` than CI does. The `kubernetes` package is the Python client that
 the `kubernetes.core` modules need when a test runs them. `ansible-galaxy`
 installs the collections into `~/.ansible/collections`, outside the virtual
@@ -138,7 +138,7 @@ The `ci` workflow in `.github/workflows/ci.yml` has these jobs:
   leg uses the AWX execution environment's Python (3.14), `ansible-core` and
   `kubernetes`. It reads the two pins from dmf-infra at the commit in
   `EE_INFRA_REF` in the workflow, and a step fails if the interpreter or
-  `ansible-core` differs from them. The `latest` leg uses Python 3.12 and the
+  `ansible-core` differs from them. The `latest` leg uses Python 3.13 and the
   newest of both packages. The job allows 60 minutes.
 - **`review-comments`** runs `bin/check-review-comments.sh` and its
   `--self-test`.

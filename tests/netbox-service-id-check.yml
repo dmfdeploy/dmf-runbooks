@@ -4,12 +4,12 @@
 # nmos-cpp and nmos-crosspoint each assert, in configure.yml and finalise.yml, that
 # the NetBox service they found has an id. The stage's `set_fact` renders that id from
 # the NetBox JSON, where it is an integer. Under ansible-core 2.15 the rendered value
-# is a string, and under 2.21 it stays an integer, so a check that treats it as text
+# is a string, and under 2.21 and later it stays an integer, so a check that treats it as text
 # (`| length`) passes on the one and fails on the other. This test runs the four real
 # stage task files through include_role with an integer id from the stub and requires
 # each to finish and to flip the lifecycle tag.
 #
-# MUST FAIL on ansible-core 2.21 when any of the four stage files applies `length` to
+# MUST FAIL on ansible-core 2.21 or later when any of the four stage files applies `length` to
 # the id ("object of type '_AnsibleTaggedInt' has no len()").
 #
 # Needs only python3 for the stub. Run:  ansible-playbook tests/netbox-service-id-check.yml

@@ -63,19 +63,21 @@ jobs:
       # only when the new EE is published and this commit is moved. To move it:
       # publish the new EE image from dmf-infra, then set this to the commit that
       # built it (the image's org.opencontainers.image.revision label).
-      EE_INFRA_REF: 231671368d8740c1205c34d6e82ed376982c5156
+      EE_INFRA_REF: c98df82b3e9fe2d5ce651e453d88cfa86b43a400
     strategy:
       fail-fast: false
       matrix:
         include:
           # Dependabot does not track the pins in this matrix; bump them by hand.
           - name: ee
-            # The EE image's Python: Fedora 43 `python3`, which ansible-core 2.21
-            # supports (3.12 to 3.14). The step below asserts the minor version.
+            # The EE image's Python: Fedora 43 `python3`, which ansible-core 2.22
+            # supports (3.13 to 3.15). The step below asserts the minor version.
             python: "3.14"
           - name: latest
-            core: "ansible-core==2.21.6"
-            python: "3.12"
+            # 3.13 is the lowest Python that ansible-core 2.22 supports, so this
+            # leg tests the bottom of the range while the ee leg tests 3.14.
+            core: "ansible-core==2.22.0"
+            python: "3.13"
             k8s_client: "kubernetes==37.0.3"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
