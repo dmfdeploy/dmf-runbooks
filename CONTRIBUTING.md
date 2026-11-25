@@ -25,7 +25,7 @@ says so.
 ### Prerequisites
 
 - **Python 3.13 or later.** CI runs one test leg on 3.13 and the `ee` leg on
-  3.14, the EE image's Python. See [Run the pinned CI leg](#run-the-pinned-ci-leg).
+  3.15, the EE image's Python. See [Run the pinned CI leg](#run-the-pinned-ci-leg).
 - **Network access to Ansible Galaxy**, to install the collections.
 - **Optional tools.** [gitleaks](https://github.com/gitleaks/gitleaks) powers
   the commit hook.
@@ -135,7 +135,7 @@ The `ci` workflow in `.github/workflows/ci.yml` has these jobs:
 - **`l3-harness`** installs `ansible-core` and the `kubernetes` package, then
   runs the `l3-*` suites, `service-tag-patch-verified` and
   `netbox-service-id-check` from the two lists in this section, twice. The `ee`
-  leg uses the AWX execution environment's Python (3.14), `ansible-core` and
+  leg uses the AWX execution environment's Python (3.15), `ansible-core` and
   `kubernetes`. It reads the two pins from dmf-infra at the commit in
   `EE_INFRA_REF` in the workflow, and a step fails if the interpreter or
   `ansible-core` differs from them. The `latest` leg uses Python 3.13 and the
@@ -162,7 +162,7 @@ bin/check-review-comments.sh --self-test
 A green local run on a new `ansible-core` doesn't cover the `ee` leg. Behavior
 has differed between the two in the past. To reproduce the leg, make a second
 virtual environment in a directory named `.venv-ee`, which leaves your first one
-in place. Use a Python 3.14 interpreter in place of `python3` for the first two
+in place. Use a Python 3.15 interpreter in place of `python3` for the first two
 commands, and the pins from dmf-infra at the `EE_INFRA_REF` commit
 (`k3s-lab-bootstrap/requirements-ansible-core.txt` and the `kubernetes==` line of
 `k3s-lab-bootstrap/ee/requirements.txt`).
@@ -177,7 +177,7 @@ ansible-galaxy collection install -r requirements.yml
 
 Then run the `tests/` commands from the fast and slow suite sections in this
 environment, and check the interpreter and core with
-`python tests/scripts/assert_toolchain.py --python 3.14 --core ansible-core==<the pin>`.
+`python tests/scripts/assert_toolchain.py --python 3.15 --core ansible-core==<the pin>`.
 The `ee` leg doesn't run `yamllint` or `ansible-lint`, so you don't need to
 install them here.
 
