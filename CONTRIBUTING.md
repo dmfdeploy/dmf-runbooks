@@ -24,8 +24,8 @@ says so.
 
 ### Prerequisites
 
-- **Python 3.12 or later.** CI runs one test leg on 3.12 and one on 3.11. See
-  [Run the pinned CI leg](#run-the-pinned-ci-leg).
+- **Python 3.12 or later.** CI runs one test leg on 3.12 and the `ee` leg on
+  3.14, the EE image's Python. See [Run the pinned CI leg](#run-the-pinned-ci-leg).
 - **Network access to Ansible Galaxy**, to install the collections.
 - **Optional tools.** [gitleaks](https://github.com/gitleaks/gitleaks) powers
   the commit hook.
