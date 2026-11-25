@@ -8,10 +8,10 @@ collections:
   # ansible.netcommon; it is pinned so the install cannot pick a release that
   # needs a newer core.
   - name: ansible.posix
-    version: 1.6.2
+    version: 2.2.2
   - name: ansible.netcommon
-    version: 7.2.0
+    version: 8.8.0
   - name: kubernetes.core
-    version: 5.4.3
+    version: 6.6.0
   - name: ansible.utils
-    version: 5.1.2
+    version: 6.1.1
