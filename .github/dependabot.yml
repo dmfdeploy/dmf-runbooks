@@ -21,13 +21,9 @@ updates:
     directory: "/"
     schedule:
       interval: "monthly"
-    # CI runs Python 3.12 and ansible 15 needs 3.13 or newer. Remove this
-    # ignore when CI moves to Python 3.13.
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
-      - dependency-name: "ansible"
-        versions: [">= 15"]
     groups:
       pip-minor-patch:
         update-types:
