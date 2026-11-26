@@ -67,7 +67,7 @@ jobs:
       # only when the new EE is published and this commit is moved. To move it:
       # publish the new EE image from dmf-infra, then set this to the commit that
       # built it (the image's org.opencontainers.image.revision label).
-      EE_INFRA_REF: fc90d2f7e016c2b48919f684955a5473fc6bbf63
+      EE_INFRA_REF: 45eecd2620f4964d66706937cf206ba559ee7fb1
     strategy:
       fail-fast: false
       matrix:
